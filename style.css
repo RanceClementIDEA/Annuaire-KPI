@@ -1,0 +1,230 @@
+/* =======================
+     LAYOUT
+======================= */
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI";
+  background: linear-gradient(180deg, #0A3F55 0%, #062C3B 100%);
+  color: #E5E7EB;
+
+  display: flex;
+  flex-direction: column;
+}
+
+/* =======================
+   LOGIN
+======================= */
+#loginScreen {
+  position: fixed;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(180deg, #0A3F55, #062C3B);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+}
+
+.login-box {
+  background: white;
+  padding: 40px;
+  border-radius: 15px;
+  text-align: center;
+  color: #333;
+}
+
+.logo-login {
+  width: 180px;
+  margin-bottom: 20px;
+}
+
+/* =======================
+   HEADER
+======================= */
+header {
+  padding: 0;
+}
+
+/* BANNIERE */
+.header-banner {
+  width: 100%;
+  height: 120px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* LOGO ZOOMÉ */
+.banner-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+/* =======================
+   HEADER CONTENT
+======================= */
+.header-content {
+  display: flex;
+  align-items: center;
+  padding: 15px 25px;
+}
+
+h1 {
+  margin: 0;
+  color: white;
+}
+
+#userInfo {
+  margin-left: auto;
+  font-weight: bold;
+}
+
+#logoutBtn {
+  margin-left: 10px;
+  background: #ef4444;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  color: white;
+  cursor: pointer;
+}
+
+/* =======================
+   TOOLBAR
+======================= */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 15px 25px;
+}
+
+input, select {
+  padding: 10px;
+  border-radius: 8px;
+  border: none;
+  background: #E5E7EB;
+}
+
+button {
+  background: #1EA7D1;
+  color: white;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+/* =======================
+   CONTENU KPI
+======================= */
+#kpiContainer {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 20px;
+  padding: 20px;
+}
+
+/* =======================
+   CARDS
+======================= */
+.card {
+  background: white;
+  color: #333;
+  border-radius: 12px;
+  padding: 15px;
+  transition: 0.2s;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+}
+
+/* FAVORIS */
+.card.favorite {
+  border-left: 5px solid gold;
+  background: #fffbea;
+}
+
+/* =======================
+   TAGS
+======================= */
+.tag {
+  display: inline-block;
+  padding: 4px 8px;
+  margin: 2px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.type { background: #dbeafe; }
+.process { background: #dcfce7; }
+.freq { background: #fef3c7; }
+.ritual { background: #e9d5ff; }
+
+/* =======================
+   ✅ BADGES SITE FIX FINAL
+======================= */
+.site-badges {
+  margin-top: 10px;
+}
+
+/* ✅ IMPORTANT : inline-block + margin */
+.site {
+  display: inline-block;
+  margin-right: 6px;
+  margin-bottom: 5px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: white;
+  font-weight: bold;
+}
+
+/* couleurs */
+.logistiport { background: #1EA7D1; }
+.armement { background: #059669; }
+.armateur { background: #d97706; }
+.global { background: #6b7280; }
+
+/* =======================
+   SELECT KPI
+======================= */
+.kpi-select {
+  margin-top: 10px;
+  display: flex;
+  gap: 10px;
+}
+
+/* =======================
+   FOOTER
+======================= */
+footer {
+  background: white;
+}
+
+.footer-banner {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.footer-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}

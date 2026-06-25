@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Annuaire KPI - IDEA</title>
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Excel -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+</head>
+
+<body>
+
+<!-- =======================
+     LOGIN
+======================= -->
+<div id="loginScreen">
+  <div class="login-box">
+    <img src="assets/logo-idea.png" class="logo-login">
+
+    <h2>Connexion</h2>
+    <input type="text" id="usernameInput" placeholder="Nom / email">
+    <br><br>
+    <button id="loginBtn">Se connecter</button>
+  </div>
+</div>
+
+<!-- =======================
+     HEADER
+======================= -->
+<header>
+
+  <!-- ✅ BANNIERE -->
+  <div class="header-banner">
+    <img src="assets/logo-idea.png" class="banner-logo">
+  </div>
+
+  <div class="header-content">
+    <h1>Annuaire KPI</h1>
+    <div id="userInfo"></div>
+    <button id="logoutBtn">Déconnexion</button>
+  </div>
+
+  <div class="toolbar">
+    <input type="text" id="search" placeholder="🔎 Rechercher">
+    <select id="processFilter"></select>
+    <select id="freqFilter"></select>
+    <select id="ritualFilter"></select>
+    <button id="refreshBtn">🔄 Rafraîchir</button>
+  </div>
+
+</header>
+
+<!-- =======================
+     INPUT EXCEL
+======================= -->
+<input type="file" id="fileInput" accept=".xlsx" style="display:none">
+
+<!-- =======================
+     CONTENU KPI
+======================= -->
+<main id="kpiContainer"></main>
+
+<!-- ✅ ✅ ✅ FOOTER AU BON ENDROIT -->
+<footer>
+  <div class="footer-banner">
+    <img src="assets/footer-idea.png" class="footer-logo">
+  </div>
+</footer>
+
+<!-- SCRIPT -->
+<script src="app.js"></script>
+
+</body>
+</html>
