@@ -474,3 +474,130 @@ button { cursor: pointer; }
   #kpiContainer { grid-template-columns: 1fr; padding: 16px; }
   .topbar { padding: 0 14px; }
 }
+
+/* ============================================
+   LOGO FOOTER SIDEBAR (image footer-idea.png)
+============================================ */
+.sidebar-brand-footer {
+  padding: 14px 16px 18px;
+  margin-top: auto;
+}
+.sidebar-brand-footer img {
+  width: 100%;
+  height: auto;
+  display: block;
+  opacity: .9;
+}
+
+/* ============================================
+   OVERLAY MOBILE (ferme la sidebar au clic)
+============================================ */
+#sidebarOverlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 499;
+}
+@media (max-width: 768px) {
+  #sidebarOverlay.show { display: block; }
+}
+
+/* ============================================
+   MODALE (synchronisation cloud)
+============================================ */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2000;
+  padding: 16px;
+}
+.modal-overlay.hidden { display: none; }
+
+.modal-card {
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 26px 24px;
+  width: 100%; max-width: 460px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.5);
+}
+
+.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.modal-header h3 { font-family: 'DM Sans', sans-serif; font-size: 17px; color: var(--text-1); }
+.modal-close {
+  background: none; border: none; color: var(--text-2);
+  font-size: 16px; padding: 6px; border-radius: 6px;
+}
+.modal-close:hover { color: var(--text-1); background: var(--accent-dim); }
+
+.modal-sub { color: var(--text-2); font-size: 12.5px; line-height: 1.5; margin-bottom: 14px; }
+
+.sync-status {
+  font-size: 12.5px; font-weight: 600; padding: 8px 12px;
+  border-radius: 7px; background: var(--bg-surface);
+  margin-bottom: 14px; color: var(--text-2);
+}
+.sync-status.connected { color: var(--green); }
+.sync-status.error     { color: var(--red); }
+.sync-status.syncing   { color: var(--accent); }
+
+.modal-label {
+  display: block; font-size: 11px; font-weight: 500; color: var(--text-2);
+  letter-spacing: 0.05em; text-transform: uppercase; margin: 12px 0 6px;
+}
+#syncConfigInput {
+  width: 100%; background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; color: var(--text-1);
+  font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 11.5px;
+  outline: none; resize: vertical;
+}
+#syncConfigInput:focus { border-color: var(--accent); }
+#syncCodeInput {
+  width: 100%; background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 11px 13px; color: var(--text-1);
+  outline: none;
+}
+#syncCodeInput:focus { border-color: var(--accent); }
+
+.modal-checkbox {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; color: var(--text-2); margin: 14px 0 4px;
+}
+.modal-checkbox input { width: auto; }
+
+.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.btn-primary, .btn-secondary {
+  flex: 1 1 auto;
+  border: none; border-radius: 8px; padding: 11px 14px;
+  font-size: 12.5px; font-weight: 600;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-primary:hover { opacity: .88; }
+.btn-secondary { background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-2); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ============================================
+   ERGONOMIE MOBILE — zones tactiles, espacement
+============================================ */
+@media (max-width: 768px) {
+  button, .nav-btn, .filter-group select, #search,
+  .login-form input, .login-form button,
+  #syncConfigInput, #syncCodeInput, .btn-primary, .btn-secondary {
+    min-height: 44px;
+  }
+  .btn-logout { width: 40px; height: 40px; }
+  .sidebar-header { padding: 18px 16px 14px; }
+  .topbar { gap: 10px; }
+  .search-wrap { max-width: none; }
+  .modal-card { padding: 20px 18px; }
+  .modal-actions { flex-direction: column; }
+  .btn-primary, .btn-secondary { width: 100%; }
+  .card { padding: 16px; }
+  .card-action { flex-direction: column; align-items: stretch; }
+  .btn-open { justify-content: center; }
+}

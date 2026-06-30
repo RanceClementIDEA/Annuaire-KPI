@@ -2,12 +2,22 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Annuaire KPI — IDEA</title>
+
+  <!-- PWA : installation sur téléphone -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#06202E">
+  <link rel="icon" type="image/png" href="logo-idea.png">
+  <link rel="apple-touch-icon" href="logo-idea.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Annuaire KPI">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -16,7 +26,7 @@
   <div class="login-card">
     <div class="login-brand">
       <div class="login-logo-wrap">
-        <img src="assets/logo-idea.png" alt="IDEA" class="login-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+        <img src="logo-idea.png" alt="IDEA" class="login-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
         <div class="login-logo-fallback" style="display:none">IDEA</div>
       </div>
       <p class="login-tagline">Plateforme de pilotage KPI</p>
@@ -40,10 +50,13 @@
 <!-- APP SHELL -->
 <div id="appShell" style="display:none">
 
+  <!-- Fond sombre mobile : ferme la sidebar au clic -->
+  <div id="sidebarOverlay"></div>
+
   <!-- SIDEBAR -->
   <aside id="sidebar">
     <div class="sidebar-header">
-      <img src="assets/logo-idea.png" alt="IDEA" class="sidebar-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
+      <img src="logo-idea.png" alt="IDEA" class="sidebar-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
       <div class="sidebar-logo-fallback" style="display:none">IDEA</div>
       <span class="sidebar-title">Annuaire KPI</span>
     </div>
@@ -54,6 +67,9 @@
         <span class="user-name" id="userInfo">—</span>
         <span class="user-role">Utilisateur</span>
       </div>
+      <button id="syncSettingsBtn" title="Synchronisation cloud" class="btn-logout">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
       <button id="logoutBtn" title="Déconnexion" class="btn-logout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
       </button>
@@ -113,6 +129,10 @@
         Rafraîchir
       </button>
     </div>
+
+    <div class="sidebar-brand-footer">
+      <img src="footer-idea.png" alt="IDEA — Une nouvelle idée de la logistique" onerror="this.style.display='none'">
+    </div>
   </aside>
 
   <!-- MAIN -->
@@ -145,12 +165,52 @@
   </div>
 </div>
 
+<!-- MODALE SYNCHRONISATION CLOUD -->
+<div id="syncModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>☁️ Synchronisation cloud</h3>
+      <button id="closeSyncModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Synchronise automatiquement votre annuaire KPI et vos favoris entre tous vos appareils,
+      via votre propre projet Firebase gratuit.
+    </p>
+    <p id="syncStatus" class="sync-status">⚪ Synchronisation non configurée</p>
+
+    <label class="modal-label">Configuration Firebase (JSON)</label>
+    <textarea id="syncConfigInput" rows="5" placeholder='{
+  "apiKey": "...",
+  "authDomain": "...",
+  "projectId": "...",
+  ...
+}'></textarea>
+
+    <label class="modal-label">Code de synchronisation</label>
+    <input type="text" id="syncCodeInput" placeholder="Identique sur tous vos appareils, ex : idea-kpi-2026">
+
+    <label class="modal-checkbox">
+      <input type="checkbox" id="syncEnabledToggle">
+      Synchronisation automatique active
+    </label>
+
+    <div class="modal-actions">
+      <button id="connectSyncBtn" class="btn-primary">☁️ Connecter</button>
+      <button id="pushSyncBtn" class="btn-secondary">⬆️ Envoyer</button>
+      <button id="pullSyncBtn" class="btn-secondary">⬇️ Récupérer</button>
+      <button id="disconnectSyncBtn" class="btn-secondary">🔌 Désactiver</button>
+    </div>
+  </div>
+</div>
+
 <!-- INPUT FILE CACHÉ -->
 <input type="file" id="fileInput" accept=".xlsx" style="display:none">
 
 <!-- TOAST -->
 <div id="toast" class="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -29,6 +29,10 @@ const searchCount   = document.getElementById("searchCount");
 const topbarBadge   = document.getElementById("topbarBadge");
 const emptyState    = document.getElementById("emptyState");
 const toastEl       = document.getElementById("toast");
+const sidebarOverlay   = document.getElementById("sidebarOverlay");
+const syncSettingsBtn  = document.getElementById("syncSettingsBtn");
+const syncModal        = document.getElementById("syncModal");
+const closeSyncModalBtn= document.getElementById("closeSyncModalBtn");
 
 /* ============================================
    TOAST
@@ -53,8 +57,14 @@ function login(user) {
   userInfo.textContent = user;
   userAvatar.textContent = user.charAt(0).toUpperCase();
 
+  // Sur mobile, la sidebar démarre repliée pour laisser la place au contenu
+  if (window.innerWidth <= 768) {
+    document.getElementById("sidebar").classList.add("collapsed");
+  }
+
   loadFavorites();
   loadSavedFile();
+  connectSync(false);
 }
 
 loginBtn.addEventListener("click", () => {
@@ -93,14 +103,27 @@ function switchView(view, btn) {
   document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
   if (btn) btn.classList.add("active");
   filterData();
+  if (window.innerWidth <= 768) {
+    document.getElementById("sidebar").classList.add("collapsed");
+    sidebarOverlay.classList.remove("show");
+  }
 }
 
 /* ============================================
    SIDEBAR TOGGLE
 ============================================ */
 function toggleSidebar() {
-  document.getElementById("sidebar").classList.toggle("collapsed");
+  const sb = document.getElementById("sidebar");
+  sb.classList.toggle("collapsed");
+  if (window.innerWidth <= 768) {
+    sidebarOverlay.classList.toggle("show", !sb.classList.contains("collapsed"));
+  }
 }
+
+sidebarOverlay?.addEventListener("click", () => {
+  document.getElementById("sidebar").classList.add("collapsed");
+  sidebarOverlay.classList.remove("show");
+});
 
 /* ============================================
    FAVORIS
@@ -111,6 +134,7 @@ function loadFavorites() {
 
 function saveFavorites() {
   localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
+  scheduleAutoSync();
 }
 
 function toggleFavorite(id) {
@@ -146,9 +170,23 @@ fileInput.addEventListener("change", e => {
 
 function loadSavedFile() {
   const stored = localStorage.getItem("kpiFile");
-  if (!stored) { fileInput.click(); return; }
-  const bytes = new Uint8Array(JSON.parse(stored));
-  loadWorkbook(bytes);
+  if (stored) {
+    const bytes = new Uint8Array(JSON.parse(stored));
+    loadWorkbook(bytes);
+    return;
+  }
+  // Pas de fichier Excel local : on utilise les données déjà synchronisées depuis le cloud, si disponibles
+  const cached = localStorage.getItem("kpiDataCache");
+  if (cached) {
+    try {
+      data = JSON.parse(cached);
+      initFilters();
+      updateCounts();
+      filterData();
+      return;
+    } catch { /* cache invalide, on retombe sur l'import */ }
+  }
+  fileInput.click();
 }
 
 function loadWorkbook(buffer) {
@@ -208,6 +246,10 @@ function transformData(sheet, rawData) {
   initFilters();
   updateCounts();
   filterData();
+
+  // Cache la donnée structurée (permet à un autre appareil de l'avoir sans ré-importer)
+  localStorage.setItem("kpiDataCache", JSON.stringify(data));
+  scheduleAutoSync();
 }
 
 /* ============================================
@@ -375,3 +417,218 @@ processFilter.addEventListener("change", filterData);
 freqFilter.addEventListener("change", filterData);
 ritualFilter.addEventListener("change", filterData);
 refreshBtn.addEventListener("click", () => { loadSavedFile(); showToast("🔄 Données rafraîchies"); });
+
+/* ============================================
+   SYNCHRONISATION CLOUD (Firebase Firestore)
+============================================ */
+const LS_SYNC = "kpiSyncConfig";
+const getSyncConfig = () => { try { return JSON.parse(localStorage.getItem(LS_SYNC)); } catch { return null; } };
+const setSyncConfig = cfg => cfg ? localStorage.setItem(LS_SYNC, JSON.stringify(cfg)) : localStorage.removeItem(LS_SYNC);
+
+let fbApp = null, fbDb = null, fbUnsub = null;
+let syncDebounceHandle = null;
+let lastSyncPushAt = 0;
+let lastAppliedSyncAt = 0;
+let connectedSyncCode = null;
+let applyingRemoteSync = false;
+
+function setSyncStatusUI(state, detail) {
+  const el = document.getElementById("syncStatus");
+  if (!el) return;
+  const map = {
+    off:       { text: "⚪ Synchronisation non configurée", cls: "" },
+    connected: { text: "🟢 Connecté — synchronisation active", cls: "connected" },
+    syncing:   { text: "🔄 Synchronisation…", cls: "syncing" },
+    error:     { text: "🔴 Erreur : " + (detail || "voir console"), cls: "error" }
+  };
+  const s = map[state] || map.off;
+  el.textContent = s.text;
+  el.className = "sync-status " + s.cls;
+}
+
+function syncDocRef(code) {
+  return fbDb.collection("kpi_sync").doc(code);
+}
+
+function buildSyncPayload() {
+  const favKey = "kpiFav_" + currentUser;
+  const favoritesByUser = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
+  favoritesByUser[currentUser] = favorites;
+  localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
+  return { kpiData: data, favoritesByUser, updatedAt: Date.now() };
+}
+
+function scheduleAutoSync() {
+  const cfg = getSyncConfig();
+  if (!cfg || !cfg.enabled || !fbDb || applyingRemoteSync) return;
+  clearTimeout(syncDebounceHandle);
+  syncDebounceHandle = setTimeout(() => pushToCloud(false), 1500);
+}
+
+async function pushToCloud(manual) {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb) return;
+  setSyncStatusUI("syncing");
+  try {
+    const payload = buildSyncPayload();
+    lastSyncPushAt = payload.updatedAt;
+    await syncDocRef(cfg.code).set(payload);
+    setSyncStatusUI("connected");
+    if (manual) showToast("Synchronisé ☁️ — données envoyées", 2500);
+  } catch (err) {
+    setSyncStatusUI("error", err.message);
+    if (manual) showToast("❌ Erreur de synchronisation", 3000);
+  }
+}
+
+function applyRemoteData(payload, fromSync) {
+  applyingRemoteSync = true;
+  if (Array.isArray(payload.kpiData)) {
+    data = payload.kpiData;
+    localStorage.setItem("kpiDataCache", JSON.stringify(data));
+  }
+  if (payload.favoritesByUser) {
+    localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
+    if (payload.favoritesByUser[currentUser]) {
+      favorites = payload.favoritesByUser[currentUser];
+      saveFavoritesLocalOnly();
+    }
+  }
+  applyingRemoteSync = false;
+  initFilters();
+  updateCounts();
+  filterData();
+  if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
+}
+
+// Sauvegarde locale des favoris SANS redéclencher une synchronisation (évite les boucles)
+function saveFavoritesLocalOnly() {
+  localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
+}
+
+async function pullFromCloud(manual) {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb) return;
+  setSyncStatusUI("syncing");
+  try {
+    const snap = await syncDocRef(cfg.code).get();
+    if (!snap.exists) {
+      setSyncStatusUI("connected");
+      if (manual) showToast("Aucune donnée cloud pour ce code", 2800);
+      return;
+    }
+    applyRemoteData(snap.data(), false);
+    setSyncStatusUI("connected");
+  } catch (err) {
+    setSyncStatusUI("error", err.message);
+    if (manual) showToast("❌ Erreur de synchronisation", 3000);
+  }
+}
+
+function listenForRemoteChanges(code) {
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  fbUnsub = syncDocRef(code).onSnapshot(
+    snap => {
+      if (!snap.exists) return;
+      const payload = snap.data();
+      if (!payload || !payload.updatedAt) return;
+      if (payload.updatedAt === lastSyncPushAt || payload.updatedAt === lastAppliedSyncAt) return;
+      lastAppliedSyncAt = payload.updatedAt;
+      applyRemoteData(payload, true);
+      showToast("☁️ Données mises à jour depuis un autre appareil", 2800);
+    },
+    err => setSyncStatusUI("error", err.message)
+  );
+}
+
+function connectSync(manual) {
+  const cfg = getSyncConfig();
+  if (!cfg || !cfg.config || !cfg.code) { setSyncStatusUI("off"); return; }
+  if (typeof firebase === "undefined") {
+    setSyncStatusUI("error", "Librairie Firebase non chargée (vérifiez votre connexion).");
+    return;
+  }
+  if (fbDb && fbUnsub && connectedSyncCode === cfg.code) {
+    setSyncStatusUI("connected");
+    if (manual) showToast("Déjà connecté ☁️", 2200);
+    return;
+  }
+  try {
+    if (!fbApp) {
+      fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg.config);
+      fbDb  = firebase.firestore();
+    }
+    listenForRemoteChanges(cfg.code);
+    connectedSyncCode = cfg.code;
+    setSyncStatusUI("connected");
+    if (manual) showToast("Connecté ☁️ — code : " + cfg.code, 2800);
+  } catch (err) {
+    setSyncStatusUI("error", err.message);
+    if (manual) showToast("❌ Échec de connexion", 3000);
+  }
+}
+
+function disconnectSync() {
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  connectedSyncCode = null;
+  setSyncConfig(null);
+  setSyncStatusUI("off");
+  showToast("Synchronisation désactivée", 2200);
+}
+
+function initSyncModal() {
+  const cfg = getSyncConfig();
+  document.getElementById("syncConfigInput").value = cfg?.config ? JSON.stringify(cfg.config, null, 2) : "";
+  document.getElementById("syncCodeInput").value   = cfg?.code || "";
+  document.getElementById("syncEnabledToggle").checked = !!cfg?.enabled;
+  if (cfg && cfg.config && cfg.code) connectSync(false); else setSyncStatusUI("off");
+}
+
+syncSettingsBtn?.addEventListener("click", () => {
+  initSyncModal();
+  syncModal.classList.remove("hidden");
+});
+closeSyncModalBtn?.addEventListener("click", () => syncModal.classList.add("hidden"));
+syncModal?.addEventListener("click", e => { if (e.target === syncModal) syncModal.classList.add("hidden"); });
+
+document.getElementById("connectSyncBtn")?.addEventListener("click", () => {
+  let parsedConfig;
+  try {
+    parsedConfig = JSON.parse(document.getElementById("syncConfigInput").value.trim());
+  } catch {
+    return showToast("❌ Configuration invalide (JSON)", 3000);
+  }
+  const code = document.getElementById("syncCodeInput").value.trim();
+  if (!code) return showToast("Choisissez un code de synchronisation", 2800);
+
+  fbApp = null; fbDb = null; connectedSyncCode = null;
+  setSyncConfig({ config: parsedConfig, code, enabled: true });
+  connectSync(true);
+});
+
+document.getElementById("syncEnabledToggle")?.addEventListener("change", function () {
+  const c = getSyncConfig();
+  if (!c) return;
+  c.enabled = this.checked;
+  setSyncConfig(c);
+  showToast(c.enabled ? "Synchronisation activée" : "Synchronisation en pause", 2200);
+});
+
+document.getElementById("pushSyncBtn")?.addEventListener("click", () => pushToCloud(true));
+document.getElementById("pullSyncBtn")?.addEventListener("click", () => {
+  if (confirm("Ceci va remplacer vos données locales par celles du cloud. Continuer ?")) pullFromCloud(true);
+});
+document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
+  if (confirm("Désactiver la synchronisation cloud sur cet appareil ?")) disconnectSync();
+});
+
+/* ============================================
+   PWA : service worker
+============================================ */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js")
+      .then(() => console.log("✅ Service worker enregistré"))
+      .catch(err => console.warn("Service worker non enregistré :", err));
+  });
+}
