@@ -64,7 +64,8 @@ function login(user) {
 
   loadFavorites();
   loadSavedFile();
-  connectSync(false);
+
+  try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
 }
 
 loginBtn.addEventListener("click", () => {
@@ -76,11 +77,6 @@ loginBtn.addEventListener("click", () => {
 usernameInput.addEventListener("keydown", e => {
   if (e.key === "Enter") loginBtn.click();
 });
-
-// Auto-login si session mémorisée
-if (currentUser) {
-  login(currentUser);
-}
 
 logoutBtn.addEventListener("click", () => {
   localStorage.removeItem("kpiUser");
@@ -542,18 +538,18 @@ function listenForRemoteChanges(code) {
 }
 
 function connectSync(manual) {
-  const cfg = getSyncConfig();
-  if (!cfg || !cfg.config || !cfg.code) { setSyncStatusUI("off"); return; }
-  if (typeof firebase === "undefined") {
-    setSyncStatusUI("error", "Librairie Firebase non chargée (vérifiez votre connexion).");
-    return;
-  }
-  if (fbDb && fbUnsub && connectedSyncCode === cfg.code) {
-    setSyncStatusUI("connected");
-    if (manual) showToast("Déjà connecté ☁️", 2200);
-    return;
-  }
   try {
+    const cfg = getSyncConfig();
+    if (!cfg || !cfg.config || !cfg.code) { setSyncStatusUI("off"); return; }
+    if (typeof firebase === "undefined") {
+      setSyncStatusUI("error", "Librairie Firebase non chargée (vérifiez votre connexion).");
+      return;
+    }
+    if (fbDb && fbUnsub && connectedSyncCode === cfg.code) {
+      setSyncStatusUI("connected");
+      if (manual) showToast("Déjà connecté ☁️", 2200);
+      return;
+    }
     if (!fbApp) {
       fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg.config);
       fbDb  = firebase.firestore();
@@ -563,6 +559,7 @@ function connectSync(manual) {
     setSyncStatusUI("connected");
     if (manual) showToast("Connecté ☁️ — code : " + cfg.code, 2800);
   } catch (err) {
+    console.error("connectSync error:", err);
     setSyncStatusUI("error", err.message);
     if (manual) showToast("❌ Échec de connexion", 3000);
   }
@@ -631,4 +628,20 @@ if ("serviceWorker" in navigator) {
       .then(() => console.log("✅ Service worker enregistré"))
       .catch(err => console.warn("Service worker non enregistré :", err));
   });
+}
+
+/* ============================================
+   AUTO-LOGIN (session mémorisée)
+   Placé tout à la fin, après tous les boutons : une erreur ici
+   (réseau, sync mal configurée…) ne peut plus jamais bloquer l'UI.
+============================================ */
+if (currentUser) {
+  try {
+    login(currentUser);
+  } catch (err) {
+    console.error("Erreur lors de la reconnexion automatique :", err);
+    showToast("⚠️ Erreur au chargement — réessayez de vous connecter");
+    loginScreen.style.display = "flex";
+    appShell.style.display = "none";
+  }
 }
