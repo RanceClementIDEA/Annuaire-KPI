@@ -1,9 +1,10 @@
 /* ============================================
    ÉTAT GLOBAL
 ============================================ */
-let data = [];          // Liste affichée = excelData + manualEntries
-let excelData = [];     // KPIs issus du fichier Excel
+let data = [];          // Liste affichée = excelData (+ surcharges) + manualEntries
+let excelData = [];     // KPIs issus du fichier Excel (version d'origine, jamais modifiée)
 let manualEntries = []; // KPIs créés directement dans l'application
+let overrides = {};     // Modifications apportées aux KPIs Excel, par id
 let currentUser = localStorage.getItem("kpiUser");
 let favorites = [];
 let currentView = "all"; // "all" | "fav"
@@ -74,6 +75,7 @@ function login(user) {
 
   loadFavorites();
   loadManualEntries();
+  loadOverrides();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -94,6 +96,7 @@ logoutBtn.addEventListener("click", () => {
   data = [];
   excelData = [];
   manualEntries = [];
+  overrides = {};
   favorites = [];
   currentView = "all";
   container.innerHTML = "";
@@ -265,12 +268,16 @@ function transformData(sheet, rawData) {
    FUSION EXCEL + FICHES MANUELLES
 ============================================ */
 function rebuildData(sync) {
-  data = [...excelData, ...manualEntries];
+  // Applique les modifications utilisateur par-dessus les fiches Excel d'origine
+  const excelWithEdits = excelData.map(d =>
+    overrides[d.id] ? { ...d, ...overrides[d.id], edited: true } : d
+  );
+  data = [...excelWithEdits, ...manualEntries];
   initFilters();
   updateCounts();
   filterData();
-  // Cache la donnée structurée (permet à un autre appareil de l'avoir sans ré-importer)
-  localStorage.setItem("kpiDataCache", JSON.stringify(data));
+  // Cache la donnée d'origine (les surcharges sont stockées à part et réappliquées au chargement)
+  localStorage.setItem("kpiDataCache", JSON.stringify([...excelData, ...manualEntries]));
   if (sync) scheduleAutoSync();
 }
 
@@ -286,6 +293,30 @@ function loadManualEntries() {
 function saveManualEntries(sync = true) {
   localStorage.setItem("kpiManualEntries", JSON.stringify(manualEntries));
   if (sync) scheduleAutoSync();
+}
+
+/* ============================================
+   SURCHARGES : modifications des fiches Excel
+   (conservées même après un ré-import du fichier)
+============================================ */
+function loadOverrides() {
+  try {
+    overrides = JSON.parse(localStorage.getItem("kpiOverrides")) || {};
+  } catch { overrides = {}; }
+}
+
+function saveOverrides(sync = true) {
+  localStorage.setItem("kpiOverrides", JSON.stringify(overrides));
+  if (sync) scheduleAutoSync();
+}
+
+function restoreOriginalKpi(id) {
+  const original = excelData.find(k => k.id === id);
+  if (!confirm(`Restaurer la version d'origine de « ${original ? original.title : id} » ?`)) return;
+  delete overrides[id];
+  saveOverrides();
+  rebuildData(true);
+  showToast("↩ Version d'origine restaurée");
 }
 
 function fillDatalists() {
@@ -307,10 +338,24 @@ function fillDatalists() {
 
 function openKpiModal(id = null) {
   editingKpiId = id;
-  const kpi = id ? manualEntries.find(k => k.id === id) : null;
+  const kpi = id ? data.find(k => k.id === id) : null;
+  const isManual = !!(kpi && kpi.manual);
+  const isEdited = !!(kpi && !kpi.manual && overrides[id]);
 
-  document.getElementById("kpiModalTitle").textContent = kpi ? "✏️ Modifier le KPI" : "➕ Nouveau KPI";
-  document.getElementById("deleteKpiBtn").style.display = kpi ? "" : "none";
+  document.getElementById("kpiModalTitle").textContent =
+    kpi ? (isManual ? "✏️ Modifier le KPI" : "✏️ Modifier le signet") : "➕ Nouveau KPI";
+
+  // Pied de modale : Supprimer (fiche manuelle) ou Restaurer (fiche Excel modifiée)
+  const delBtn = document.getElementById("deleteKpiBtn");
+  if (isManual) {
+    delBtn.style.display = "";
+    delBtn.textContent = "🗑 Supprimer";
+  } else if (isEdited) {
+    delBtn.style.display = "";
+    delBtn.textContent = "↩ Restaurer l'original";
+  } else {
+    delBtn.style.display = "none";
+  }
 
   document.getElementById("kpiTitleInput").value   = kpi?.title   || "";
   document.getElementById("kpiTypeInput").value    = kpi?.type    || "";
@@ -349,9 +394,7 @@ function saveKpiForm() {
     return;
   }
 
-  const entry = {
-    id: editingKpiId || ("manual_" + Date.now()),
-    manual: true,
+  const fields = {
     title,
     type:    document.getElementById("kpiTypeInput").value.trim(),
     process: document.getElementById("kpiProcessInput").value.trim(),
@@ -364,16 +407,26 @@ function saveKpiForm() {
     global:      normalizeUrl(document.getElementById("kpiLinkGlobal").value)
   };
 
-  const idx = manualEntries.findIndex(k => k.id === entry.id);
-  if (idx >= 0) {
-    manualEntries[idx] = entry;
-    showToast("✅ KPI modifié");
+  const isExcelKpi = editingKpiId && excelData.some(k => k.id === editingKpiId);
+
+  if (isExcelKpi) {
+    // Fiche Excel : on stocke la modification en surcharge (l'original reste intact)
+    overrides[editingKpiId] = fields;
+    saveOverrides();
+    showToast("✅ Signet modifié");
   } else {
-    manualEntries.push(entry);
-    showToast("✅ KPI créé");
+    const entry = { id: editingKpiId || ("manual_" + Date.now()), manual: true, ...fields };
+    const idx = manualEntries.findIndex(k => k.id === entry.id);
+    if (idx >= 0) {
+      manualEntries[idx] = entry;
+      showToast("✅ KPI modifié");
+    } else {
+      manualEntries.push(entry);
+      showToast("✅ KPI créé");
+    }
+    saveManualEntries();
   }
 
-  saveManualEntries();
   rebuildData(true);
   closeKpiModal();
 }
@@ -399,7 +452,11 @@ document.getElementById("closeKpiModalBtn")?.addEventListener("click", closeKpiM
 document.getElementById("cancelKpiBtn")?.addEventListener("click", closeKpiModal);
 document.getElementById("saveKpiBtn")?.addEventListener("click", saveKpiForm);
 document.getElementById("deleteKpiBtn")?.addEventListener("click", () => {
-  if (editingKpiId) { const id = editingKpiId; closeKpiModal(); deleteManualKpi(id); }
+  if (!editingKpiId) return;
+  const id = editingKpiId;
+  closeKpiModal();
+  if (manualEntries.some(k => k.id === id)) deleteManualKpi(id);
+  else restoreOriginalKpi(id);
 });
 document.getElementById("kpiModal")?.addEventListener("click", e => {
   if (e.target === document.getElementById("kpiModal")) closeKpiModal();
@@ -533,10 +590,10 @@ function render(list) {
       <div class="card-header">
         <div class="card-title">${esc(kpi.title)}</div>
         <div class="card-tools">
-          ${kpi.manual ? `
           <button class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
+          ${kpi.manual ? `
           <button class="btn-tool btn-tool-danger" onclick="deleteManualKpi('${safeId}')" title="Supprimer">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>` : ""}
@@ -546,6 +603,7 @@ function render(list) {
 
       <div class="card-tags">
         ${kpi.manual  ? `<span class="tag tag-manual">✎ Manuel</span>` : ""}
+        ${kpi.edited  ? `<span class="tag tag-edited">✎ Modifié</span>` : ""}
         ${kpi.type    ? `<span class="tag tag-type">${esc(kpi.type)}</span>` : ""}
         ${kpi.process ? `<span class="tag tag-process">${esc(kpi.process)}</span>` : ""}
         ${kpi.freq    ? `<span class="tag tag-freq">${esc(kpi.freq)}</span>` : ""}
@@ -615,11 +673,17 @@ function syncDocRef(code) {
 }
 
 function buildSyncPayload() {
-  const favKey = "kpiFav_" + currentUser;
   const favoritesByUser = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
   favoritesByUser[currentUser] = favorites;
   localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
-  return { kpiData: data, favoritesByUser, updatedAt: Date.now() };
+  // On envoie les fiches d'origine + les surcharges séparément,
+  // pour que "Restaurer l'original" fonctionne sur tous les appareils
+  return {
+    kpiData: [...excelData, ...manualEntries],
+    kpiOverrides: overrides,
+    favoritesByUser,
+    updatedAt: Date.now()
+  };
 }
 
 function scheduleAutoSync() {
@@ -651,6 +715,10 @@ function applyRemoteData(payload, fromSync) {
     excelData     = payload.kpiData.filter(d => !d.manual);
     manualEntries = payload.kpiData.filter(d => d.manual);
     saveManualEntries(false);
+  }
+  if (payload.kpiOverrides && typeof payload.kpiOverrides === "object") {
+    overrides = payload.kpiOverrides;
+    saveOverrides(false);
   }
   if (payload.favoritesByUser) {
     localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));

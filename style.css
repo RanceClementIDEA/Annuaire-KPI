@@ -683,3 +683,6 @@ button { cursor: pointer; }
   .btn-tool { padding: 8px; }
   .fab-add { bottom: 18px; right: 18px; }
 }
+
+/* Badge "Modifié" sur les fiches Excel éditées dans l'app */
+.tag-edited { background: #FFE4E6; color: #BE123C; }
