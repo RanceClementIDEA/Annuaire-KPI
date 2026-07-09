@@ -1,10 +1,20 @@
 /* ============================================
    ÉTAT GLOBAL
 ============================================ */
-let data = [];
+let data = [];          // Liste affichée = excelData + manualEntries
+let excelData = [];     // KPIs issus du fichier Excel
+let manualEntries = []; // KPIs créés directement dans l'application
 let currentUser = localStorage.getItem("kpiUser");
 let favorites = [];
 let currentView = "all"; // "all" | "fav"
+let editingKpiId = null; // id du KPI en cours d'édition dans la modale
+
+// Échappe le HTML pour un affichage sûr dans les cartes
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
 
 /* ============================================
    ÉLÉMENTS DOM
@@ -63,6 +73,7 @@ function login(user) {
   }
 
   loadFavorites();
+  loadManualEntries();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -81,6 +92,8 @@ usernameInput.addEventListener("keydown", e => {
 logoutBtn.addEventListener("click", () => {
   localStorage.removeItem("kpiUser");
   data = [];
+  excelData = [];
+  manualEntries = [];
   favorites = [];
   currentView = "all";
   container.innerHTML = "";
@@ -175,13 +188,19 @@ function loadSavedFile() {
   const cached = localStorage.getItem("kpiDataCache");
   if (cached) {
     try {
-      data = JSON.parse(cached);
-      initFilters();
-      updateCounts();
-      filterData();
+      const parsed = JSON.parse(cached);
+      excelData = parsed.filter(d => !d.manual);
+      // Les entrées manuelles du cache complètent celles déjà connues localement
+      const cachedManual = parsed.filter(d => d.manual);
+      const known = new Set(manualEntries.map(m => m.id));
+      cachedManual.forEach(m => { if (!known.has(m.id)) manualEntries.push(m); });
+      saveManualEntries(false);
+      rebuildData(false);
       return;
     } catch { /* cache invalide, on retombe sur l'import */ }
   }
+  // Pas d'Excel ni de cache : on affiche au moins les fiches créées à la main
+  if (manualEntries.length) { rebuildData(false); return; }
   fileInput.click();
 }
 
@@ -220,7 +239,7 @@ function extractLinksByColumn(sheet, headers, rowIndex) {
 ============================================ */
 function transformData(sheet, rawData) {
   const headers = rawData[0];
-  data = rawData.slice(1)
+  excelData = rawData.slice(1)
     .filter(row => row.some(cell => cell !== undefined && cell !== ""))
     .map((row, idx) => {
       const obj = {};
@@ -239,14 +258,152 @@ function transformData(sheet, rawData) {
       };
     });
 
+  rebuildData(true);
+}
+
+/* ============================================
+   FUSION EXCEL + FICHES MANUELLES
+============================================ */
+function rebuildData(sync) {
+  data = [...excelData, ...manualEntries];
   initFilters();
   updateCounts();
   filterData();
-
   // Cache la donnée structurée (permet à un autre appareil de l'avoir sans ré-importer)
   localStorage.setItem("kpiDataCache", JSON.stringify(data));
-  scheduleAutoSync();
+  if (sync) scheduleAutoSync();
 }
+
+/* ============================================
+   FICHES MANUELLES (créées dans l'application)
+============================================ */
+function loadManualEntries() {
+  try {
+    manualEntries = JSON.parse(localStorage.getItem("kpiManualEntries")) || [];
+  } catch { manualEntries = []; }
+}
+
+function saveManualEntries(sync = true) {
+  localStorage.setItem("kpiManualEntries", JSON.stringify(manualEntries));
+  if (sync) scheduleAutoSync();
+}
+
+function fillDatalists() {
+  const fill = (id, values) => {
+    const dl = document.getElementById(id);
+    if (!dl) return;
+    dl.innerHTML = "";
+    [...new Set(values.filter(Boolean))].sort().forEach(v => {
+      const o = document.createElement("option");
+      o.value = v;
+      dl.appendChild(o);
+    });
+  };
+  fill("typeList",    data.map(d => d.type));
+  fill("processList", data.map(d => d.process));
+  fill("freqList",    data.map(d => d.freq));
+  fill("ritualList",  data.map(d => d.ritual));
+}
+
+function openKpiModal(id = null) {
+  editingKpiId = id;
+  const kpi = id ? manualEntries.find(k => k.id === id) : null;
+
+  document.getElementById("kpiModalTitle").textContent = kpi ? "✏️ Modifier le KPI" : "➕ Nouveau KPI";
+  document.getElementById("deleteKpiBtn").style.display = kpi ? "" : "none";
+
+  document.getElementById("kpiTitleInput").value   = kpi?.title   || "";
+  document.getElementById("kpiTypeInput").value    = kpi?.type    || "";
+  document.getElementById("kpiProcessInput").value = kpi?.process || "";
+  document.getElementById("kpiFreqInput").value    = kpi?.freq    || "";
+  document.getElementById("kpiRitualInput").value  = kpi?.ritual  || "";
+  document.getElementById("kpiDescInput").value    = kpi?.desc    || "";
+  document.getElementById("kpiLinkLog").value      = kpi?.logistiport || "";
+  document.getElementById("kpiLinkArmement").value = kpi?.armement    || "";
+  document.getElementById("kpiLinkArmateur").value = kpi?.armateur    || "";
+  document.getElementById("kpiLinkGlobal").value   = kpi?.global      || "";
+
+  fillDatalists();
+  document.getElementById("kpiModal").classList.remove("hidden");
+  document.getElementById("kpiTitleInput").focus();
+}
+
+function closeKpiModal() {
+  editingKpiId = null;
+  document.getElementById("kpiModal").classList.add("hidden");
+}
+
+// Normalise une URL saisie (ajoute https:// si absent)
+function normalizeUrl(v) {
+  v = v.trim();
+  if (!v) return "";
+  if (!/^https?:\/\//i.test(v)) v = "https://" + v;
+  return v;
+}
+
+function saveKpiForm() {
+  const title = document.getElementById("kpiTitleInput").value.trim();
+  if (!title) {
+    showToast("⚠️ L'intitulé est obligatoire", 2600);
+    document.getElementById("kpiTitleInput").focus();
+    return;
+  }
+
+  const entry = {
+    id: editingKpiId || ("manual_" + Date.now()),
+    manual: true,
+    title,
+    type:    document.getElementById("kpiTypeInput").value.trim(),
+    process: document.getElementById("kpiProcessInput").value.trim(),
+    freq:    document.getElementById("kpiFreqInput").value.trim(),
+    ritual:  document.getElementById("kpiRitualInput").value.trim(),
+    desc:    document.getElementById("kpiDescInput").value.trim(),
+    logistiport: normalizeUrl(document.getElementById("kpiLinkLog").value),
+    armement:    normalizeUrl(document.getElementById("kpiLinkArmement").value),
+    armateur:    normalizeUrl(document.getElementById("kpiLinkArmateur").value),
+    global:      normalizeUrl(document.getElementById("kpiLinkGlobal").value)
+  };
+
+  const idx = manualEntries.findIndex(k => k.id === entry.id);
+  if (idx >= 0) {
+    manualEntries[idx] = entry;
+    showToast("✅ KPI modifié");
+  } else {
+    manualEntries.push(entry);
+    showToast("✅ KPI créé");
+  }
+
+  saveManualEntries();
+  rebuildData(true);
+  closeKpiModal();
+}
+
+function editKPI(id) { openKpiModal(id); }
+
+function deleteManualKpi(id) {
+  const kpi = manualEntries.find(k => k.id === id);
+  if (!kpi) return;
+  if (!confirm(`Supprimer le KPI « ${kpi.title} » ?`)) return;
+  manualEntries = manualEntries.filter(k => k.id !== id);
+  favorites = favorites.filter(f => f !== id);
+  saveFavoritesLocalOnly();
+  saveManualEntries();
+  rebuildData(true);
+  showToast("🗑 KPI supprimé");
+}
+
+// Boutons d'ouverture / actions de la modale
+document.getElementById("addKpiBtn")?.addEventListener("click", () => openKpiModal());
+document.getElementById("fabAddBtn")?.addEventListener("click", () => openKpiModal());
+document.getElementById("closeKpiModalBtn")?.addEventListener("click", closeKpiModal);
+document.getElementById("cancelKpiBtn")?.addEventListener("click", closeKpiModal);
+document.getElementById("saveKpiBtn")?.addEventListener("click", saveKpiForm);
+document.getElementById("deleteKpiBtn")?.addEventListener("click", () => {
+  if (editingKpiId) { const id = editingKpiId; closeKpiModal(); deleteManualKpi(id); }
+});
+document.getElementById("kpiModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("kpiModal")) closeKpiModal();
+});
 
 /* ============================================
    FILTRES
@@ -351,6 +508,7 @@ function render(list) {
   sorted.forEach((kpi, i) => {
     const isFav  = isFavorite(kpi.id);
     const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
+    const safeId = esc(kpi.id).replace(/'/g, "\\'");
 
     const siteBadges = [
       kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
@@ -360,10 +518,10 @@ function render(list) {
     ].join("");
 
     let options = "";
-    if (kpi.logistiport) options += `<option value="${kpi.logistiport}">Logistiport</option>`;
-    if (kpi.armement)    options += `<option value="${kpi.armement}">Armement</option>`;
-    if (kpi.armateur)    options += `<option value="${kpi.armateur}">Armateur</option>`;
-    if (kpi.global)      options += `<option value="${kpi.global}">Global</option>`;
+    if (kpi.logistiport) options += `<option value="${esc(kpi.logistiport)}">Logistiport</option>`;
+    if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">Armement</option>`;
+    if (kpi.armateur)    options += `<option value="${esc(kpi.armateur)}">Armateur</option>`;
+    if (kpi.global)      options += `<option value="${esc(kpi.global)}">Global</option>`;
 
     const card = document.createElement("div");
     card.className = "card" + (isFav ? " favorite" : "");
@@ -373,20 +531,30 @@ function render(list) {
       ${isFav ? `<div class="fav-ribbon">⭐ Favori</div>` : ""}
 
       <div class="card-header">
-        <div class="card-title">${kpi.title}</div>
-        <button class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${kpi.id}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
+        <div class="card-title">${esc(kpi.title)}</div>
+        <div class="card-tools">
+          ${kpi.manual ? `
+          <button class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="btn-tool btn-tool-danger" onclick="deleteManualKpi('${safeId}')" title="Supprimer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>` : ""}
+          <button class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
+        </div>
       </div>
 
       <div class="card-tags">
-        ${kpi.type    ? `<span class="tag tag-type">${kpi.type}</span>` : ""}
-        ${kpi.process ? `<span class="tag tag-process">${kpi.process}</span>` : ""}
-        ${kpi.freq    ? `<span class="tag tag-freq">${kpi.freq}</span>` : ""}
-        ${kpi.ritual  ? `<span class="tag tag-ritual">${kpi.ritual}</span>` : ""}
+        ${kpi.manual  ? `<span class="tag tag-manual">✎ Manuel</span>` : ""}
+        ${kpi.type    ? `<span class="tag tag-type">${esc(kpi.type)}</span>` : ""}
+        ${kpi.process ? `<span class="tag tag-process">${esc(kpi.process)}</span>` : ""}
+        ${kpi.freq    ? `<span class="tag tag-freq">${esc(kpi.freq)}</span>` : ""}
+        ${kpi.ritual  ? `<span class="tag tag-ritual">${esc(kpi.ritual)}</span>` : ""}
       </div>
 
       ${siteBadges ? `<div class="card-sites">${siteBadges}</div>` : ""}
 
-      ${kpi.desc ? `<p class="card-desc">${kpi.desc}</p>` : ""}
+      ${kpi.desc ? `<p class="card-desc">${esc(kpi.desc)}</p>` : ""}
 
       ${options ? `
       <div class="card-action">
@@ -480,8 +648,9 @@ async function pushToCloud(manual) {
 function applyRemoteData(payload, fromSync) {
   applyingRemoteSync = true;
   if (Array.isArray(payload.kpiData)) {
-    data = payload.kpiData;
-    localStorage.setItem("kpiDataCache", JSON.stringify(data));
+    excelData     = payload.kpiData.filter(d => !d.manual);
+    manualEntries = payload.kpiData.filter(d => d.manual);
+    saveManualEntries(false);
   }
   if (payload.favoritesByUser) {
     localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
@@ -490,10 +659,8 @@ function applyRemoteData(payload, fromSync) {
       saveFavoritesLocalOnly();
     }
   }
+  rebuildData(false);
   applyingRemoteSync = false;
-  initFilters();
-  updateCounts();
-  filterData();
   if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
 }
 

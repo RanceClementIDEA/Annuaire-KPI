@@ -117,6 +117,10 @@
     </div>
 
     <div class="sidebar-footer">
+      <button class="btn-add" id="addKpiBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Nouveau KPI
+      </button>
       <label class="btn-upload" for="fileInput">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         Importer Excel
@@ -163,6 +167,78 @@
       </div>
     </main>
 
+    <!-- BOUTON FLOTTANT : nouveau KPI -->
+    <button class="fab-add" id="fabAddBtn" title="Créer un KPI">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>
+
+  </div>
+</div>
+
+<!-- MODALE CRÉATION / ÉDITION KPI -->
+<div id="kpiModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="kpiModalTitle">➕ Nouveau KPI</h3>
+      <button id="closeKpiModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Créez une fiche d'annuaire directement dans l'application. Elle est conservée
+      même après un ré-import Excel et synchronisée entre vos appareils.
+    </p>
+
+    <label class="modal-label" for="kpiTitleInput">Intitulé *</label>
+    <input type="text" id="kpiTitleInput" class="modal-input" placeholder="Ex : Taux de service client">
+
+    <label class="modal-label" for="kpiTypeInput">Type KPI</label>
+    <input type="text" id="kpiTypeInput" class="modal-input" list="typeList" placeholder="Ex : Performance">
+    <datalist id="typeList"></datalist>
+
+    <div class="form-grid">
+      <div>
+        <label class="modal-label" for="kpiProcessInput">Processus</label>
+        <input type="text" id="kpiProcessInput" class="modal-input" list="processList" placeholder="Ex : Transport">
+        <datalist id="processList"></datalist>
+      </div>
+      <div>
+        <label class="modal-label" for="kpiFreqInput">Fréquence</label>
+        <input type="text" id="kpiFreqInput" class="modal-input" list="freqList" placeholder="Ex : Mensuelle">
+        <datalist id="freqList"></datalist>
+      </div>
+    </div>
+
+    <label class="modal-label" for="kpiRitualInput">Rituel</label>
+    <input type="text" id="kpiRitualInput" class="modal-input" list="ritualList" placeholder="Ex : COPIL logistique">
+    <datalist id="ritualList"></datalist>
+
+    <label class="modal-label" for="kpiDescInput">Description / Mode de calcul</label>
+    <textarea id="kpiDescInput" class="modal-input" rows="3" placeholder="Décrivez le KPI, sa formule, son objectif…"></textarea>
+
+    <div class="modal-links-title">Liens vers les rapports</div>
+    <div class="form-grid">
+      <div>
+        <label class="modal-label" for="kpiLinkLog">Logistiport</label>
+        <input type="url" id="kpiLinkLog" class="modal-input" placeholder="https://…">
+      </div>
+      <div>
+        <label class="modal-label" for="kpiLinkArmement">Armement</label>
+        <input type="url" id="kpiLinkArmement" class="modal-input" placeholder="https://…">
+      </div>
+      <div>
+        <label class="modal-label" for="kpiLinkArmateur">Armateur</label>
+        <input type="url" id="kpiLinkArmateur" class="modal-input" placeholder="https://…">
+      </div>
+      <div>
+        <label class="modal-label" for="kpiLinkGlobal">Global</label>
+        <input type="url" id="kpiLinkGlobal" class="modal-input" placeholder="https://…">
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="saveKpiBtn" class="btn-primary">💾 Enregistrer</button>
+      <button id="deleteKpiBtn" class="btn-danger" style="display:none">🗑 Supprimer</button>
+      <button id="cancelKpiBtn" class="btn-secondary">Annuler</button>
+    </div>
   </div>
 </div>
 
