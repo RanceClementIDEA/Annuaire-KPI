@@ -2,38 +2,39 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Annuaire KPI — IDEA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>TimeFlow — Pointage Pro</title>
 
-  <!-- PWA : installation sur téléphone -->
+  <!-- PWA -->
   <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#06202E">
-  <link rel="icon" type="image/png" href="logo-idea.png">
-  <link rel="apple-touch-icon" href="logo-idea.png">
+  <meta name="theme-color" content="#070B18">
+  <link rel="icon" type="image/png" href="Logo.png">
+  <link rel="apple-touch-icon" href="Logo.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Annuaire KPI">
+  <meta name="apple-mobile-web-app-title" content="TimeFlow">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700;800&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <script src="xlsx.full.min.js"></script>
 </head>
 <body>
 
-<!-- LOGIN -->
+<!-- ══════════════ LOGIN ══════════════ -->
 <div id="loginScreen">
   <div class="login-card">
     <div class="login-brand">
       <div class="login-logo-wrap">
-        <img src="logo-idea.png" alt="IDEA" class="login-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
-        <div class="login-logo-fallback" style="display:none">IDEA</div>
+        <img src="Logo.png" alt="TimeFlow" class="login-logo"
+          onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="login-logo-fallback" style="display:none">⏱</div>
       </div>
-      <p class="login-tagline">Plateforme de pilotage KPI</p>
+      <p class="login-app-name">TimeFlow</p>
+      <p class="login-tagline">Pointage & suivi des heures</p>
     </div>
     <div class="login-form">
       <label for="usernameInput">Identifiant</label>
-      <input type="text" id="usernameInput" placeholder="Nom ou adresse email" autocomplete="username">
+      <input type="text" id="usernameInput" placeholder="Votre nom ou email" autocomplete="username">
       <button id="loginBtn">
         <span>Se connecter</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
@@ -47,18 +48,18 @@
   </div>
 </div>
 
-<!-- APP SHELL -->
+<!-- ══════════════ APP SHELL ══════════════ -->
 <div id="appShell" style="display:none">
 
-  <!-- Fond sombre mobile : ferme la sidebar au clic -->
   <div id="sidebarOverlay"></div>
 
   <!-- SIDEBAR -->
   <aside id="sidebar">
     <div class="sidebar-header">
-      <img src="logo-idea.png" alt="IDEA" class="sidebar-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">
-      <div class="sidebar-logo-fallback" style="display:none">IDEA</div>
-      <span class="sidebar-title">Annuaire KPI</span>
+      <img src="Logo.png" alt="TimeFlow" class="sidebar-logo"
+        onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="sidebar-logo-fallback" style="display:none">⏱</div>
+      <span class="sidebar-title">TimeFlow</span>
     </div>
 
     <div class="sidebar-user">
@@ -68,186 +69,265 @@
         <span class="user-role">Utilisateur</span>
       </div>
       <button id="logoutBtn" title="Déconnexion" class="btn-logout">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+          <polyline points="16 17 21 12 16 7"/>
+          <line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
       </button>
     </div>
 
+    <!-- NAV VUES -->
     <nav class="sidebar-nav">
-      <div class="nav-section-label">Vues</div>
-      <button class="nav-btn active" data-view="all" onclick="switchView('all', this)">
+      <div class="nav-section-label">Navigation</div>
+      <button class="nav-btn active" data-view="dashboard" onclick="sv('dashboard',this)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-        Tous les KPIs
-        <span class="nav-count" id="countAll">0</span>
+        Tableau de bord
       </button>
-      <button class="nav-btn" data-view="fav" onclick="switchView('fav', this)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-        Favoris
-        <span class="nav-count" id="countFav">0</span>
+      <button class="nav-btn" data-view="saisie" onclick="sv('saisie',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Saisie manuelle
+      </button>
+      <button class="nav-btn" data-view="calendar" onclick="sv('calendar',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        Calendrier
+      </button>
+      <button class="nav-btn" data-view="history" onclick="sv('history',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Historique
+      </button>
+      <button class="nav-btn" data-view="stats" onclick="sv('stats',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        Statistiques
       </button>
     </nav>
 
-    <div class="sidebar-filters">
-      <div class="nav-section-label">Filtres</div>
-
-      <div class="filter-group">
-        <label>Processus</label>
-        <select id="processFilter">
-          <option value="">Tous</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <label>Fréquence</label>
-        <select id="freqFilter">
-          <option value="">Toutes</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
-        <label>Rituel</label>
-        <select id="ritualFilter">
-          <option value="">Tous</option>
-        </select>
-      </div>
-
-      <button class="btn-reset" onclick="resetFilters()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
-        Réinitialiser
+    <nav class="sidebar-nav" style="margin-top:8px">
+      <div class="nav-section-label">Gestion</div>
+      <button class="nav-btn" data-view="contracts" onclick="sv('contracts',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Contrats
       </button>
-    </div>
+      <button class="nav-btn" data-view="export" onclick="sv('export',this)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Export
+      </button>
+    </nav>
 
     <div class="sidebar-footer">
-      <button class="btn-add" id="addKpiBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Nouveau KPI
-      </button>
-      <label class="btn-upload" for="fileInput">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        Importer Excel
-      </label>
-      <button class="btn-refresh" id="refreshBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
-        Rafraîchir
-      </button>
       <button class="btn-refresh" id="syncSettingsBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Synchronisation
       </button>
-      <button class="btn-refresh" id="restoreDeletedBtn" style="display:none">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-        <span id="restoreDeletedLabel">Réafficher les fiches supprimées</span>
-      </button>
-    </div>
-
-    <div class="sidebar-brand-footer">
-      <img src="footer-idea.png" alt="IDEA — Une nouvelle idée de la logistique" onerror="this.style.display='none'">
     </div>
   </aside>
 
   <!-- MAIN -->
   <div class="main-wrap">
 
-    <!-- TOP BAR -->
+    <!-- TOPBAR -->
     <div class="topbar">
-      <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
       </button>
-      <div class="search-wrap">
-        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <input type="text" id="search" placeholder="Rechercher un KPI, une description…">
-        <span class="search-count" id="searchCount"></span>
+      <div class="topbar-center">
+        <div class="topbar-title" id="topTitle">Tableau de bord</div>
+        <div class="topbar-sub"  id="topSub"></div>
       </div>
       <div class="topbar-right">
-        <span class="topbar-badge" id="topbarBadge"></span>
+        <div class="live-clock" id="liveClock">00:00:00</div>
       </div>
     </div>
 
-    <!-- KPI GRID -->
-    <main id="kpiContainer">
-      <div class="empty-state" id="emptyState">
-        <div class="empty-icon">📊</div>
-        <h3>Aucun KPI chargé</h3>
-        <p>Importez votre fichier Excel pour commencer</p>
+    <!-- VUES -->
+    <main id="mainContent">
+
+      <!-- ── DASHBOARD ── -->
+      <div class="view active" id="view-dashboard">
+        <div class="hero">
+          <div class="hero-top">
+            <div class="hero-left">
+              <div class="hero-day-label">Aujourd'hui</div>
+              <div class="hero-date" id="heroDate">—</div>
+              <div class="hero-status hs-idle" id="heroStatus">
+                <div class="sdot"></div><span id="heroSTxt">En attente</span>
+              </div>
+            </div>
+            <div class="hero-center">
+              <div class="elapsed-label">⏱ Temps travaillé</div>
+              <div class="elapsed" id="elapsedDisp">00:00:00</div>
+              <div class="live-earn-wrap">
+                <div class="live-earn-label">💰 Gains aujourd'hui</div>
+                <div class="live-earn" id="todayEarnLive">0,00 €</div>
+                <div class="live-earn-rate" id="liveRateDisp"></div>
+              </div>
+            </div>
+          </div>
+          <div class="punch-grid">
+            <button class="punch-btn pb-em" id="btn-em" onclick="punch('em',event)">☀️ Entrée matin<span class="punch-time" id="pt-em"></span></button>
+            <button class="punch-btn pb-sm" id="btn-sm" onclick="punch('sm',event)" disabled>🌤 Sortie midi<span class="punch-time" id="pt-sm"></span></button>
+            <button class="punch-btn pb-ea" id="btn-ea" onclick="punch('ea',event)" disabled>🌇 Entrée après-midi<span class="punch-time" id="pt-ea"></span></button>
+            <button class="punch-btn pb-es" id="btn-es" onclick="punch('es',event)" disabled>🌙 Sortie soir<span class="punch-time" id="pt-es"></span></button>
+          </div>
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-label">🕒 Semaine — heures</div>
+            <div class="stat-val v-neon" id="sw-h">0h00</div>
+            <div class="stat-sub" id="sw-t">/ 35h objectif</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">💰 Semaine — gains</div>
+            <div class="stat-val v-gold" id="sw-e">0,00 €</div>
+            <div class="stat-sub" id="sw-d">0 jour(s)</div>
+          </div>
+          <div class="stat-card live-card">
+            <div class="stat-label">📅 Mois — gains <span class="live-badge">LIVE</span></div>
+            <div class="stat-val v-violet live-count" id="sm-e">0,00 €</div>
+            <div class="stat-sub" id="sm-s">—</div>
+            <div class="live-progress-bar"><div class="live-progress-fill" id="monthProgressFill" style="width:0%"></div></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">🔥 Streak</div>
+            <div class="stat-val v-gold" id="streak-v">0</div>
+            <div class="stat-sub">jours consécutifs</div>
+          </div>
+        </div>
+
+        <div class="dash-bottom">
+          <div class="card">
+            <div class="card-title">⏱ Timeline du jour</div>
+            <div class="tl" id="todayTL"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">📄 Contrat actif</div>
+            <div id="activeContractInfo"></div>
+          </div>
+        </div>
       </div>
+
+      <!-- ── SAISIE ── -->
+      <div class="view" id="view-saisie">
+        <div class="manual-panel">
+          <div class="manual-title">✏️ Saisie / modification d'un jour</div>
+          <div class="frow">
+            <div class="fgroup"><label>Date</label><input type="date" id="manDate" oninput="loadDayIntoForm();previewMan()"></div>
+            <div class="fgroup" style="justify-content:flex-end;padding-top:20px">
+              <button class="btn btn-ghost btn-sm" onclick="fillManToday()">📅 Aujourd'hui</button>
+            </div>
+          </div>
+          <div class="frow">
+            <div class="fgroup"><label>☀️ Entrée matin</label><input type="time" id="man-em" oninput="previewMan()"></div>
+            <div class="fgroup"><label>🌤 Sortie midi</label><input type="time" id="man-sm" oninput="previewMan()"></div>
+          </div>
+          <div class="frow">
+            <div class="fgroup"><label>🌇 Entrée après-midi</label><input type="time" id="man-ea" oninput="previewMan()"></div>
+            <div class="fgroup"><label>🌙 Sortie soir</label><input type="time" id="man-es" oninput="previewMan()"></div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-neon" onclick="saveManual()">💾 Enregistrer</button>
+            <button class="btn btn-ghost btn-sm" onclick="clearMan()">✕ Effacer</button>
+            <button class="btn btn-danger btn-sm" id="btnDelDay" style="display:none" onclick="deleteDayBtn()">🗑 Supprimer</button>
+          </div>
+          <div id="manPreview" style="margin-top:12px"></div>
+        </div>
+        <div class="section-hdr"><div class="section-title">📋 Saisies récentes</div></div>
+        <div id="manualList"></div>
+      </div>
+
+      <!-- ── CALENDRIER ── -->
+      <div class="view" id="view-calendar">
+        <div class="card" style="flex-shrink:0">
+          <div class="cal-header">
+            <button class="cal-nav" onclick="calNav(-1)">‹</button>
+            <div class="cal-month-lbl" id="calLabel">—</div>
+            <button class="cal-nav" onclick="calNav(1)">›</button>
+            <button class="btn btn-ghost btn-sm" onclick="calToday()">Auj.</button>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+        </div>
+        <div class="cal-legend"><span>🟢 Complet</span><span>🟡 Partiel</span><span>🟣 Auj.</span><span>🔵 Manuel</span></div>
+        <div class="card" id="calDetail" style="display:none;flex-shrink:0">
+          <div class="section-hdr">
+            <div class="section-title" id="calDetailTitle">—</div>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('calDetail').style.display='none'">✕</button>
+          </div>
+          <div id="calDetailContent"></div>
+        </div>
+      </div>
+
+      <!-- ── HISTORIQUE ── -->
+      <div class="view" id="view-history">
+        <div class="section-hdr" style="flex-shrink:0">
+          <div class="section-title">Historique</div>
+          <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+            <input type="month" id="histFilter" class="field-input" oninput="renderHistory()">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('histFilter').value='';renderHistory()">Tout</button>
+          </div>
+        </div>
+        <div id="histList"></div>
+      </div>
+
+      <!-- ── STATS ── -->
+      <div class="view" id="view-stats">
+        <div class="section-hdr" style="flex-shrink:0;flex-wrap:wrap;gap:8px">
+          <div class="section-title">📊 Statistiques</div>
+          <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+            <select id="statPeriod" class="field-input" onchange="statPeriodChange()">
+              <option value="week">Semaine</option>
+              <option value="month">Mois</option>
+              <option value="3m">3 mois</option>
+            </select>
+            <button class="cal-nav" onclick="statNav(-1)">‹</button>
+            <div id="statPeriodLbl" style="font-family:'Sora',sans-serif;font-weight:700;font-size:13px;color:var(--text1);min-width:120px;text-align:center">—</div>
+            <button class="cal-nav" id="statNavNext" onclick="statNav(1)">›</button>
+            <button class="btn btn-ghost btn-sm" onclick="statToday()">Auj.</button>
+          </div>
+        </div>
+        <div class="stats-row" id="statsCards" style="flex-shrink:0"></div>
+        <div class="chart-row">
+          <div class="card"><div class="card-title">⏱ Heures / jour</div><div class="chart-wrap" id="hoursChart"></div></div>
+          <div class="card"><div class="card-title">💰 Gains / jour</div><div class="chart-wrap" id="earnChart"></div></div>
+        </div>
+      </div>
+
+      <!-- ── CONTRATS ── -->
+      <div class="view" id="view-contracts">
+        <div class="section-hdr" style="flex-shrink:0">
+          <div class="section-title">📄 Contrats</div>
+          <button class="btn btn-primary" onclick="openContractModal()">+ Nouveau</button>
+        </div>
+        <div id="contractsList"></div>
+      </div>
+
+      <!-- ── EXPORT ── -->
+      <div class="view" id="view-export">
+        <div class="section-title" style="flex-shrink:0;margin-bottom:14px">📤 Export & Rapports</div>
+        <div style="flex-shrink:0">
+          <div class="frow">
+            <div class="fgroup"><label>Début</label><input type="date" id="expFrom"></div>
+            <div class="fgroup"><label>Fin</label><input type="date" id="expTo"></div>
+          </div>
+          <div class="export-grid">
+            <div class="exp-card" onclick="exportCSV()"><div class="exp-icon">📊</div><div class="exp-name">CSV / Excel</div><div class="exp-desc">Import Excel, Sheets…</div></div>
+            <div class="exp-card" onclick="exportTxt()"><div class="exp-icon">📄</div><div class="exp-name">Rapport texte</div><div class="exp-desc">Récapitulatif lisible</div></div>
+            <div class="exp-card" onclick="exportJSON()"><div class="exp-icon">🗄</div><div class="exp-name">Sauvegarde JSON</div><div class="exp-desc">Backup complet</div></div>
+          </div>
+        </div>
+        <div class="card" style="flex-shrink:0">
+          <div class="card-title">📥 Importer une sauvegarde JSON</div>
+          <label class="btn btn-ghost" style="cursor:pointer;margin-top:4px">📁 Choisir un fichier<input type="file" accept=".json" style="display:none" onchange="importJSON(event)"></label>
+        </div>
+      </div>
+
     </main>
-
-    <!-- BOUTON FLOTTANT : nouveau KPI -->
-    <button class="fab-add" id="fabAddBtn" title="Créer un KPI">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-    </button>
-
   </div>
 </div>
 
-<!-- MODALE CRÉATION / ÉDITION KPI -->
-<div id="kpiModal" class="modal-overlay hidden">
-  <div class="modal-card">
-    <div class="modal-header">
-      <h3 id="kpiModalTitle">➕ Nouveau KPI</h3>
-      <button id="closeKpiModalBtn" class="modal-close">✕</button>
-    </div>
-    <p class="modal-sub">
-      Créez une fiche d'annuaire directement dans l'application. Elle est conservée
-      même après un ré-import Excel et synchronisée entre vos appareils.
-    </p>
-
-    <label class="modal-label" for="kpiTitleInput">Intitulé *</label>
-    <input type="text" id="kpiTitleInput" class="modal-input" placeholder="Ex : Taux de service client">
-
-    <label class="modal-label" for="kpiTypeInput">Type KPI</label>
-    <input type="text" id="kpiTypeInput" class="modal-input" list="typeList" placeholder="Ex : Performance">
-    <datalist id="typeList"></datalist>
-
-    <div class="form-grid">
-      <div>
-        <label class="modal-label" for="kpiProcessInput">Processus</label>
-        <input type="text" id="kpiProcessInput" class="modal-input" list="processList" placeholder="Ex : Transport">
-        <datalist id="processList"></datalist>
-      </div>
-      <div>
-        <label class="modal-label" for="kpiFreqInput">Fréquence</label>
-        <input type="text" id="kpiFreqInput" class="modal-input" list="freqList" placeholder="Ex : Mensuelle">
-        <datalist id="freqList"></datalist>
-      </div>
-    </div>
-
-    <label class="modal-label" for="kpiRitualInput">Rituel</label>
-    <input type="text" id="kpiRitualInput" class="modal-input" list="ritualList" placeholder="Ex : COPIL logistique">
-    <datalist id="ritualList"></datalist>
-
-    <label class="modal-label" for="kpiDescInput">Description / Mode de calcul</label>
-    <textarea id="kpiDescInput" class="modal-input" rows="3" placeholder="Décrivez le KPI, sa formule, son objectif…"></textarea>
-
-    <div class="modal-links-title">Liens vers les rapports</div>
-    <div class="form-grid">
-      <div>
-        <label class="modal-label" for="kpiLinkLog">Logistiport</label>
-        <input type="url" id="kpiLinkLog" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkArmement">Armement</label>
-        <input type="url" id="kpiLinkArmement" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkArmateur">Armateur</label>
-        <input type="url" id="kpiLinkArmateur" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkGlobal">Global</label>
-        <input type="url" id="kpiLinkGlobal" class="modal-input" placeholder="https://…">
-      </div>
-    </div>
-
-    <div class="modal-actions">
-      <button id="saveKpiBtn" class="btn-primary">💾 Enregistrer</button>
-      <button id="restoreKpiBtn" class="btn-secondary" style="display:none">↩ Restaurer l'original</button>
-      <button id="deleteKpiBtn" class="btn-danger" style="display:none">🗑 Supprimer</button>
-      <button id="cancelKpiBtn" class="btn-secondary">Annuler</button>
-    </div>
-  </div>
-</div>
-
-<!-- MODALE SYNCHRONISATION CLOUD -->
+<!-- ══════════════ MODALE SYNC ══════════════ -->
 <div id="syncModal" class="modal-overlay hidden">
   <div class="modal-card">
     <div class="modal-header">
@@ -255,7 +335,7 @@
       <button id="closeSyncModalBtn" class="modal-close">✕</button>
     </div>
     <p class="modal-sub">
-      Synchronise automatiquement votre annuaire KPI et vos favoris entre tous vos appareils,
+      Synchronise vos pointages, contrats et paramètres entre tous vos appareils
       via votre propre projet Firebase gratuit.
     </p>
     <p id="syncStatus" class="sync-status">⚪ Synchronisation non configurée</p>
@@ -265,11 +345,13 @@
   "apiKey": "...",
   "authDomain": "...",
   "projectId": "...",
-  ...
+  "storageBucket": "...",
+  "messagingSenderId": "...",
+  "appId": "..."
 }'></textarea>
 
     <label class="modal-label">Code de synchronisation</label>
-    <input type="text" id="syncCodeInput" placeholder="Identique sur tous vos appareils, ex : idea-kpi-2026">
+    <input type="text" id="syncCodeInput" placeholder="Identique sur tous vos appareils, ex : timeflow-2026">
 
     <label class="modal-checkbox">
       <input type="checkbox" id="syncEnabledToggle">
@@ -277,20 +359,21 @@
     </label>
 
     <div class="modal-actions">
-      <button id="connectSyncBtn" class="btn-primary">☁️ Connecter</button>
-      <button id="pushSyncBtn" class="btn-secondary">⬆️ Envoyer</button>
-      <button id="pullSyncBtn" class="btn-secondary">⬇️ Récupérer</button>
+      <button id="connectSyncBtn"    class="btn-primary">☁️ Connecter</button>
+      <button id="pushSyncBtn"       class="btn-secondary">⬆️ Envoyer</button>
+      <button id="pullSyncBtn"       class="btn-secondary">⬇️ Récupérer</button>
       <button id="disconnectSyncBtn" class="btn-secondary">🔌 Désactiver</button>
     </div>
   </div>
 </div>
 
-<!-- INPUT FILE CACHÉ -->
-<input type="file" id="fileInput" accept=".xlsx" style="display:none">
+<!-- MODAL GÉNÉRIQUE -->
+<div id="modalBg" onclick="closeMod(event)"><div class="modal" id="modalContent"></div></div>
 
 <!-- TOAST -->
 <div id="toast" class="toast"></div>
 
+<!-- Firebase (compat — même version que l'annuaire KPI) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="app.js"></script>
