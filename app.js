@@ -10,7 +10,22 @@ let deletedIds = [];    // Fiches Excel supprimées dans l'app (masquées même 
 let currentUser = localStorage.getItem("kpiUser");
 let favorites = [];
 let currentView = "all"; // "all" | "fav"
-let editingKpiId = null; // id du KPI en cours d'édition dans la modale
+let editingKpiId = null; // id de référence du KPI en cours d'édition (pour Supprimer/Restaurer)
+
+// ─── État de la modale multi-temporalités ───
+const STD_FREQS = ["Mensuelle", "Hebdomadaire", "Quotidienne"];
+let modalSlots = {};        // freq → { id, active, ritual, logistiport, armement, armateur, global }
+let modalCurrentFreq = "Mensuelle";
+let modalExtraVariants = []; // variantes de fréquence non-standard, préservées telles quelles
+let modalInitialIds = {};   // freq → id d'origine (pour détecter les suppressions)
+
+// Classe un id : "excel", "manual", "perso" ou null
+function classifyId(id) {
+  if (excelData.some(k => k.id === id)) return "excel";
+  if (personalEntries.some(k => k.id === id)) return "perso";
+  if (manualEntries.some(k => k.id === id)) return "manual";
+  return null;
+}
 
 // Échappe le HTML pour un affichage sûr dans les cartes
 function esc(v) {
@@ -34,7 +49,6 @@ const fileInput     = document.getElementById("fileInput");
 const refreshBtn    = document.getElementById("refreshBtn");
 const searchInput   = document.getElementById("search");
 const processFilter = document.getElementById("processFilter");
-const freqFilter    = document.getElementById("freqFilter");
 const ritualFilter  = document.getElementById("ritualFilter");
 const countAll      = document.getElementById("countAll");
 const countFav      = document.getElementById("countFav");
@@ -165,7 +179,7 @@ function toggleFavorite(id) {
   }
   saveFavorites();
   updateCounts();
-  render(getFilteredData());
+  filterData();
 }
 
 function isFavorite(id) { return favorites.includes(id); }
@@ -235,7 +249,7 @@ function extractLinksByColumn(sheet, headers, rowIndex) {
       const url = cell.l.Target.replace(/&amp;/g, "&");
       const h = (header || "").toLowerCase();
       if (h.includes("log"))                          links.logistiport = url;
-      else if (h.includes("mg+débords") || h.includes("mg+debords") || h.includes("mg") || h.includes("armement")) links.armement = url;
+      else if (h.includes("armement") || h.includes("mg")) links.armement = url;
       else if (h.includes("armateur"))                links.armateur = url;
       else if (h.includes("global"))                  links.global = url;
     }
@@ -423,50 +437,123 @@ function fillDatalists() {
   };
   fill("typeList",    [...data, ...personalEntries].map(d => d.type));
   fill("processList", [...data, ...personalEntries].map(d => d.process));
-  fill("freqList",    [...data, ...personalEntries].map(d => d.freq));
   fill("ritualList",  [...data, ...personalEntries].map(d => d.ritual));
+}
+
+function emptySlot() {
+  return { id: null, active: false, ritual: "", logistiport: "", armement: "", armateur: "", global: "" };
 }
 
 function openKpiModal(id = null) {
   editingKpiId = id;
-  const kpi = id ? (data.find(k => k.id === id) || personalEntries.find(k => k.id === id)) : null;
-  const isPersonal = !!(kpi && personalEntries.some(k => k.id === id));
-  const isManual = !!(kpi && kpi.manual && !isPersonal);
-  const isExcel  = !!(kpi && !kpi.manual && !isPersonal);
-  const isEdited = !!(isExcel && overrides[id]);
+  const ref = id ? (data.find(k => k.id === id) || personalEntries.find(k => k.id === id)) : null;
+  const isPersonal = !!(ref && personalEntries.some(k => k.id === id));
 
-  document.getElementById("kpiModalTitle").textContent =
-    kpi ? (isExcel ? "✏️ Modifier le signet" : "✏️ Modifier le KPI") : "➕ Nouveau KPI";
+  // Rassemble toutes les temporalités du même intitulé, dans le même espace
+  const key = ref ? titleKey(ref.title) : null;
+  const groupSource = isPersonal ? personalEntries : data; // data = excel(+surcharges) + manuels
+  const group = key ? groupSource.filter(k => titleKey(k.title) === key) : [];
 
-  // Sélecteur d'espace : masqué pour les fiches Excel (toujours partagées)
+  // Espace du groupe : excel (verrouillé partagé), perso, ou manuel (déplaçable)
+  const hasExcel = group.some(k => classifyId(k.id) === "excel");
+  const groupSpace = isPersonal ? "perso" : "shared";
+
+  document.getElementById("kpiModalTitle").textContent = ref ? "✏️ Modifier le KPI" : "➕ Nouveau KPI";
+
+  // Sélecteur d'espace : masqué si le groupe contient de l'Excel (toujours partagé)
   const spaceRow = document.getElementById("kpiSpaceRow");
   const spaceInput = document.getElementById("kpiSpaceInput");
-  spaceRow.style.display = isExcel ? "none" : "";
-  spaceInput.value = kpi
-    ? (isPersonal ? "perso" : "shared")
-    : (currentView === "perso" ? "perso" : "shared");
+  spaceRow.style.display = hasExcel ? "none" : "";
+  spaceInput.value = ref ? groupSpace : (currentView === "perso" ? "perso" : "shared");
 
-  // Pied de modale : Supprimer pour toute fiche existante,
-  // Restaurer l'original en plus si une fiche Excel a été modifiée
-  const delBtn = document.getElementById("deleteKpiBtn");
-  const restoreBtn = document.getElementById("restoreKpiBtn");
-  delBtn.style.display = kpi ? "" : "none";
-  restoreBtn.style.display = isEdited ? "" : "none";
+  // Champs partagés (repris de la variante cliquée, sinon de la première)
+  const base = ref || group[0] || {};
+  document.getElementById("kpiTitleInput").value   = base.title   || "";
+  document.getElementById("kpiTypeInput").value    = base.type    || "";
+  document.getElementById("kpiProcessInput").value = base.process || "";
+  document.getElementById("kpiDescInput").value    = base.desc    || "";
 
-  document.getElementById("kpiTitleInput").value   = kpi?.title   || "";
-  document.getElementById("kpiTypeInput").value    = kpi?.type    || "";
-  document.getElementById("kpiProcessInput").value = kpi?.process || "";
-  document.getElementById("kpiFreqInput").value    = kpi?.freq    || "";
-  document.getElementById("kpiRitualInput").value  = kpi?.ritual  || "";
-  document.getElementById("kpiDescInput").value    = kpi?.desc    || "";
-  document.getElementById("kpiLinkLog").value      = kpi?.logistiport || "";
-  document.getElementById("kpiLinkArmement").value = kpi?.armement    || "";
-  document.getElementById("kpiLinkArmateur").value = kpi?.armateur    || "";
-  document.getElementById("kpiLinkGlobal").value   = kpi?.global      || "";
+  // Prépare les emplacements par temporalité
+  modalSlots = {};
+  modalInitialIds = {};
+  modalExtraVariants = [];
+  STD_FREQS.forEach(f => { modalSlots[f] = emptySlot(); });
 
+  group.forEach(v => {
+    const f = STD_FREQS.find(sf => sf.toLowerCase() === (v.freq || "").toLowerCase().trim());
+    if (f) {
+      modalSlots[f] = {
+        id: v.id, active: true,
+        ritual: v.ritual || "",
+        logistiport: v.logistiport || "", armement: v.armement || "",
+        armateur: v.armateur || "", global: v.global || ""
+      };
+      modalInitialIds[f] = v.id;
+    } else {
+      // Fréquence non standard : préservée telle quelle, non éditable ici
+      modalExtraVariants.push(v);
+    }
+  });
+
+  // Temporalité affichée par défaut : celle cliquée si standard, sinon la 1ʳᵉ active, sinon Mensuelle
+  const clickedFreq = ref && STD_FREQS.find(sf => sf.toLowerCase() === (ref.freq || "").toLowerCase().trim());
+  modalCurrentFreq = clickedFreq || STD_FREQS.find(f => modalSlots[f].active) || "Mensuelle";
+
+  // Nouveau KPI : on active la temporalité de départ pour qu'il y ait quelque chose à enregistrer
+  if (!ref) modalSlots[modalCurrentFreq].active = true;
+
+  // Pied de modale
+  const isExcelRef = !!(id && excelData.some(k => k.id === id));
+  document.getElementById("deleteKpiBtn").style.display = ref ? "" : "none";
+  document.getElementById("restoreKpiBtn").style.display = (isExcelRef && overrides[id]) ? "" : "none";
+
+  loadSlotIntoInputs(modalCurrentFreq);
+  renderFreqTabs();
   fillDatalists();
   document.getElementById("kpiModal").classList.remove("hidden");
   document.getElementById("kpiTitleInput").focus();
+}
+
+// Charge les valeurs d'une temporalité dans les champs
+function loadSlotIntoInputs(freq) {
+  const slot = modalSlots[freq];
+  document.getElementById("freqActiveToggle").checked = slot.active;
+  document.getElementById("kpiRitualInput").value  = slot.ritual;
+  document.getElementById("kpiLinkLog").value       = slot.logistiport;
+  document.getElementById("kpiLinkArmement").value  = slot.armement;
+  document.getElementById("kpiLinkArmateur").value  = slot.armateur;
+  document.getElementById("kpiLinkGlobal").value    = slot.global;
+  document.getElementById("ritualScope").textContent = "(" + freq.toLowerCase() + ")";
+  const ff = document.getElementById("freqFields");
+  ff.style.opacity = slot.active ? "1" : "0.45";
+  ff.style.pointerEvents = slot.active ? "" : "none";
+}
+
+// Sauvegarde les champs courants dans l'emplacement de la temporalité affichée
+function syncInputsIntoSlot(freq) {
+  const slot = modalSlots[freq];
+  slot.active      = document.getElementById("freqActiveToggle").checked;
+  slot.ritual      = document.getElementById("kpiRitualInput").value.trim();
+  slot.logistiport = normalizeUrl(document.getElementById("kpiLinkLog").value);
+  slot.armement    = normalizeUrl(document.getElementById("kpiLinkArmement").value);
+  slot.armateur    = normalizeUrl(document.getElementById("kpiLinkArmateur").value);
+  slot.global      = normalizeUrl(document.getElementById("kpiLinkGlobal").value);
+}
+
+// Onglets de temporalité : état actif (coche) + onglet courant surligné
+function renderFreqTabs() {
+  document.querySelectorAll(".freq-tab").forEach(btn => {
+    const f = btn.dataset.freq;
+    btn.classList.toggle("current", f === modalCurrentFreq);
+    btn.classList.toggle("has-data", modalSlots[f].active);
+  });
+}
+
+function switchFreqTab(freq) {
+  syncInputsIntoSlot(modalCurrentFreq);
+  modalCurrentFreq = freq;
+  loadSlotIntoInputs(freq);
+  renderFreqTabs();
 }
 
 function closeKpiModal() {
@@ -489,64 +576,88 @@ function saveKpiForm() {
     document.getElementById("kpiTitleInput").focus();
     return;
   }
+  // Fige les valeurs de la temporalité affichée avant de tout parcourir
+  syncInputsIntoSlot(modalCurrentFreq);
 
-  const fields = {
+  const shared = {
     title,
     type:    document.getElementById("kpiTypeInput").value.trim(),
     process: document.getElementById("kpiProcessInput").value.trim(),
-    freq:    document.getElementById("kpiFreqInput").value.trim(),
-    ritual:  document.getElementById("kpiRitualInput").value.trim(),
-    desc:    document.getElementById("kpiDescInput").value.trim(),
-    logistiport: normalizeUrl(document.getElementById("kpiLinkLog").value),
-    armement:    normalizeUrl(document.getElementById("kpiLinkArmement").value),
-    armateur:    normalizeUrl(document.getElementById("kpiLinkArmateur").value),
-    global:      normalizeUrl(document.getElementById("kpiLinkGlobal").value)
+    desc:    document.getElementById("kpiDescInput").value.trim()
   };
-
-  const isExcelKpi = editingKpiId && excelData.some(k => k.id === editingKpiId);
-
-  if (isExcelKpi) {
-    // Fiche Excel : on stocke la modification en surcharge (l'original reste intact)
-    overrides[editingKpiId] = fields;
-    saveOverrides();
-    showToast("✅ Signet modifié");
-    rebuildData(true);
-    closeKpiModal();
-    return;
-  }
-
-  // Fiche manuelle ou personnelle : espace choisi dans la modale
   const space = document.getElementById("kpiSpaceInput").value; // "shared" | "perso"
-  const wasPersonal = editingKpiId && personalEntries.some(k => k.id === editingKpiId);
-  const entry = {
-    id: editingKpiId || ((space === "perso" ? "perso_" : "manual_") + Date.now()),
-    manual: true,
-    ...(space === "perso" ? { personal: true } : {}),
-    ...fields
-  };
 
-  // Retire l'ancienne version des deux espaces (gère aussi le déplacement)
-  manualEntries   = manualEntries.filter(k => k.id !== entry.id);
-  personalEntries = personalEntries.filter(k => k.id !== entry.id);
+  let created = 0, updated = 0, removed = 0;
+  let touchesShared = false, touchesPerso = false;
 
-  if (space === "perso") {
-    personalEntries.push(entry);
-    savePersonalEntries();
-    showToast(editingKpiId ? "✅ Signet personnel modifié" : "🔒 Signet personnel créé");
-  } else {
-    manualEntries.push(entry);
-    showToast(editingKpiId ? "✅ KPI modifié" : "✅ KPI créé");
-  }
+  STD_FREQS.forEach(freq => {
+    const slot = modalSlots[freq];
+    const initialId = modalInitialIds[freq] || null;
+    const kind = initialId ? classifyId(initialId) : null;
 
-  // Si la fiche a changé d'espace ou touche l'annuaire partagé, on resynchronise
-  if (space === "shared" || wasPersonal !== (space === "perso")) {
-    saveManualEntries();
-    rebuildData(true);
-  } else {
-    initFilters();
-    updateCounts();
-    filterData();
-  }
+    // Temporalité désactivée : supprimer la variante qui existait
+    if (!slot.active) {
+      if (initialId) {
+        removed++;
+        if (kind === "excel") {
+          if (!deletedIds.includes(initialId)) deletedIds.push(initialId);
+          delete overrides[initialId];
+          touchesShared = true;
+        } else if (kind === "perso") {
+          personalEntries = personalEntries.filter(k => k.id !== initialId);
+          touchesPerso = true;
+        } else if (kind === "manual") {
+          manualEntries = manualEntries.filter(k => k.id !== initialId);
+          touchesShared = true;
+        }
+        favorites = favorites.filter(f => f !== initialId);
+        saveFavoritesLocalOnly();
+      }
+      return;
+    }
+
+    // Temporalité active : construire la variante
+    const fields = {
+      ...shared, freq,
+      ritual: slot.ritual,
+      logistiport: slot.logistiport, armement: slot.armement,
+      armateur: slot.armateur, global: slot.global
+    };
+
+    // Variante Excel existante → surcharge (préserve l'original au ré-import)
+    if (kind === "excel" && space === "shared") {
+      overrides[initialId] = fields;
+      touchesShared = true;
+      updated++;
+      return;
+    }
+
+    // Sinon : fiche manuelle ou personnelle (création ou mise à jour)
+    const targetPerso = space === "perso";
+    const entry = {
+      id: initialId && kind !== "excel" ? initialId : ((targetPerso ? "perso_" : "manual_") + Date.now() + "_" + freq),
+      manual: true,
+      ...(targetPerso ? { personal: true } : {}),
+      ...fields
+    };
+    // Retire l'ancienne occurrence des deux espaces (gère le déplacement)
+    manualEntries   = manualEntries.filter(k => k.id !== entry.id);
+    personalEntries = personalEntries.filter(k => k.id !== entry.id);
+    if (targetPerso) { personalEntries.push(entry); touchesPerso = true; }
+    else             { manualEntries.push(entry);   touchesShared = true; }
+    if (initialId) updated++; else created++;
+  });
+
+  // Persiste selon les espaces touchés
+  if (touchesPerso)  savePersonalEntries();
+  if (touchesShared) { saveManualEntries(false); saveOverrides(false); saveDeletedIds(false); }
+  rebuildData(true);
+
+  const parts = [];
+  if (created) parts.push(`${created} créée${created > 1 ? "s" : ""}`);
+  if (updated) parts.push(`${updated} modifiée${updated > 1 ? "s" : ""}`);
+  if (removed) parts.push(`${removed} retirée${removed > 1 ? "s" : ""}`);
+  showToast("✅ Temporalités : " + (parts.join(", ") || "aucun changement"), 2800);
   closeKpiModal();
 }
 
@@ -570,6 +681,19 @@ document.getElementById("fabAddBtn")?.addEventListener("click", () => openKpiMod
 document.getElementById("closeKpiModalBtn")?.addEventListener("click", closeKpiModal);
 document.getElementById("cancelKpiBtn")?.addEventListener("click", closeKpiModal);
 document.getElementById("saveKpiBtn")?.addEventListener("click", saveKpiForm);
+
+// Onglets de temporalité dans la modale
+document.querySelectorAll(".freq-tab").forEach(btn => {
+  btn.addEventListener("click", () => switchFreqTab(btn.dataset.freq));
+});
+// Case « cette temporalité existe » : active/désactive les champs
+document.getElementById("freqActiveToggle")?.addEventListener("change", function () {
+  modalSlots[modalCurrentFreq].active = this.checked;
+  const ff = document.getElementById("freqFields");
+  ff.style.opacity = this.checked ? "1" : "0.45";
+  ff.style.pointerEvents = this.checked ? "" : "none";
+  renderFreqTabs();
+});
 document.getElementById("deleteKpiBtn")?.addEventListener("click", () => {
   if (!editingKpiId) return;
   const id = editingKpiId;
@@ -601,46 +725,68 @@ function initFilters() {
     });
   };
   makeOptions([...data, ...personalEntries].map(d => d.process), processFilter);
-  makeOptions([...data, ...personalEntries].map(d => d.freq),    freqFilter);
   makeOptions([...data, ...personalEntries].map(d => d.ritual),  ritualFilter);
 }
 
 function resetFilters() {
   searchInput.value = "";
   processFilter.selectedIndex = 0;
-  freqFilter.selectedIndex = 0;
   ritualFilter.selectedIndex = 0;
   filterData();
   showToast("Filtres réinitialisés");
 }
 
-function getFilteredData() {
-  const s = searchInput.value.toLowerCase().trim();
-  const p = processFilter.value;
-  const f = freqFilter.value;
-  const r = ritualFilter.value;
+function getViewSource() {
+  return currentView === "perso" ? personalEntries
+       : currentView === "fav"   ? [...data, ...personalEntries]
+       : data;
+}
 
-  // Source selon la vue : espace personnel, favoris (annuaire + personnels), ou annuaire
-  const source =
-    currentView === "perso" ? personalEntries :
-    currentView === "fav"   ? [...data, ...personalEntries] :
-    data;
-
-  let list = source.filter(d =>
-    (!p || d.process === p) &&
-    (!f || d.freq === f) &&
-    (!r || d.ritual === r) &&
-    (!s || d.title.toLowerCase().includes(s) || d.desc.toLowerCase().includes(s))
-  );
-
-  if (currentView === "fav") list = list.filter(d => isFavorite(d.id));
-
-  return list;
+// Une variante correspond-elle aux filtres/recherche actifs ?
+function variantMatches(d, s, p, r) {
+  if (currentView === "fav" && !isFavorite(d.id)) return false;
+  return (!p || d.process === p) &&
+         (!r || d.ritual === r) &&
+         (!s ||
+           (d.title   || "").toLowerCase().includes(s) ||
+           (d.desc    || "").toLowerCase().includes(s) ||
+           (d.ritual  || "").toLowerCase().includes(s) ||
+           (d.process || "").toLowerCase().includes(s) ||
+           (d.type    || "").toLowerCase().includes(s));
 }
 
 function filterData() {
-  const list = getFilteredData();
-  render(list);
+  const s = searchInput.value.toLowerCase().trim();
+  const p = processFilter.value;
+  const r = ritualFilter.value;
+
+  // Regroupe TOUTES les temporalités par intitulé : le KPI reste entier
+  const groupsMap = new Map();
+  getViewSource().forEach(k => {
+    const key = titleKey(k.title);
+    if (!groupsMap.has(key)) groupsMap.set(key, []);
+    groupsMap.get(key).push(k);
+  });
+
+  // Conserve les groupes dont au moins une temporalité correspond
+  const groups = [];
+  let matchCount = 0;
+  groupsMap.forEach((variants, key) => {
+    const matching = variants.filter(v => variantMatches(v, s, p, r));
+    if (!matching.length) return;
+    matchCount += matching.length;
+    variants.sort((a, b) => freqRank(a.freq) - freqRank(b.freq));
+    groups.push({ key, variants, matchIds: new Set(matching.map(m => m.id)) });
+  });
+
+  // Groupes contenant un favori (sur une variante correspondante) en premier
+  groups.sort((a, b) => {
+    const favA = a.variants.some(v => a.matchIds.has(v.id) && isFavorite(v.id));
+    const favB = b.variants.some(v => b.matchIds.has(v.id) && isFavorite(v.id));
+    return favB - favA;
+  });
+
+  render(groups, matchCount);
 }
 
 /* ============================================
@@ -665,11 +811,118 @@ function openKPI(selectId) {
 /* ============================================
    RENDER
 ============================================ */
-function render(list) {
-  // Vide + empty state
-  container.innerHTML = "";
+// Ordre d'affichage des temporalités : Mensuelle → Hebdomadaire → Quotidienne
+const FREQ_ORDER = { "mensuelle": 1, "hebdomadaire": 2, "quotidienne": 3 };
+function freqRank(f) { return FREQ_ORDER[(f || "").toLowerCase().trim()] || 9; }
+function titleKey(t) { return (t || "").toLowerCase().trim(); }
 
-  if (!list.length) {
+// Classe de couleur du tag Processus : réception / distribution se distinguent des sites
+function processTagClass(p) {
+  const v = (p || "").toLowerCase();
+  if (v.includes("récept") || v.includes("recept")) return "tag tag-process tag-reception";
+  if (v.includes("distrib")) return "tag tag-process tag-distribution";
+  return "tag tag-process";
+}
+
+let kpiGroups = {}; // gid → { key, variants } (reconstruit à chaque rendu)
+let groupSel = {};  // titleKey → id de la variante sélectionnée (persiste entre rendus)
+
+// Corps d'une carte pour UNE variante de KPI (grouped = true si la carte
+// regroupe plusieurs temporalités : la fréquence est alors dans le sélecteur)
+function cardBody(kpi, grouped, freqSelectorHtml = "") {
+  const isFav  = isFavorite(kpi.id);
+  const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
+  const safeId = esc(kpi.id).replace(/'/g, "\\'");
+
+  const siteBadges = [
+    kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
+    kpi.armement    ? `<span class="site-badge armement"><span class="dot"></span>MG+D</span>` : "",
+    kpi.armateur    ? `<span class="site-badge armateur"><span class="dot"></span>ATEUR</span>` : "",
+    kpi.global      ? `<span class="site-badge global"><span class="dot"></span>GLOBAL</span>` : ""
+  ].join("");
+
+  let options = "";
+  if (kpi.logistiport) options += `<option value="${esc(kpi.logistiport)}">Logistiport</option>`;
+  if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">MG + Débords</option>`;
+  if (kpi.armateur)    options += `<option value="${esc(kpi.armateur)}">Armateur</option>`;
+  if (kpi.global)      options += `<option value="${esc(kpi.global)}">Global</option>`;
+
+  return `
+      ${isFav ? `<div class="fav-ribbon">⭐ Favori</div>` : ""}
+
+      <div class="card-header">
+        <div class="card-title">${esc(kpi.title)}</div>
+        <div class="card-tools">
+          <button class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="btn-tool btn-tool-danger" onclick="deleteKPI('${safeId}')" title="Supprimer">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+          <button class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
+        </div>
+      </div>
+
+      ${(kpi.process || kpi.ritual) ? `
+      <div class="card-tags">
+        ${kpi.process ? `<span class="${processTagClass(kpi.process)}">${esc(kpi.process)}</span>` : ""}
+        ${kpi.ritual  ? `<span class="tag tag-ritual">${esc(kpi.ritual)}</span>` : ""}
+      </div>` : ""}
+
+      ${siteBadges ? `<div class="card-sites">${siteBadges}</div>` : ""}
+
+      ${kpi.desc ? `<p class="card-desc">${esc(kpi.desc)}</p>` : ""}
+
+      ${options ? `
+      <div class="card-action">
+        <select id="${selId}">
+          <option value="">Choisir un rapport</option>
+          ${options}
+        </select>
+        <button class="btn-open" onclick="openKPI('${selId}')">
+          Ouvrir
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </button>
+      </div>` : ""}
+
+      ${freqSelectorHtml}
+  `;
+}
+
+// Changement de temporalité dans une carte groupée
+function changeGroupFreq(gid, idx) {
+  const grp = kpiGroups[gid];
+  if (!grp) return;
+  const variant = grp.variants[+idx];
+  if (!variant) return;
+  groupSel[grp.key] = variant.id;
+  const body = document.getElementById("body_" + gid);
+  if (body) {
+    body.innerHTML = cardBody(variant, true, freqSelectorHtml(gid, grp.variants, +idx));
+    const card = body.closest(".card");
+    if (card) card.classList.toggle("favorite", isFavorite(variant.id));
+  }
+}
+
+// Génère le sélecteur de temporalité (placé en bas de carte, sous le sélecteur de rapport)
+function freqSelectorHtml(gid, variants, selIdx) {
+  return `
+      <div class="card-freq">
+        <span class="card-freq-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Temporalité
+        </span>
+        <select onchange="changeGroupFreq('${gid}', this.value)">
+          ${variants.map((v, vi) => `<option value="${vi}"${vi === selIdx ? " selected" : ""}>${esc(v.freq || "Sans fréquence")}</option>`).join("")}
+        </select>
+      </div>`;
+}
+
+function render(groups, matchCount) {
+  container.innerHTML = "";
+  kpiGroups = {};
+
+  if (!groups.length) {
     const msg = currentView === "perso"
       ? { icon: "🔒", title: personalEntries.length ? "Aucun résultat" : "Espace personnel vide", sub: personalEntries.length ? "Essayez d'autres mots-clés ou réinitialisez les filtres" : "Créez un signet avec le bouton + : il ne sera visible que par vous" }
       : data.length === 0
@@ -689,97 +942,87 @@ function render(list) {
     return;
   }
 
-  // Trie : favoris en premier
-  const sorted = [...list].sort((a, b) => isFavorite(b.id) - isFavorite(a.id));
+  // Compteurs
+  const totalGroups = new Set(getViewSource().map(k => titleKey(k.title))).size;
+  searchCount.textContent = groups.length !== totalGroups ? `${groups.length} résultat${groups.length > 1 ? "s" : ""}` : "";
+  topbarBadge.textContent = `${groups.length} KPI${groups.length > 1 ? "s" : ""}${matchCount !== groups.length ? ` · ${matchCount} variantes` : ""}`;
 
-  // Compteur barre de recherche
-  searchCount.textContent = list.length !== data.length ? `${list.length} résultat${list.length > 1 ? "s" : ""}` : "";
-  topbarBadge.textContent = `${list.length} KPI${list.length > 1 ? "s" : ""}`;
+  groups.forEach((g, i) => {
+    const { key, variants, matchIds } = g;
 
-  sorted.forEach((kpi, i) => {
-    const isFav  = isFavorite(kpi.id);
-    const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
-    const safeId = esc(kpi.id).replace(/'/g, "\\'");
+    // Variante affichée : sélection mémorisée si elle correspond, sinon 1ʳᵉ correspondante
+    let selIdx = variants.findIndex(v => v.id === groupSel[key] && matchIds.has(v.id));
+    if (selIdx < 0) selIdx = variants.findIndex(v => matchIds.has(v.id));
+    if (selIdx < 0) selIdx = 0;
+    const selected = variants[selIdx];
 
-    const siteBadges = [
-      kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
-      kpi.armement    ? `<span class="site-badge armement"><span class="dot"></span>MG+</span>` : "",
-      kpi.armateur    ? `<span class="site-badge armateur"><span class="dot"></span>ATEUR</span>` : "",
-      kpi.global      ? `<span class="site-badge global"><span class="dot"></span>GLOBAL</span>` : ""
-    ].join("");
-
-    let options = "";
-    if (kpi.logistiport) options += `<option value="${esc(kpi.logistiport)}">Logistiport</option>`;
-    if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">MG + Débords</option>`;
-    if (kpi.armateur)    options += `<option value="${esc(kpi.armateur)}">Armateur</option>`;
-    if (kpi.global)      options += `<option value="${esc(kpi.global)}">Global</option>`;
+    const gid = "g" + i + "_" + key.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 40);
+    kpiGroups[gid] = { key, variants };
 
     const card = document.createElement("div");
-    card.className = "card" + (isFav ? " favorite" : "");
+    card.className = "card" + (isFavorite(selected.id) ? " favorite" : "");
     card.style.animationDelay = `${Math.min(i * 30, 180)}ms`;
 
-    card.innerHTML = `
-      ${isFav ? `<div class="fav-ribbon">⭐ Favori</div>` : ""}
-
-      <div class="card-header">
-        <div class="card-title">${esc(kpi.title)}</div>
-        <div class="card-tools">
-          <button class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="btn-tool btn-tool-danger" onclick="deleteKPI('${safeId}')" title="Supprimer">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-          </button>
-          <button class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
-        </div>
-      </div>
-
-      <div class="card-tags">
-        ${kpi.personal ? `<span class="tag tag-perso">🔒 Personnel</span>` : ""}
-        ${kpi.manual && !kpi.personal ? `<span class="tag tag-manual">✎ Manuel</span>` : ""}
-        ${kpi.edited  ? `<span class="tag tag-edited">✎ Modifié</span>` : ""}
-        ${kpi.type    ? `<span class="tag tag-type">${esc(kpi.type)}</span>` : ""}
-        ${kpi.process ? `<span class="tag tag-process">${esc(kpi.process)}</span>` : ""}
-        ${kpi.freq    ? `<span class="tag tag-freq">${esc(kpi.freq)}</span>` : ""}
-        ${kpi.ritual  ? `<span class="tag tag-ritual">${esc(kpi.ritual)}</span>` : ""}
-      </div>
-
-      ${siteBadges ? `<div class="card-sites">${siteBadges}</div>` : ""}
-
-      ${kpi.desc ? `<p class="card-desc">${esc(kpi.desc)}</p>` : ""}
-
-      ${options ? `
-      <div class="card-action">
-        <select id="${selId}">
-          <option value="">Choisir un rapport</option>
-          ${options}
-        </select>
-        <button class="btn-open" onclick="openKPI('${selId}')">
-          Ouvrir
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-        </button>
-      </div>` : ""}
-    `;
+    if (variants.length > 1) {
+      card.innerHTML = `<div class="group-body" id="body_${gid}">${cardBody(selected, true, freqSelectorHtml(gid, variants, selIdx))}</div>`;
+    } else {
+      card.innerHTML = cardBody(selected, false);
+    }
 
     container.appendChild(card);
   });
 }
+
+
 
 /* ============================================
    EVENTS
 ============================================ */
 searchInput.addEventListener("input", filterData);
 processFilter.addEventListener("change", filterData);
-freqFilter.addEventListener("change", filterData);
 ritualFilter.addEventListener("change", filterData);
 refreshBtn.addEventListener("click", () => { loadSavedFile(); showToast("🔄 Données rafraîchies"); });
 
 /* ============================================
    SYNCHRONISATION CLOUD (Firebase Firestore)
 ============================================ */
+
+/* ─────────────────────────────────────────────────────────────
+   CONFIGURATION INTÉGRÉE — À REMPLIR UNE SEULE FOIS PAR L'ADMIN
+   Collez ci-dessous la config de VOTRE projet Firebase (onglet
+   Paramètres du projet › Vos applications › SDK) et choisissez un
+   code de synchronisation. Une fois rempli et l'application
+   redistribuée, TOUS les PC se synchronisent automatiquement :
+   plus aucune saisie de config sur les nouveaux appareils.
+   (Cette config web n'est pas secrète : la sécurité est assurée
+   par les règles Firestore, pas par sa dissimulation.)
+   ───────────────────────────────────────────────────────────── */
+const BUILTIN_FIREBASE_CONFIG = {
+  // apiKey: "AIza…",
+  // authDomain: "mon-projet.firebaseapp.com",
+  // projectId: "mon-projet",
+  // storageBucket: "mon-projet.appspot.com",
+  // messagingSenderId: "0000000000",
+  // appId: "1:0000000000:web:xxxxxxxxxxxx"
+};
+const BUILTIN_SYNC_CODE = "idea-kpi-2026";
+
+const hasBuiltinConfig = () =>
+  BUILTIN_FIREBASE_CONFIG && !!BUILTIN_FIREBASE_CONFIG.projectId && !!BUILTIN_FIREBASE_CONFIG.apiKey;
+
 const LS_SYNC = "kpiSyncConfig";
+const LS_SYNC_OPTOUT = "kpiSyncOptOut"; // l'utilisateur a désactivé la sync sur CET appareil
 const getSyncConfig = () => { try { return JSON.parse(localStorage.getItem(LS_SYNC)); } catch { return null; } };
 const setSyncConfig = cfg => cfg ? localStorage.setItem(LS_SYNC, JSON.stringify(cfg)) : localStorage.removeItem(LS_SYNC);
+
+// Sur un nouvel appareil : si aucune config locale et qu'une config est
+// intégrée à l'application, on l'installe automatiquement (sync activée).
+function ensureBuiltinConfig() {
+  if (getSyncConfig()) return;                          // déjà configuré ici
+  if (localStorage.getItem(LS_SYNC_OPTOUT)) return;     // désactivé volontairement
+  if (!hasBuiltinConfig()) return;                       // aucune config intégrée
+  setSyncConfig({ config: { ...BUILTIN_FIREBASE_CONFIG }, code: BUILTIN_SYNC_CODE, enabled: true });
+}
 
 let fbApp = null, fbDb = null, fbUnsub = null;
 let syncDebounceHandle = null;
@@ -787,19 +1030,38 @@ let lastSyncPushAt = 0;
 let lastAppliedSyncAt = 0;
 let connectedSyncCode = null;
 let applyingRemoteSync = false;
+let localUpdatedAt = +(localStorage.getItem("kpiLocalUpdatedAt") || 0); // dernière modif locale
+let pendingPush = false;    // un envoi n'a pas pu aboutir (hors-ligne) et devra être rejoué
+let netHandlersBound = false;
 
+function markLocalChange() {
+  localUpdatedAt = Date.now();
+  localStorage.setItem("kpiLocalUpdatedAt", String(localUpdatedAt));
+}
+
+let lastSyncState = "off";
 function setSyncStatusUI(state, detail) {
-  const el = document.getElementById("syncStatus");
-  if (!el) return;
+  lastSyncState = state;
   const map = {
-    off:       { text: "⚪ Synchronisation non configurée", cls: "" },
-    connected: { text: "🟢 Connecté — synchronisation active", cls: "connected" },
-    syncing:   { text: "🔄 Synchronisation…", cls: "syncing" },
-    error:     { text: "🔴 Erreur : " + (detail || "voir console"), cls: "error" }
+    off:       { text: "⚪ Synchronisation non configurée", cls: "",          pill: "Sync off",   show: false },
+    connected: { text: "🟢 Connecté — synchronisation active", cls: "connected", pill: "Synchronisé", show: true  },
+    syncing:   { text: "🔄 Synchronisation…", cls: "syncing",                 pill: "Sync…",      show: true  },
+    offline:   { text: "🟠 Hors ligne — reprise automatique au retour du réseau", cls: "offline", pill: "Hors ligne", show: true },
+    error:     { text: "🔴 Erreur : " + (detail || "voir console"), cls: "error", pill: "Erreur",   show: true  }
   };
   const s = map[state] || map.off;
-  el.textContent = s.text;
-  el.className = "sync-status " + s.cls;
+
+  const el = document.getElementById("syncStatus");
+  if (el) { el.textContent = s.text; el.className = "sync-status " + s.cls; }
+
+  // Pilule discrète dans la barre du haut
+  const pill = document.getElementById("syncPill");
+  const pillText = document.getElementById("syncPillText");
+  if (pill) {
+    pill.style.display = s.show ? "" : "none";
+    pill.className = "sync-pill " + s.cls;
+    if (pillText) pillText.textContent = s.pill;
+  }
 }
 
 function syncDocRef(code) {
@@ -817,29 +1079,34 @@ function buildSyncPayload() {
     kpiOverrides: overrides,
     kpiDeleted: deletedIds,
     favoritesByUser,
-    updatedAt: Date.now()
+    updatedAt: localUpdatedAt || Date.now()
   };
 }
 
 function scheduleAutoSync() {
   const cfg = getSyncConfig();
-  if (!cfg || !cfg.enabled || !fbDb || applyingRemoteSync) return;
+  if (!cfg || !cfg.enabled || applyingRemoteSync) return;
+  markLocalChange();
+  if (!fbDb || !navigator.onLine) { pendingPush = true; if (!navigator.onLine) setSyncStatusUI("offline"); return; }
   clearTimeout(syncDebounceHandle);
   syncDebounceHandle = setTimeout(() => pushToCloud(false), 1500);
 }
 
 async function pushToCloud(manual) {
   const cfg = getSyncConfig();
-  if (!cfg || !fbDb) return;
+  if (!cfg || !fbDb) { pendingPush = true; return; }
+  if (!navigator.onLine) { pendingPush = true; setSyncStatusUI("offline"); return; }
   setSyncStatusUI("syncing");
   try {
     const payload = buildSyncPayload();
     lastSyncPushAt = payload.updatedAt;
     await syncDocRef(cfg.code).set(payload);
+    pendingPush = false;
     setSyncStatusUI("connected");
     if (manual) showToast("Synchronisé ☁️ — données envoyées", 2500);
   } catch (err) {
-    setSyncStatusUI("error", err.message);
+    pendingPush = true;
+    setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
     if (manual) showToast("❌ Erreur de synchronisation", 3000);
   }
 }
@@ -868,6 +1135,10 @@ function applyRemoteData(payload, fromSync) {
   }
   rebuildData(false);
   applyingRemoteSync = false;
+  if (payload.updatedAt) {
+    localUpdatedAt = payload.updatedAt;
+    localStorage.setItem("kpiLocalUpdatedAt", String(localUpdatedAt));
+  }
   if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
 }
 
@@ -911,8 +1182,74 @@ function listenForRemoteChanges(code) {
   );
 }
 
+// Premier échange à la connexion : récupère si le cloud est plus récent,
+// envoie si nos données locales sont plus récentes (ou si le cloud est vide).
+async function initialSync(code, manual) {
+  if (!fbDb || !navigator.onLine) { if (!navigator.onLine) setSyncStatusUI("offline"); return; }
+  setSyncStatusUI("syncing");
+  try {
+    const snap = await syncDocRef(code).get();
+    const remote = snap.exists ? snap.data() : null;
+    const remoteAt = remote?.updatedAt || 0;
+    const cfg = getSyncConfig();
+    const canPush = cfg && cfg.enabled;
+
+    if (!remote) {
+      // Rien dans le cloud : on y dépose nos données locales
+      if (canPush) await pushToCloud(false);
+    } else if (remoteAt > localUpdatedAt) {
+      // Le cloud est plus récent : on récupère
+      applyRemoteData(remote, true);
+    } else if (localUpdatedAt > remoteAt && canPush) {
+      // Nos données locales sont plus récentes : on envoie
+      await pushToCloud(false);
+    } else {
+      // À égalité : on s'aligne sur le cloud sans rien réécrire
+      lastAppliedSyncAt = remoteAt;
+    }
+    setSyncStatusUI("connected");
+  } catch (err) {
+    setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
+    if (manual) showToast("❌ Erreur de synchronisation", 3000);
+  }
+}
+
+// Reprise automatique : retour du réseau + retour sur l'onglet
+function bindNetworkHandlers() {
+  if (netHandlersBound) return;
+  netHandlersBound = true;
+
+  window.addEventListener("online", () => {
+    const cfg = getSyncConfig();
+    if (!cfg || !cfg.enabled) return;
+    setSyncStatusUI("syncing");
+    // Reconnecte si besoin, puis rejoue un envoi en attente
+    if (!connectedSyncCode) connectSync(false);
+    else {
+      initialSync(cfg.code, false);
+      if (pendingPush) pushToCloud(false);
+    }
+    showToast("🔄 Connexion rétablie — synchronisation…", 2500);
+  });
+
+  window.addEventListener("offline", () => {
+    const cfg = getSyncConfig();
+    if (cfg && cfg.enabled) setSyncStatusUI("offline");
+  });
+
+  // Reprise sur l'onglet : on récupère les éventuels changements manqués
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    const cfg = getSyncConfig();
+    if (!cfg || !cfg.enabled || !fbDb || !navigator.onLine) return;
+    if (pendingPush) pushToCloud(false);
+    else pullFromCloud(false);
+  });
+}
+
 function connectSync(manual) {
   try {
+    ensureBuiltinConfig(); // nouvel appareil : installe la config intégrée si dispo
     const cfg = getSyncConfig();
     if (!cfg || !cfg.config || !cfg.code) { setSyncStatusUI("off"); return; }
     if (typeof firebase === "undefined") {
@@ -928,9 +1265,15 @@ function connectSync(manual) {
       fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg.config);
       fbDb  = firebase.firestore();
     }
-    listenForRemoteChanges(cfg.code);
     connectedSyncCode = cfg.code;
-    setSyncStatusUI("connected");
+    bindNetworkHandlers();
+    if (cfg.enabled) {
+      // Échange initial : on décide d'envoyer ou de récupérer selon l'ancienneté
+      initialSync(cfg.code, manual);
+      // Écoute temps réel des changements des autres appareils
+      listenForRemoteChanges(cfg.code);
+    }
+    setSyncStatusUI(navigator.onLine ? "connected" : "offline");
     if (manual) showToast("Connecté ☁️ — code : " + cfg.code, 2800);
   } catch (err) {
     console.error("connectSync error:", err);
@@ -943,17 +1286,46 @@ function disconnectSync() {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
   connectedSyncCode = null;
   setSyncConfig(null);
+  localStorage.setItem(LS_SYNC_OPTOUT, "1"); // n'auto-réinstalle pas la config intégrée ici
   setSyncStatusUI("off");
   showToast("Synchronisation désactivée", 2200);
 }
 
 function initSyncModal() {
+  ensureBuiltinConfig();
   const cfg = getSyncConfig();
+  const usingBuiltin = hasBuiltinConfig() &&
+    cfg?.config?.projectId === BUILTIN_FIREBASE_CONFIG.projectId;
+
   document.getElementById("syncConfigInput").value = cfg?.config ? JSON.stringify(cfg.config, null, 2) : "";
   document.getElementById("syncCodeInput").value   = cfg?.code || "";
   document.getElementById("syncEnabledToggle").checked = !!cfg?.enabled;
+
+  // Config intégrée : on masque la saisie JSON et on montre un bandeau rassurant
+  const banner   = document.getElementById("builtinConfigBanner");
+  const configRow = document.getElementById("syncConfigRow");
+  const advToggle = document.getElementById("advancedSyncToggle");
+  if (usingBuiltin) {
+    banner.style.display   = "";
+    configRow.style.display = "none";      // rien à saisir
+    advToggle.style.display = "";           // possibilité de basculer en manuel
+    advToggle.textContent   = "⚙️ Paramètres avancés (changer de projet)";
+  } else {
+    banner.style.display   = hasBuiltinConfig() ? "" : "none";
+    configRow.style.display = "";
+    advToggle.style.display = "none";
+  }
+
   if (cfg && cfg.config && cfg.code) connectSync(false); else setSyncStatusUI("off");
 }
+
+// Bouton « Paramètres avancés » : révèle la saisie manuelle de config
+document.getElementById("advancedSyncToggle")?.addEventListener("click", function () {
+  const row = document.getElementById("syncConfigRow");
+  const shown = row.style.display !== "none";
+  row.style.display = shown ? "none" : "";
+  this.textContent = shown ? "⚙️ Paramètres avancés (changer de projet)" : "▲ Masquer les paramètres avancés";
+});
 
 syncSettingsBtn?.addEventListener("click", () => {
   initSyncModal();
@@ -973,6 +1345,7 @@ document.getElementById("connectSyncBtn")?.addEventListener("click", () => {
   if (!code) return showToast("Choisissez un code de synchronisation", 2800);
 
   fbApp = null; fbDb = null; connectedSyncCode = null;
+  localStorage.removeItem(LS_SYNC_OPTOUT); // reconnexion volontaire
   setSyncConfig({ config: parsedConfig, code, enabled: true });
   connectSync(true);
 });
@@ -982,7 +1355,29 @@ document.getElementById("syncEnabledToggle")?.addEventListener("change", functio
   if (!c) return;
   c.enabled = this.checked;
   setSyncConfig(c);
-  showToast(c.enabled ? "Synchronisation activée" : "Synchronisation en pause", 2200);
+  if (c.enabled) {
+    // Réactivation : on rétablit l'échange initial et l'écoute temps réel
+    if (fbDb && c.code) {
+      initialSync(c.code, false);
+      listenForRemoteChanges(c.code);
+      setSyncStatusUI("connected");
+    } else {
+      connectSync(false);
+    }
+    showToast("Synchronisation activée", 2200);
+  } else {
+    // Mise en pause : on coupe l'écoute (la connexion reste pour l'usage manuel)
+    if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+    clearTimeout(syncDebounceHandle);
+    setSyncStatusUI("connected");
+    showToast("Synchronisation en pause", 2200);
+  }
+});
+
+// La pilule de la barre du haut ouvre la modale de synchronisation
+document.getElementById("syncPill")?.addEventListener("click", () => {
+  initSyncModal();
+  syncModal.classList.remove("hidden");
 });
 
 document.getElementById("pushSyncBtn")?.addEventListener("click", () => pushToCloud(true));

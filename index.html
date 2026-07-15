@@ -102,13 +102,6 @@
       </div>
 
       <div class="filter-group">
-        <label>Fréquence</label>
-        <select id="freqFilter">
-          <option value="">Toutes</option>
-        </select>
-      </div>
-
-      <div class="filter-group">
         <label>Rituel</label>
         <select id="ritualFilter">
           <option value="">Tous</option>
@@ -159,10 +152,14 @@
       </button>
       <div class="search-wrap">
         <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        <input type="text" id="search" placeholder="Rechercher un KPI, une description…">
+        <input type="text" id="search" placeholder="Rechercher un KPI, un rituel, une description…">
         <span class="search-count" id="searchCount"></span>
       </div>
       <div class="topbar-right">
+        <button class="sync-pill" id="syncPill" title="Synchronisation cloud" style="display:none">
+          <span class="sync-dot"></span>
+          <span class="sync-pill-text" id="syncPillText">Sync</span>
+        </button>
         <span class="topbar-badge" id="topbarBadge"></span>
       </div>
     </div>
@@ -211,43 +208,50 @@
     <input type="text" id="kpiTypeInput" class="modal-input" list="typeList" placeholder="Ex : Performance">
     <datalist id="typeList"></datalist>
 
-    <div class="form-grid">
-      <div>
-        <label class="modal-label" for="kpiProcessInput">Processus</label>
-        <input type="text" id="kpiProcessInput" class="modal-input" list="processList" placeholder="Ex : Transport">
-        <datalist id="processList"></datalist>
-      </div>
-      <div>
-        <label class="modal-label" for="kpiFreqInput">Fréquence</label>
-        <input type="text" id="kpiFreqInput" class="modal-input" list="freqList" placeholder="Ex : Mensuelle">
-        <datalist id="freqList"></datalist>
-      </div>
-    </div>
-
-    <label class="modal-label" for="kpiRitualInput">Rituel</label>
-    <input type="text" id="kpiRitualInput" class="modal-input" list="ritualList" placeholder="Ex : COPIL logistique">
-    <datalist id="ritualList"></datalist>
+    <label class="modal-label" for="kpiProcessInput">Processus</label>
+    <input type="text" id="kpiProcessInput" class="modal-input" list="processList" placeholder="Ex : Réception">
+    <datalist id="processList"></datalist>
 
     <label class="modal-label" for="kpiDescInput">Description / Mode de calcul</label>
     <textarea id="kpiDescInput" class="modal-input" rows="3" placeholder="Décrivez le KPI, sa formule, son objectif…"></textarea>
 
-    <div class="modal-links-title">Liens vers les rapports</div>
-    <div class="form-grid">
-      <div>
-        <label class="modal-label" for="kpiLinkLog">Logistiport</label>
-        <input type="url" id="kpiLinkLog" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkArmement">MG + Débords</label>
-        <input type="url" id="kpiLinkArmement" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkArmateur">Armateur</label>
-        <input type="url" id="kpiLinkArmateur" class="modal-input" placeholder="https://…">
-      </div>
-      <div>
-        <label class="modal-label" for="kpiLinkGlobal">Global</label>
-        <input type="url" id="kpiLinkGlobal" class="modal-input" placeholder="https://…">
+    <div class="modal-links-title">Temporalités</div>
+    <p class="modal-hint">Renseignez les liens et le rituel pour chaque temporalité. Changez d'onglet pour basculer sur les liens correspondants.</p>
+
+    <div class="freq-tabs" id="freqTabs">
+      <button type="button" class="freq-tab" data-freq="Mensuelle">Mensuelle</button>
+      <button type="button" class="freq-tab" data-freq="Hebdomadaire">Hebdomadaire</button>
+      <button type="button" class="freq-tab" data-freq="Quotidienne">Quotidienne</button>
+    </div>
+
+    <label class="modal-checkbox">
+      <input type="checkbox" id="freqActiveToggle">
+      Cette temporalité existe pour ce KPI
+    </label>
+
+    <div id="freqFields">
+      <label class="modal-label" for="kpiRitualInput">Rituel <span class="freq-scope" id="ritualScope"></span></label>
+      <input type="text" id="kpiRitualInput" class="modal-input" list="ritualList" placeholder="Ex : COPIL logistique">
+      <datalist id="ritualList"></datalist>
+
+      <div class="modal-links-title">Liens vers les rapports</div>
+      <div class="form-grid">
+        <div>
+          <label class="modal-label" for="kpiLinkLog">Logistiport</label>
+          <input type="url" id="kpiLinkLog" class="modal-input" placeholder="https://…">
+        </div>
+        <div>
+          <label class="modal-label" for="kpiLinkArmement">MG + Débords</label>
+          <input type="url" id="kpiLinkArmement" class="modal-input" placeholder="https://…">
+        </div>
+        <div>
+          <label class="modal-label" for="kpiLinkArmateur">Armateur</label>
+          <input type="url" id="kpiLinkArmateur" class="modal-input" placeholder="https://…">
+        </div>
+        <div>
+          <label class="modal-label" for="kpiLinkGlobal">Global</label>
+          <input type="url" id="kpiLinkGlobal" class="modal-input" placeholder="https://…">
+        </div>
       </div>
     </div>
 
@@ -273,16 +277,25 @@
     </p>
     <p id="syncStatus" class="sync-status">⚪ Synchronisation non configurée</p>
 
-    <label class="modal-label">Configuration Firebase (JSON)</label>
-    <textarea id="syncConfigInput" rows="5" placeholder='{
+    <div id="builtinConfigBanner" class="builtin-banner" style="display:none">
+      ✅ Configuration fournie par l'application — aucune saisie nécessaire.
+      La synchronisation démarre automatiquement.
+    </div>
+
+    <div id="syncConfigRow">
+      <label class="modal-label">Configuration Firebase (JSON)</label>
+      <textarea id="syncConfigInput" rows="5" placeholder='{
   "apiKey": "...",
   "authDomain": "...",
   "projectId": "...",
   ...
 }'></textarea>
 
-    <label class="modal-label">Code de synchronisation</label>
-    <input type="text" id="syncCodeInput" placeholder="Identique sur tous vos appareils, ex : idea-kpi-2026">
+      <label class="modal-label">Code de synchronisation</label>
+      <input type="text" id="syncCodeInput" placeholder="Identique sur tous vos appareils, ex : idea-kpi-2026">
+    </div>
+
+    <button id="advancedSyncToggle" class="btn-link" style="display:none">⚙️ Paramètres avancés (changer de projet)</button>
 
     <label class="modal-checkbox">
       <input type="checkbox" id="syncEnabledToggle">
