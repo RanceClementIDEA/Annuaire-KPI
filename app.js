@@ -1502,6 +1502,66 @@ document.addEventListener("keydown", e => {
 })();
 
 /* ============================================
+   GUIDE POWER BI (carrousel image)
+============================================ */
+let pbiIndex = 0, pbiCount = 0;
+
+function pbiRender() {
+  const track = document.getElementById("pbiTrack");
+  const dots = document.getElementById("pbiDots");
+  if (!track) return;
+  track.style.transform = `translateX(-${pbiIndex * 100}%)`;
+  Array.from(dots.children).forEach((d, i) => d.classList.toggle("active", i === pbiIndex));
+  document.getElementById("pbiPrev").style.visibility = pbiIndex === 0 ? "hidden" : "visible";
+  document.getElementById("pbiNext").textContent = pbiIndex === pbiCount - 1 ? "Compris ✓" : "Suivant →";
+}
+function pbiGo(i) { pbiIndex = Math.max(0, Math.min(pbiCount - 1, i)); pbiRender(); }
+
+function openPbiHelp() {
+  const track = document.getElementById("pbiTrack");
+  const dots = document.getElementById("pbiDots");
+  if (!track) return;
+  pbiCount = track.children.length;
+  dots.innerHTML = "";
+  for (let i = 0; i < pbiCount; i++) {
+    const d = document.createElement("span");
+    d.addEventListener("click", () => pbiGo(i));
+    dots.appendChild(d);
+  }
+  pbiIndex = 0; pbiRender();
+  document.getElementById("pbiHelpModal").classList.remove("hidden");
+}
+function closePbiHelp() { document.getElementById("pbiHelpModal").classList.add("hidden"); }
+
+document.getElementById("pbiHelpBtn")?.addEventListener("click", openPbiHelp);
+document.getElementById("closePbiHelpBtn")?.addEventListener("click", closePbiHelp);
+document.getElementById("pbiPrev")?.addEventListener("click", () => pbiGo(pbiIndex - 1));
+document.getElementById("pbiNext")?.addEventListener("click", () => {
+  if (pbiIndex === pbiCount - 1) closePbiHelp(); else pbiGo(pbiIndex + 1);
+});
+document.getElementById("pbiHelpModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("pbiHelpModal")) closePbiHelp();
+});
+document.addEventListener("keydown", e => {
+  if (document.getElementById("pbiHelpModal")?.classList.contains("hidden")) return;
+  if (e.key === "ArrowRight") pbiGo(pbiIndex + 1);
+  else if (e.key === "ArrowLeft") pbiGo(pbiIndex - 1);
+  else if (e.key === "Escape") closePbiHelp();
+});
+(function bindPbiSwipe() {
+  const vp = document.querySelector("#pbiHelpModal .tuto-viewport");
+  if (!vp) return;
+  let x0 = null;
+  vp.addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
+  vp.addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 45) pbiGo(pbiIndex + (dx < 0 ? 1 : -1));
+    x0 = null;
+  }, { passive: true });
+})();
+
+/* ============================================
    PWA : service worker
 ============================================ */
 if ("serviceWorker" in navigator) {

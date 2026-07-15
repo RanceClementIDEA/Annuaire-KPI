@@ -1040,3 +1040,74 @@ select.modal-input {
   #tutorialBtn { animation: none; }
   #tutorialBtn::after { display: none; }
 }
+
+/* ============================================
+   GUIDE POWER BI (bouton ? + captures)
+============================================ */
+.help-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 8px; vertical-align: middle;
+  border-radius: 50%; border: none;
+  background: var(--accent); color: var(--bg);
+  font-size: 12px; font-weight: 700; line-height: 1;
+  cursor: pointer; transition: transform var(--transition), box-shadow var(--transition);
+  animation: helpDotPulse 2.4s ease-in-out infinite;
+}
+.help-dot:hover { transform: scale(1.15); box-shadow: 0 0 0 4px var(--accent-glow); }
+@keyframes helpDotPulse {
+  0%,100% { box-shadow: 0 0 0 0 rgba(0,196,204,0); }
+  50%     { box-shadow: 0 0 0 4px rgba(0,196,204,0.25); }
+}
+
+/* Le guide Power BI est ouvert DEPUIS la modale KPI : il doit passer au-dessus */
+#pbiHelpModal { z-index: 2600; }
+
+.pbi-help-head { padding: 26px 26px 0; text-align: center; }
+.pbi-help-head h3 { color: var(--text-1); font-size: 17px; margin: 0 0 6px; }
+.pbi-help-head p  { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0 auto 6px; max-width: 360px; }
+
+.pbi-slide { padding: 14px 24px 6px; }
+.pbi-step {
+  display: inline-block; margin-bottom: 10px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+  color: var(--accent); background: var(--accent-dim);
+  padding: 4px 10px; border-radius: 20px;
+}
+.pbi-shot {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: #0a2836; margin-bottom: 14px;
+  box-shadow: var(--shadow-card);
+}
+.pbi-shot img { display: block; width: 100%; height: auto; }
+.pbi-slide h4 { color: var(--text-1); font-size: 15px; margin: 0 0 6px; }
+.pbi-slide p  { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0 auto; max-width: 350px; }
+.pbi-slide b  { color: var(--accent); font-weight: 600; }
+
+/* Étape 4 : animation de collage */
+.pbi-anim-paste {
+  height: 150px; margin-bottom: 14px; border-radius: 10px;
+  background: linear-gradient(160deg, var(--bg-surface), var(--bg));
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; position: relative;
+}
+.a-paste-field {
+  width: 78%; height: 34px; border-radius: 7px;
+  background: #fff; border: 2px solid var(--accent);
+  display: flex; align-items: center; padding: 0 12px; overflow: hidden;
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+.a-paste-text {
+  color: #1C2B36; font-size: 12px; white-space: nowrap; overflow: hidden;
+  width: 0; animation: pasteType 3s ease-in-out infinite;
+}
+@keyframes pasteType { 0%,15%{width:0} 45%{width:100%} 85%,100%{width:100%} }
+.a-paste-cursor {
+  position: absolute; width: 14px; height: 14px; border-radius: 50%;
+  background: rgba(255,255,255,0.9); box-shadow: 0 0 0 4px rgba(0,196,204,0.35);
+  animation: pasteCursor 3s ease-in-out infinite;
+}
+@keyframes pasteCursor {
+  0% { transform: translate(70px, 34px); opacity: 0; }
+  15% { transform: translate(0, 0); opacity: 1; }
+  30%,100% { transform: translate(-6px, -2px); opacity: 1; }
+}

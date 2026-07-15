@@ -305,6 +305,69 @@
   </div>
 </div>
 
+<!-- MODALE GUIDE : récupérer un lien Power BI -->
+<div id="pbiHelpModal" class="modal-overlay hidden">
+  <div class="tuto-card">
+    <button id="closePbiHelpBtn" class="modal-close tuto-close">✕</button>
+
+    <div class="pbi-help-head">
+      <h3>🔗 Récupérer un lien Power BI</h3>
+      <p>Dans Power BI, ouvrez le rapport puis suivez ces étapes pour copier le lien d'un visuel.</p>
+    </div>
+
+    <div class="tuto-viewport">
+      <div class="tuto-track" id="pbiTrack">
+
+        <section class="tuto-slide pbi-slide">
+          <div class="pbi-step">Étape 1 / 4</div>
+          <div class="pbi-shot">
+            <img src="powerbi-help-1.png" alt="Plus d'options" onerror="this.style.display='none'">
+          </div>
+          <h4>Ouvrir « Plus d'options »</h4>
+          <p>Survolez le visuel, puis cliquez sur les <b>trois points ⋯</b> (« Plus d'options ») en haut à droite du graphique.</p>
+        </section>
+
+        <section class="tuto-slide pbi-slide">
+          <div class="pbi-step">Étape 2 / 4</div>
+          <div class="pbi-shot">
+            <img src="powerbi-help-2.png" alt="Partager puis Lien vers cet élément visuel" onerror="this.style.display='none'">
+          </div>
+          <h4>Partager → Lien vers cet élément visuel</h4>
+          <p>Dans le menu, choisissez <b>Partager</b>, puis <b>Lien vers cet élément visuel</b>.</p>
+        </section>
+
+        <section class="tuto-slide pbi-slide">
+          <div class="pbi-step">Étape 3 / 4</div>
+          <div class="pbi-shot">
+            <img src="powerbi-help-3.png" alt="Copier le lien" onerror="this.style.display='none'">
+          </div>
+          <h4>Copier le lien</h4>
+          <p>Dans la fenêtre « Copier le lien », cliquez sur <b>Copier</b>. Le lien du visuel est maintenant dans votre presse-papier.</p>
+        </section>
+
+        <section class="tuto-slide pbi-slide">
+          <div class="pbi-step">Étape 4 / 4</div>
+          <div class="pbi-anim-paste">
+            <div class="a-paste-field"><span class="a-paste-text">https://app.powerbi.com/…</span></div>
+            <div class="a-paste-cursor"></div>
+          </div>
+          <h4>Coller dans l'annuaire</h4>
+          <p>Revenez ici et <b>collez le lien</b> dans le champ du bon site (Logistiport, MG + Débords, Armateur ou Global), pour la temporalité voulue.</p>
+        </section>
+
+      </div>
+    </div>
+
+    <div class="tuto-footer">
+      <div class="tuto-dots" id="pbiDots"></div>
+      <div class="tuto-nav">
+        <button type="button" id="pbiPrev" class="btn-secondary tuto-btn">← Précédent</button>
+        <button type="button" id="pbiNext" class="btn-primary tuto-btn">Suivant →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- MODALE CRÉATION / ÉDITION KPI -->
 <div id="kpiModal" class="modal-overlay hidden">
   <div class="modal-card">
@@ -358,7 +421,10 @@
       <input type="text" id="kpiRitualInput" class="modal-input" list="ritualList" placeholder="Ex : COPIL logistique">
       <datalist id="ritualList"></datalist>
 
-      <div class="modal-links-title">Liens vers les rapports</div>
+      <div class="modal-links-title">
+        Liens vers les rapports
+        <button type="button" id="pbiHelpBtn" class="help-dot" title="Comment récupérer un lien Power BI ?">?</button>
+      </div>
       <div class="form-grid">
         <div>
           <label class="modal-label" for="kpiLinkLog">Logistiport</label>
