@@ -382,9 +382,12 @@ button { cursor: pointer; }
   font-size: 11px; font-weight: 500; white-space: nowrap;
 }
 .tag-type    { background: #DBEAFE; color: #1D4ED8; }
+.tag-contract      { background: #DBEAFE; color: #1D4ED8; }
+.tag-noncontract   { background: #F1F5F9; color: #475569; }
+.tag-operationnel  { background: #CCFBF1; color: #0F766E; }
 .tag-process { background: #DCFCE7; color: #15803D; }
-.tag-reception    { background: #FFE4E6; color: #BE123C; }
-.tag-distribution { background: #E0E7FF; color: #4338CA; }
+.tag-reception     { background: #FFEDD5; color: #C2410C; }
+.tag-distribution  { background: #FAE8FF; color: #A21CAF; }
 .tag-freq    { background: #FEF3C7; color: #B45309; }
 .tag-ritual  { background: #EDE9FE; color: #6D28D9; }
 

@@ -802,10 +802,21 @@ function updateCounts() {
 /* ============================================
    OPEN KPI
 ============================================ */
-function openKPI(selectId) {
-  const url = document.getElementById(selectId).value;
+// Ouvre le rapport sélectionné dans un nouvel onglet, sans recharger l'app
+function openReport(selectId, ev) {
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  const url = opt && opt.dataset ? opt.dataset.url : "";
   if (!url) { showToast("Sélectionnez d'abord un rapport"); return; }
-  window.open(url, "_blank");
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+// Mémorise le SITE choisi (pas l'URL) pour le conserver en changeant de temporalité
+function onReportSelect(selId, key) {
+  const sel = document.getElementById(selId);
+  if (sel) groupReport[key] = sel.value;
 }
 
 /* ============================================
@@ -824,15 +835,26 @@ function processTagClass(p) {
   return "tag tag-process";
 }
 
+// Classe de couleur du tag Type : contractuel / non contractuel / opérationnel
+function typeTagClass(t) {
+  const v = (t || "").toLowerCase();
+  if (v.includes("non") && v.includes("contract")) return "tag tag-type tag-noncontract";
+  if (v.includes("contract"))  return "tag tag-type tag-contract";
+  if (v.includes("opérat") || v.includes("operat")) return "tag tag-type tag-operationnel";
+  return "tag tag-type";
+}
+
 let kpiGroups = {}; // gid → { key, variants } (reconstruit à chaque rendu)
 let groupSel = {};  // titleKey → id de la variante sélectionnée (persiste entre rendus)
+let groupReport = {}; // titleKey → site de rapport choisi (logistiport/armement/…)
 
 // Corps d'une carte pour UNE variante de KPI (grouped = true si la carte
 // regroupe plusieurs temporalités : la fréquence est alors dans le sélecteur)
-function cardBody(kpi, grouped, freqSelectorHtml = "") {
+function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const isFav  = isFavorite(kpi.id);
   const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
   const safeId = esc(kpi.id).replace(/'/g, "\\'");
+  const safeKey = esc(key).replace(/'/g, "\\'");
 
   const siteBadges = [
     kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
@@ -841,11 +863,17 @@ function cardBody(kpi, grouped, freqSelectorHtml = "") {
     kpi.global      ? `<span class="site-badge global"><span class="dot"></span>GLOBAL</span>` : ""
   ].join("");
 
-  let options = "";
-  if (kpi.logistiport) options += `<option value="${esc(kpi.logistiport)}">Logistiport</option>`;
-  if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">MG + Débords</option>`;
-  if (kpi.armateur)    options += `<option value="${esc(kpi.armateur)}">Armateur</option>`;
-  if (kpi.global)      options += `<option value="${esc(kpi.global)}">Global</option>`;
+  // Options de rapport : value = SITE, data-url = lien de CETTE temporalité
+  const sites = [
+    kpi.logistiport && { k: "logistiport", label: "Logistiport", url: kpi.logistiport },
+    kpi.armement    && { k: "armement",    label: "MG + Débords", url: kpi.armement },
+    kpi.armateur    && { k: "armateur",    label: "Armateur",     url: kpi.armateur },
+    kpi.global      && { k: "global",      label: "Global",       url: kpi.global }
+  ].filter(Boolean);
+  const savedSite = groupReport[key];
+  const options = sites.map(s =>
+    `<option value="${s.k}" data-url="${esc(s.url)}"${s.k === savedSite ? " selected" : ""}>${s.label}</option>`
+  ).join("");
 
   return `
       ${isFav ? `<div class="fav-ribbon">⭐ Favori</div>` : ""}
@@ -853,18 +881,19 @@ function cardBody(kpi, grouped, freqSelectorHtml = "") {
       <div class="card-header">
         <div class="card-title">${esc(kpi.title)}</div>
         <div class="card-tools">
-          <button class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
+          <button type="button" class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
-          <button class="btn-tool btn-tool-danger" onclick="deleteKPI('${safeId}')" title="Supprimer">
+          <button type="button" class="btn-tool btn-tool-danger" onclick="deleteKPI('${safeId}')" title="Supprimer">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
-          <button class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
+          <button type="button" class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
         </div>
       </div>
 
-      ${(kpi.process || kpi.ritual) ? `
+      ${(kpi.type || kpi.process || kpi.ritual) ? `
       <div class="card-tags">
+        ${kpi.type    ? `<span class="${typeTagClass(kpi.type)}">${esc(kpi.type)}</span>` : ""}
         ${kpi.process ? `<span class="${processTagClass(kpi.process)}">${esc(kpi.process)}</span>` : ""}
         ${kpi.ritual  ? `<span class="tag tag-ritual">${esc(kpi.ritual)}</span>` : ""}
       </div>` : ""}
@@ -875,11 +904,11 @@ function cardBody(kpi, grouped, freqSelectorHtml = "") {
 
       ${options ? `
       <div class="card-action">
-        <select id="${selId}">
+        <select id="${selId}" onchange="onReportSelect('${selId}','${safeKey}')">
           <option value="">Choisir un rapport</option>
           ${options}
         </select>
-        <button class="btn-open" onclick="openKPI('${selId}')">
+        <button type="button" class="btn-open" onclick="openReport('${selId}', event)">
           Ouvrir
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </button>
@@ -898,7 +927,7 @@ function changeGroupFreq(gid, idx) {
   groupSel[grp.key] = variant.id;
   const body = document.getElementById("body_" + gid);
   if (body) {
-    body.innerHTML = cardBody(variant, true, freqSelectorHtml(gid, grp.variants, +idx));
+    body.innerHTML = cardBody(variant, true, freqSelectorHtml(gid, grp.variants, +idx), grp.key);
     const card = body.closest(".card");
     if (card) card.classList.toggle("favorite", isFavorite(variant.id));
   }
@@ -964,9 +993,9 @@ function render(groups, matchCount) {
     card.style.animationDelay = `${Math.min(i * 30, 180)}ms`;
 
     if (variants.length > 1) {
-      card.innerHTML = `<div class="group-body" id="body_${gid}">${cardBody(selected, true, freqSelectorHtml(gid, variants, selIdx))}</div>`;
+      card.innerHTML = `<div class="group-body" id="body_${gid}">${cardBody(selected, true, freqSelectorHtml(gid, variants, selIdx), key)}</div>`;
     } else {
-      card.innerHTML = cardBody(selected, false);
+      card.innerHTML = cardBody(selected, false, "", key);
     }
 
     container.appendChild(card);
