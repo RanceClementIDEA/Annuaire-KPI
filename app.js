@@ -235,7 +235,7 @@ function extractLinksByColumn(sheet, headers, rowIndex) {
       const url = cell.l.Target.replace(/&amp;/g, "&");
       const h = (header || "").toLowerCase();
       if (h.includes("log"))                          links.logistiport = url;
-      else if (h.includes("armement") || h.includes("mg")) links.armement = url;
+      else if (h.includes("mg+débords") || h.includes("mg+debords") || h.includes("mg") || h.includes("armement")) links.armement = url;
       else if (h.includes("armateur"))                links.armateur = url;
       else if (h.includes("global"))                  links.global = url;
     }
@@ -703,14 +703,14 @@ function render(list) {
 
     const siteBadges = [
       kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
-      kpi.armement    ? `<span class="site-badge armement"><span class="dot"></span>ARM</span>` : "",
+      kpi.armement    ? `<span class="site-badge armement"><span class="dot"></span>MG+</span>` : "",
       kpi.armateur    ? `<span class="site-badge armateur"><span class="dot"></span>ATEUR</span>` : "",
       kpi.global      ? `<span class="site-badge global"><span class="dot"></span>GLOBAL</span>` : ""
     ].join("");
 
     let options = "";
     if (kpi.logistiport) options += `<option value="${esc(kpi.logistiport)}">Logistiport</option>`;
-    if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">Armement</option>`;
+    if (kpi.armement)    options += `<option value="${esc(kpi.armement)}">MG + Débords</option>`;
     if (kpi.armateur)    options += `<option value="${esc(kpi.armateur)}">Armateur</option>`;
     if (kpi.global)      options += `<option value="${esc(kpi.global)}">Global</option>`;
 
