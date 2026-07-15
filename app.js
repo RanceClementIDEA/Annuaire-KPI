@@ -97,6 +97,11 @@ function login(user) {
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
+
+  // Premier lancement : on propose le tutoriel automatiquement
+  if (localStorage.getItem("kpiTutoSeen") !== "1") {
+    setTimeout(() => { try { openTutorial(); } catch (e) {} }, 600);
+  }
 }
 
 loginBtn.addEventListener("click", () => {
@@ -1416,6 +1421,85 @@ document.getElementById("pullSyncBtn")?.addEventListener("click", () => {
 document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
   if (confirm("Désactiver la synchronisation cloud sur cet appareil ?")) disconnectSync();
 });
+
+/* ============================================
+   TUTORIEL ANIMÉ (carrousel)
+============================================ */
+let tutoIndex = 0;
+let tutoCount = 0;
+
+function tutoRender() {
+  const track = document.getElementById("tutoTrack");
+  const dots = document.getElementById("tutoDots");
+  if (!track) return;
+  track.style.transform = `translateX(-${tutoIndex * 100}%)`;
+  // Points
+  Array.from(dots.children).forEach((d, i) => d.classList.toggle("active", i === tutoIndex));
+  // Boutons
+  const prev = document.getElementById("tutoPrev");
+  const next = document.getElementById("tutoNext");
+  prev.style.visibility = tutoIndex === 0 ? "hidden" : "visible";
+  next.textContent = tutoIndex === tutoCount - 1 ? "Terminer ✓" : "Suivant →";
+}
+
+function tutoGo(i) {
+  tutoIndex = Math.max(0, Math.min(tutoCount - 1, i));
+  tutoRender();
+}
+
+function openTutorial() {
+  const track = document.getElementById("tutoTrack");
+  const dots = document.getElementById("tutoDots");
+  if (!track) return;
+  tutoCount = track.children.length;
+  // (Re)génère les points
+  dots.innerHTML = "";
+  for (let i = 0; i < tutoCount; i++) {
+    const d = document.createElement("span");
+    d.addEventListener("click", () => tutoGo(i));
+    dots.appendChild(d);
+  }
+  document.getElementById("tutoDontShow").checked = localStorage.getItem("kpiTutoSeen") === "1";
+  tutoIndex = 0;
+  tutoRender();
+  document.getElementById("tutorialModal").classList.remove("hidden");
+}
+
+function closeTutorial() {
+  document.getElementById("tutorialModal").classList.add("hidden");
+}
+
+document.getElementById("tutorialBtn")?.addEventListener("click", openTutorial);
+document.getElementById("closeTutorialBtn")?.addEventListener("click", closeTutorial);
+document.getElementById("tutoPrev")?.addEventListener("click", () => tutoGo(tutoIndex - 1));
+document.getElementById("tutoNext")?.addEventListener("click", () => {
+  if (tutoIndex === tutoCount - 1) closeTutorial(); else tutoGo(tutoIndex + 1);
+});
+document.getElementById("tutoDontShow")?.addEventListener("change", function () {
+  localStorage.setItem("kpiTutoSeen", this.checked ? "1" : "0");
+});
+document.getElementById("tutorialModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("tutorialModal")) closeTutorial();
+});
+// Navigation clavier + gestes tactiles
+document.addEventListener("keydown", e => {
+  if (document.getElementById("tutorialModal")?.classList.contains("hidden")) return;
+  if (e.key === "ArrowRight") tutoGo(tutoIndex + 1);
+  else if (e.key === "ArrowLeft") tutoGo(tutoIndex - 1);
+  else if (e.key === "Escape") closeTutorial();
+});
+(function bindTutoSwipe() {
+  const vp = document.querySelector(".tuto-viewport");
+  if (!vp) return;
+  let x0 = null;
+  vp.addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
+  vp.addEventListener("touchend", e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 45) tutoGo(tutoIndex + (dx < 0 ? 1 : -1));
+    x0 = null;
+  }, { passive: true });
+})();
 
 /* ============================================
    PWA : service worker

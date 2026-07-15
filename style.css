@@ -804,3 +804,239 @@ select.modal-input {
 }
 .freq-scope { font-weight: 400; color: var(--text-3); font-size: 11px; }
 #freqFields { transition: opacity var(--transition); }
+
+/* ============================================
+   TUTORIEL ANIMÉ
+============================================ */
+.tuto-card {
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: min(92vw, 460px);
+  max-height: 90vh; overflow: hidden;
+  position: relative;
+  box-shadow: var(--shadow);
+  display: flex; flex-direction: column;
+}
+.tuto-close {
+  position: absolute; top: 12px; right: 12px; z-index: 5;
+  background: rgba(255,255,255,0.08); color: var(--text-1);
+  border: none; border-radius: 8px; width: 30px; height: 30px;
+}
+.tuto-close:hover { background: rgba(255,255,255,0.16); }
+
+.tuto-viewport { overflow: hidden; }
+.tuto-track { display: flex; transition: transform 0.35s cubic-bezier(.4,0,.2,1); }
+.tuto-slide {
+  min-width: 100%; box-sizing: border-box;
+  padding: 30px 28px 6px; text-align: center;
+}
+.tuto-slide h3 { color: var(--text-1); font-size: 17px; margin: 4px 0 8px; }
+.tuto-slide p  { color: var(--text-2); font-size: 13.5px; line-height: 1.6; margin: 0 auto; max-width: 340px; }
+.tuto-slide b  { color: var(--accent); font-weight: 600; }
+
+/* Zone d'animation */
+.tuto-anim {
+  height: 175px; margin-bottom: 14px;
+  background: linear-gradient(160deg, var(--bg-surface), var(--bg));
+  border: 1px solid var(--border); border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; position: relative;
+}
+.anim-scene, .anim-form, .anim-tabs, .anim-save, .anim-edit, .anim-open {
+  position: relative; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* Curseur commun */
+.a-cursor {
+  position: absolute; width: 16px; height: 16px;
+  border-radius: 50%; background: rgba(255,255,255,0.9);
+  box-shadow: 0 0 0 4px rgba(0,196,204,0.35); pointer-events: none;
+}
+
+/* Slide 1 : FAB + clic */
+.a-fab {
+  width: 52px; height: 52px; border-radius: 50%;
+  background: var(--accent); color: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 700;
+  animation: fabPulse 2s ease-in-out infinite;
+}
+@keyframes fabPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.08)} }
+.a-cursor-fab { animation: cursorFab 2s ease-in-out infinite; }
+@keyframes cursorFab {
+  0% { transform: translate(60px, 40px); opacity: 0; }
+  40% { transform: translate(8px, 8px); opacity: 1; }
+  55%,70% { transform: translate(4px, 4px); }
+  100% { transform: translate(60px, 40px); opacity: 0; }
+}
+.a-ripple {
+  position: absolute; width: 52px; height: 52px; border-radius: 50%;
+  border: 2px solid var(--accent); opacity: 0;
+  animation: ripple 2s ease-out infinite;
+}
+@keyframes ripple {
+  0%,45% { transform: scale(1); opacity: 0; }
+  55% { opacity: 0.7; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+/* Slide 2 : formulaire qui se remplit */
+.anim-form { flex-direction: column; gap: 12px; padding: 0 40px; }
+.a-field { width: 100%; }
+.a-label { display: block; width: 40%; height: 7px; border-radius: 4px; background: rgba(255,255,255,0.18); margin-bottom: 6px; }
+.a-input { display: block; width: 100%; height: 16px; border-radius: 5px; background: rgba(255,255,255,0.08); border: 1px solid var(--border); }
+.a-field-1 .a-input { animation: fillField 3s ease-in-out infinite; }
+.a-field-2 .a-input { animation: fillField 3s ease-in-out 0.5s infinite; }
+.a-field-3 .a-input { animation: fillField 3s ease-in-out 1s infinite; }
+@keyframes fillField {
+  0%,10% { background: rgba(255,255,255,0.08); box-shadow: none; }
+  25% { background: var(--accent-dim); box-shadow: 0 0 0 2px var(--accent-glow); }
+  70%,100% { background: rgba(0,196,204,0.10); box-shadow: none; }
+}
+.a-typing { position: relative; overflow: hidden; }
+.a-typing::after {
+  content: ""; position: absolute; left: 6px; top: 4px; height: 8px; width: 0;
+  background: var(--accent); border-radius: 2px;
+  animation: typing 3s ease-in-out infinite;
+}
+@keyframes typing { 0%,10%{width:0} 30%{width:55%} 70%,100%{width:55%} }
+
+/* Slide 3 : onglets de temporalité */
+.anim-tabs { flex-direction: column; gap: 14px; padding: 0 30px; }
+.a-tabs { display: flex; gap: 6px; width: 100%; }
+.a-tab {
+  flex: 1; padding: 7px 4px; border-radius: 7px; font-size: 10.5px; text-align: center;
+  background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-2);
+}
+.a-tab-m { animation: tabCycle 4.5s infinite; }
+.a-tab-h { animation: tabCycle 4.5s 1.5s infinite; }
+.a-tab-q { animation: tabCycle 4.5s 3s infinite; }
+@keyframes tabCycle {
+  0%,5% { background: var(--accent); color: #fff; border-color: var(--accent); }
+  33%,100% { background: var(--bg-surface); color: var(--text-2); border-color: var(--border); }
+}
+.a-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+.a-link { height: 15px; border-radius: 5px; background: rgba(255,255,255,0.08); border: 1px solid var(--border); animation: linkSwap 4.5s infinite; }
+.a-link:nth-child(2){animation-delay:.1s} .a-link:nth-child(3){animation-delay:.2s} .a-link:nth-child(4){animation-delay:.3s}
+@keyframes linkSwap {
+  0%,30% { background: rgba(0,196,204,0.10); }
+  33%,40% { background: rgba(255,255,255,0.03); }
+  45%,100% { background: rgba(0,196,204,0.06); }
+}
+.a-cursor-tab { animation: cursorTab 4.5s ease-in-out infinite; }
+@keyframes cursorTab {
+  0% { transform: translate(-80px,-42px); opacity:1; }
+  30% { transform: translate(-80px,-42px); }
+  40% { transform: translate(0px,-42px); }
+  70% { transform: translate(0px,-42px); }
+  80%,100% { transform: translate(80px,-42px); }
+}
+
+/* Slide 4 : enregistrer */
+.anim-save { flex-direction: column; gap: 16px; }
+.a-save-btn {
+  position: relative; padding: 10px 20px; border-radius: 8px;
+  background: var(--accent); color: var(--bg); font-size: 13px; font-weight: 700;
+  animation: saveClick 3s ease-in-out infinite;
+}
+.a-save-check { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--green); color: #fff; border-radius: 8px; opacity: 0; font-size: 18px;
+  animation: saveCheck 3s ease-in-out infinite; }
+@keyframes saveClick { 0%,40%{transform:scale(1)} 48%{transform:scale(0.92)} 60%,100%{transform:scale(1)} }
+@keyframes saveCheck { 0%,48%{opacity:0} 55%,80%{opacity:1} 90%,100%{opacity:0} }
+.a-cards { display: flex; gap: 8px; }
+.a-mini-card { width: 34px; height: 24px; border-radius: 6px; background: var(--card-bg); opacity: 0; transform: translateY(8px);
+  animation: cardPop 3s ease-out infinite; }
+.a-mini-card:nth-child(1){animation-delay:.6s} .a-mini-card:nth-child(2){animation-delay:.75s} .a-mini-card:nth-child(3){animation-delay:.9s}
+@keyframes cardPop { 0%,20%{opacity:0;transform:translateY(8px)} 40%,90%{opacity:1;transform:translateY(0)} 100%{opacity:0;transform:translateY(8px)} }
+
+/* Slide 5 : modifier */
+.anim-edit { }
+.a-card-demo { width: 200px; background: var(--card-bg); border-radius: 10px; padding: 12px; box-shadow: var(--shadow-card); }
+.a-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.a-card-title { display: block; width: 90px; height: 9px; border-radius: 4px; background: #cbd5e1; }
+.a-pencil { font-size: 14px; animation: pencilPulse 2s ease-in-out infinite; }
+@keyframes pencilPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25)} }
+.a-card-tags { display: flex; gap: 6px; }
+.a-card-tags span { width: 44px; height: 14px; border-radius: 20px; }
+.a-card-tags span:nth-child(1){ background:#DBEAFE; } .a-card-tags span:nth-child(2){ background:#FFEDD5; }
+.a-cursor-pencil { animation: cursorPencil 2s ease-in-out infinite; }
+@keyframes cursorPencil {
+  0% { transform: translate(-40px, 40px); opacity: 0; }
+  45% { transform: translate(78px, -18px); opacity: 1; }
+  60%,75% { transform: translate(74px, -22px); }
+  100% { transform: translate(-40px, 40px); opacity: 0; }
+}
+
+/* Slide 6 : ouvrir un rapport + changer temporalité */
+.anim-open { flex-direction: column; gap: 12px; }
+.a-report { display: flex; gap: 8px; }
+.a-select { padding: 8px 12px; border-radius: 7px; background: var(--card-bg); color: var(--card-text); font-size: 11px; }
+.a-open-btn { padding: 8px 14px; border-radius: 7px; background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 700;
+  animation: openBtn 3s ease-in-out infinite; }
+@keyframes openBtn { 0%,55%{box-shadow:none} 65%{box-shadow:0 0 0 5px var(--accent-glow); transform:scale(0.95)} 80%,100%{box-shadow:none;transform:scale(1)} }
+.a-freq-switch { display: flex; align-items: center; gap: 6px; background: #ECFEFF; border-radius: 7px; padding: 6px 10px; }
+.a-freq-label { font-size: 12px; }
+.a-freq-sel { font-size: 11px; color: #0E7490; font-weight: 600; }
+.a-freq-anim { animation: freqText 4s steps(1) infinite; }
+@keyframes freqText { 0%{content:""} }
+.a-cursor-open { animation: cursorOpen 3s ease-in-out infinite; }
+@keyframes cursorOpen {
+  0% { transform: translate(60px, -30px); opacity: 0; }
+  50% { transform: translate(58px, -28px); opacity: 1; }
+  65%,80% { transform: translate(56px, -26px); }
+  100% { transform: translate(60px, -30px); opacity: 0; }
+}
+
+/* Footer / navigation */
+.tuto-footer { padding: 10px 22px 4px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tuto-dots { display: flex; gap: 6px; }
+.tuto-dots span { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.2); cursor: pointer; transition: all var(--transition); }
+.tuto-dots span.active { background: var(--accent); width: 20px; border-radius: 4px; }
+.tuto-nav { display: flex; gap: 8px; }
+.tuto-btn { padding: 9px 14px; font-size: 12.5px; border-radius: 8px; }
+.tuto-dismiss { display: flex; align-items: center; gap: 8px; padding: 8px 22px 16px; color: var(--text-3); font-size: 11.5px; cursor: pointer; }
+.tuto-dismiss input { accent-color: var(--accent); }
+
+@media (max-width: 768px) {
+  .tuto-anim { height: 150px; }
+  .tuto-slide { padding: 26px 18px 4px; }
+  .tuto-btn { padding: 11px 12px; }
+}
+
+/* Bouton Tutoriel : se démarque des autres boutons du pied de sidebar */
+#tutorialBtn {
+  background: linear-gradient(135deg, rgba(0,196,204,0.16), rgba(255,176,32,0.14));
+  border: 1px solid rgba(0,196,204,0.45);
+  color: var(--text-1); font-weight: 600;
+  position: relative; overflow: hidden;
+  animation: tutoGlow 2.8s ease-in-out infinite;
+}
+#tutorialBtn svg { color: var(--accent); }
+#tutorialBtn:hover {
+  border-color: var(--accent); color: #fff;
+  background: linear-gradient(135deg, rgba(0,196,204,0.28), rgba(255,176,32,0.22));
+}
+@keyframes tutoGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0,196,204,0.0); }
+  50%      { box-shadow: 0 0 0 3px rgba(0,196,204,0.18); }
+}
+/* Reflet qui balaie le bouton de temps en temps */
+#tutorialBtn::after {
+  content: ""; position: absolute; top: 0; left: -60%;
+  width: 40%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.28), transparent);
+  transform: skewX(-18deg);
+  animation: tutoShine 4.5s ease-in-out infinite;
+}
+@keyframes tutoShine {
+  0%, 62% { left: -60%; }
+  78%     { left: 130%; }
+  100%    { left: 130%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #tutorialBtn { animation: none; }
+  #tutorialBtn::after { display: none; }
+}

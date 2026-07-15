@@ -127,6 +127,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
         Rafraîchir
       </button>
+      <button class="btn-refresh" id="tutorialBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Tutoriel
+      </button>
       <button class="btn-refresh" id="syncSettingsBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Synchronisation
@@ -178,6 +182,126 @@
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     </button>
 
+  </div>
+</div>
+
+<!-- MODALE TUTORIEL -->
+<div id="tutorialModal" class="modal-overlay hidden">
+  <div class="tuto-card">
+    <button id="closeTutorialBtn" class="modal-close tuto-close">✕</button>
+
+    <div class="tuto-viewport">
+      <div class="tuto-track" id="tutoTrack">
+
+        <!-- Slide 1 : créer -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-scene">
+              <div class="a-fab"><span>+</span></div>
+              <div class="a-cursor a-cursor-fab"></div>
+              <div class="a-ripple"></div>
+            </div>
+          </div>
+          <h3>1. Créer un KPI</h3>
+          <p>Cliquez sur le bouton <b>+</b> en bas à droite (ou <b>Nouveau KPI</b> dans le menu). La fenêtre de création s'ouvre.</p>
+        </section>
+
+        <!-- Slide 2 : champs partagés -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-form">
+              <div class="a-field a-field-1"><span class="a-label"></span><span class="a-input a-typing"></span></div>
+              <div class="a-field a-field-2"><span class="a-label"></span><span class="a-input"></span></div>
+              <div class="a-field a-field-3"><span class="a-label"></span><span class="a-input"></span></div>
+            </div>
+          </div>
+          <h3>2. Décrire le KPI</h3>
+          <p>Renseignez l'<b>intitulé</b> (obligatoire), le <b>type</b>, le <b>processus</b> et une <b>description</b>. Ces informations sont communes à toutes les temporalités.</p>
+        </section>
+
+        <!-- Slide 3 : temporalités -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-tabs">
+              <div class="a-tabs">
+                <span class="a-tab a-tab-m">Mensuelle</span>
+                <span class="a-tab a-tab-h">Hebdo</span>
+                <span class="a-tab a-tab-q">Quotidienne</span>
+              </div>
+              <div class="a-links">
+                <span class="a-link"></span><span class="a-link"></span>
+                <span class="a-link"></span><span class="a-link"></span>
+              </div>
+              <div class="a-cursor a-cursor-tab"></div>
+            </div>
+          </div>
+          <h3>3. Remplir les temporalités</h3>
+          <p>Chaque temporalité (Mensuelle, Hebdo, Quotidienne) a ses propres <b>liens de rapport</b> et son <b>rituel</b>. Changez d'onglet pour basculer : les liens affichés suivent la temporalité.</p>
+        </section>
+
+        <!-- Slide 4 : enregistrer -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-save">
+              <div class="a-save-btn"><span class="a-save-text">💾 Enregistrer</span><span class="a-save-check">✓</span></div>
+              <div class="a-cursor a-cursor-save"></div>
+              <div class="a-cards">
+                <span class="a-mini-card"></span><span class="a-mini-card"></span><span class="a-mini-card"></span>
+              </div>
+            </div>
+          </div>
+          <h3>4. Enregistrer en une fois</h3>
+          <p>Un seul clic sur <b>Enregistrer</b> crée ou met à jour <b>toutes les temporalités</b> du KPI. Elles sont regroupées sur une même carte.</p>
+        </section>
+
+        <!-- Slide 5 : modifier -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-edit">
+              <div class="a-card-demo">
+                <div class="a-card-top"><span class="a-card-title"></span><span class="a-pencil">✏️</span></div>
+                <div class="a-card-tags"><span></span><span></span></div>
+              </div>
+              <div class="a-cursor a-cursor-pencil"></div>
+            </div>
+          </div>
+          <h3>5. Modifier un KPI</h3>
+          <p>Sur n'importe quelle carte, cliquez sur le <b>crayon ✏️</b>. Vous retrouvez tous les champs et toutes les temporalités, prêts à être modifiés. Décochez une temporalité pour la retirer.</p>
+        </section>
+
+        <!-- Slide 6 : consulter -->
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-open">
+              <div class="a-report">
+                <span class="a-select">Logistiport ▾</span>
+                <span class="a-open-btn">Ouvrir ↗</span>
+              </div>
+              <div class="a-freq-switch">
+                <span class="a-freq-label">📅</span>
+                <span class="a-freq-sel a-freq-anim">Mensuelle ▾</span>
+              </div>
+              <div class="a-cursor a-cursor-open"></div>
+            </div>
+          </div>
+          <h3>6. Ouvrir un rapport</h3>
+          <p>Choisissez un site puis cliquez sur <b>Ouvrir</b> : le rapport s'ouvre dans un nouvel onglet. En changeant de temporalité, le site choisi reste sélectionné et pointe vers le bon lien.</p>
+        </section>
+
+      </div>
+    </div>
+
+    <div class="tuto-footer">
+      <div class="tuto-dots" id="tutoDots"></div>
+      <div class="tuto-nav">
+        <button id="tutoPrev" class="btn-secondary tuto-btn">← Précédent</button>
+        <button id="tutoNext" class="btn-primary tuto-btn">Suivant →</button>
+      </div>
+    </div>
+
+    <label class="tuto-dismiss">
+      <input type="checkbox" id="tutoDontShow"> Ne plus afficher au démarrage
+    </label>
   </div>
 </div>
 
