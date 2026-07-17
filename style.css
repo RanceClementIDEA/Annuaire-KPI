@@ -1111,3 +1111,35 @@ select.modal-input {
   15% { transform: translate(0, 0); opacity: 1; }
   30%,100% { transform: translate(-6px, -2px); opacity: 1; }
 }
+
+/* Mise à jour sans clignotement : pas de rejeu de l'animation d'entrée */
+.card.no-anim { animation: none; }
+
+/* ============================================
+   GESTION DES SITES (périmètres)
+============================================ */
+.manage-sites-link {
+  float: right; background: none; border: none;
+  color: var(--accent); font-size: 11.5px; font-weight: 600;
+  cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
+}
+.manage-sites-link:hover { opacity: .8; }
+
+.link-swatch {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle;
+}
+
+.sites-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+.site-row { display: flex; align-items: center; gap: 8px; }
+.site-row .site-color {
+  width: 34px; height: 34px; padding: 0; border: 1px solid var(--border);
+  border-radius: 8px; background: none; cursor: pointer; flex-shrink: 0;
+}
+.site-row .site-name  { flex: 1 1 auto; min-width: 0; }
+.site-row .site-badge { flex: 0 0 82px; width: 82px; text-align: center; text-transform: uppercase; }
+.site-row .site-del { flex-shrink: 0; }
+
+@media (max-width: 768px) {
+  .site-row .site-badge { flex-basis: 64px; width: 64px; }
+}

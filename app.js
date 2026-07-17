@@ -110,6 +110,7 @@ function login(user) {
   }
 
   loadFavorites();
+  loadSites();
   loadManualEntries();
   loadPersonalEntries();
   loadOverrides();
@@ -263,16 +264,23 @@ function loadWorkbook(buffer) {
    EXTRACTION LIENS
 ============================================ */
 function extractLinksByColumn(sheet, headers, rowIndex) {
-  const links = { logistiport: "", armement: "", armateur: "", global: "" };
+  const links = {};
+  const inc = (h, v) => v && h.includes(v.toLowerCase());
   headers.forEach((header, colIndex) => {
     const cell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: colIndex })];
     if (cell && cell.l && cell.l.Target) {
       const url = cell.l.Target.replace(/&amp;/g, "&");
       const h = (header || "").toLowerCase();
-      if (h.includes("log"))                          links.logistiport = url;
-      else if (h.includes("armement") || h.includes("mg")) links.armement = url;
-      else if (h.includes("armateur"))                links.armateur = url;
-      else if (h.includes("global"))                  links.global = url;
+      // 1) Correspondance avec un site configuré (nom, clé ou badge)
+      let matched = sites.find(s => inc(h, s.name) || inc(h, s.key) || inc(h, s.badge));
+      // 2) Repli sur les mots-clés historiques des sites par défaut
+      if (!matched) {
+        if (h.includes("log"))                               matched = sites.find(s => s.key === "logistiport");
+        else if (h.includes("armement") || h.includes("mg")) matched = sites.find(s => s.key === "armement");
+        else if (h.includes("armateur"))                     matched = sites.find(s => s.key === "armateur");
+        else if (h.includes("global"))                       matched = sites.find(s => s.key === "global");
+      }
+      if (matched) links[matched.key] = url;
     }
   });
   return links;
@@ -465,7 +473,20 @@ function fillDatalists() {
 }
 
 function emptySlot() {
-  return { id: null, active: false, ritual: "", logistiport: "", armement: "", armateur: "", global: "" };
+  return { id: null, active: false, ritual: "", links: {} };
+}
+
+// Construit les champs de liens dans la modale à partir de la liste des sites
+function buildLinkFields() {
+  const grid = document.getElementById("kpiLinksGrid");
+  if (!grid) return;
+  grid.innerHTML = sites.map(s => `
+    <div>
+      <label class="modal-label" for="kpiLink_${esc(s.key)}">
+        <span class="link-swatch" style="background:${esc(s.color || "#64748B")}"></span>${esc(s.name)}
+      </label>
+      <input type="url" id="kpiLink_${esc(s.key)}" data-site="${esc(s.key)}" class="modal-input" placeholder="https://…">
+    </div>`).join("");
 }
 
 function openKpiModal(id = null) {
@@ -506,12 +527,9 @@ function openKpiModal(id = null) {
   group.forEach(v => {
     const f = STD_FREQS.find(sf => sf.toLowerCase() === (v.freq || "").toLowerCase().trim());
     if (f) {
-      modalSlots[f] = {
-        id: v.id, active: true,
-        ritual: v.ritual || "",
-        logistiport: v.logistiport || "", armement: v.armement || "",
-        armateur: v.armateur || "", global: v.global || ""
-      };
+      const links = {};
+      sites.forEach(s => { if (v[s.key]) links[s.key] = v[s.key]; });
+      modalSlots[f] = { id: v.id, active: true, ritual: v.ritual || "", links };
       modalInitialIds[f] = v.id;
     } else {
       // Fréquence non standard : préservée telle quelle, non éditable ici
@@ -531,6 +549,7 @@ function openKpiModal(id = null) {
   document.getElementById("deleteKpiBtn").style.display = ref ? "" : "none";
   document.getElementById("restoreKpiBtn").style.display = (isExcelRef && overrides[id]) ? "" : "none";
 
+  buildLinkFields();
   loadSlotIntoInputs(modalCurrentFreq);
   renderFreqTabs();
   fillDatalists();
@@ -543,10 +562,10 @@ function loadSlotIntoInputs(freq) {
   const slot = modalSlots[freq];
   document.getElementById("freqActiveToggle").checked = slot.active;
   document.getElementById("kpiRitualInput").value  = slot.ritual;
-  document.getElementById("kpiLinkLog").value       = slot.logistiport;
-  document.getElementById("kpiLinkArmement").value  = slot.armement;
-  document.getElementById("kpiLinkArmateur").value  = slot.armateur;
-  document.getElementById("kpiLinkGlobal").value    = slot.global;
+  sites.forEach(s => {
+    const el = document.getElementById("kpiLink_" + s.key);
+    if (el) el.value = (slot.links && slot.links[s.key]) || "";
+  });
   document.getElementById("ritualScope").textContent = "(" + freq.toLowerCase() + ")";
   const ff = document.getElementById("freqFields");
   ff.style.opacity = slot.active ? "1" : "0.45";
@@ -556,12 +575,14 @@ function loadSlotIntoInputs(freq) {
 // Sauvegarde les champs courants dans l'emplacement de la temporalité affichée
 function syncInputsIntoSlot(freq) {
   const slot = modalSlots[freq];
-  slot.active      = document.getElementById("freqActiveToggle").checked;
-  slot.ritual      = document.getElementById("kpiRitualInput").value.trim();
-  slot.logistiport = normalizeUrl(document.getElementById("kpiLinkLog").value);
-  slot.armement    = normalizeUrl(document.getElementById("kpiLinkArmement").value);
-  slot.armateur    = normalizeUrl(document.getElementById("kpiLinkArmateur").value);
-  slot.global      = normalizeUrl(document.getElementById("kpiLinkGlobal").value);
+  slot.active = document.getElementById("freqActiveToggle").checked;
+  slot.ritual = document.getElementById("kpiRitualInput").value.trim();
+  slot.links = {};
+  sites.forEach(s => {
+    const el = document.getElementById("kpiLink_" + s.key);
+    const url = el ? normalizeUrl(el.value) : "";
+    if (url) slot.links[s.key] = url;
+  });
 }
 
 // Onglets de temporalité : état actif (coche) + onglet courant surligné
@@ -641,12 +662,8 @@ function saveKpiForm() {
     }
 
     // Temporalité active : construire la variante
-    const fields = {
-      ...shared, freq,
-      ritual: slot.ritual,
-      logistiport: slot.logistiport, armement: slot.armement,
-      armateur: slot.armateur, global: slot.global
-    };
+    const fields = { ...shared, freq, ritual: slot.ritual };
+    sites.forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
 
     // Variante Excel existante → surcharge (préserve l'original au ré-import)
     if (kind === "excel" && space === "shared") {
@@ -686,6 +703,97 @@ function saveKpiForm() {
 }
 
 function editKPI(id) { openKpiModal(id); }
+
+/* ============================================
+   GESTION DES SITES (périmètres configurables)
+============================================ */
+let sitesDraft = []; // copie de travail éditée dans la modale
+
+function slugifySite(name) {
+  const base = (name || "site").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "site";
+  let key = base, n = 2;
+  while (sitesDraft.some(s => s.key === key)) key = base + "_" + (n++);
+  return key;
+}
+
+function renderSitesList() {
+  const list = document.getElementById("sitesList");
+  if (!list) return;
+  list.innerHTML = "";
+  sitesDraft.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "site-row";
+    row.innerHTML = `
+      <input type="color" class="site-color" value="${esc(s.color || "#64748B")}" title="Couleur">
+      <input type="text" class="modal-input site-name" placeholder="Nom du site" value="${esc(s.name || "")}">
+      <input type="text" class="modal-input site-badge" placeholder="Badge" value="${esc(s.badge || "")}" maxlength="8">
+      <button type="button" class="btn-tool btn-tool-danger site-del" title="Supprimer ce site">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>`;
+    row.querySelector(".site-color").addEventListener("input", e => sitesDraft[i].color = e.target.value);
+    row.querySelector(".site-name").addEventListener("input",  e => sitesDraft[i].name  = e.target.value);
+    row.querySelector(".site-badge").addEventListener("input", e => sitesDraft[i].badge = e.target.value);
+    row.querySelector(".site-del").addEventListener("click", () => {
+      if (confirm(`Supprimer le site « ${sitesDraft[i].name || "sans nom"} » ?\nLes liens déjà saisis pour ce site resteront masqués mais ne seront pas perdus.`)) {
+        sitesDraft.splice(i, 1);
+        renderSitesList();
+      }
+    });
+    list.appendChild(row);
+  });
+}
+
+function openSitesModal() {
+  sitesDraft = JSON.parse(JSON.stringify(sites));
+  renderSitesList();
+  document.getElementById("sitesModal").classList.remove("hidden");
+}
+function closeSitesModal() { document.getElementById("sitesModal").classList.add("hidden"); }
+
+function saveSitesFromModal() {
+  // Nettoie : nom obligatoire, clé stable conservée, badge/couleur par défaut si vide
+  const cleaned = [];
+  sitesDraft.forEach(s => {
+    const name = (s.name || "").trim();
+    if (!name) return; // ignore les lignes sans nom
+    const key = s.key || slugifySite(name);
+    cleaned.push({
+      key,
+      name,
+      badge: (s.badge || "").trim() || name.toUpperCase().slice(0, 6),
+      color: s.color || SITE_PALETTE[cleaned.length % SITE_PALETTE.length]
+    });
+  });
+  if (!cleaned.length) { showToast("⚠️ Gardez au moins un site", 2600); return; }
+  sites = cleaned;
+  saveSites(true);
+  rebuildData(true);       // rafraîchit les cartes avec les nouveaux périmètres
+  // Si la modale KPI est ouverte, on régénère ses champs de liens
+  if (!document.getElementById("kpiModal").classList.contains("hidden")) {
+    syncInputsIntoSlot(modalCurrentFreq);
+    buildLinkFields();
+    loadSlotIntoInputs(modalCurrentFreq);
+  }
+  closeSitesModal();
+  showToast("✅ Sites mis à jour");
+}
+
+document.getElementById("manageSitesBtn")?.addEventListener("click", openSitesModal);
+document.getElementById("closeSitesModalBtn")?.addEventListener("click", closeSitesModal);
+document.getElementById("cancelSitesBtn")?.addEventListener("click", closeSitesModal);
+document.getElementById("saveSitesBtn")?.addEventListener("click", saveSitesFromModal);
+document.getElementById("addSiteBtn")?.addEventListener("click", () => {
+  const color = SITE_PALETTE[sitesDraft.length % SITE_PALETTE.length];
+  sitesDraft.push({ key: slugifySite("site"), name: "", badge: "", color });
+  renderSitesList();
+});
+document.getElementById("sitesModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("sitesModal")) closeSitesModal();
+});
+// Accès aussi depuis la modale KPI ("⚙ Gérer les sites")
+document.getElementById("manageSitesBtn2")?.addEventListener("click", openSitesModal);
 
 function deleteManualKpi(id) {
   const kpi = manualEntries.find(k => k.id === id);
@@ -739,14 +847,18 @@ document.getElementById("kpiModal")?.addEventListener("click", e => {
 ============================================ */
 function initFilters() {
   const makeOptions = (arr, el) => {
+    const prev = el.value; // conserve le filtre actif
     const first = el.options[0];
     el.innerHTML = "";
     el.appendChild(first);
-    [...new Set(arr.filter(Boolean))].sort().forEach(v => {
+    const values = [...new Set(arr.filter(Boolean))].sort();
+    values.forEach(v => {
       const o = document.createElement("option");
       o.textContent = v;
       el.appendChild(o);
     });
+    // Restaure la sélection si elle existe toujours
+    if (prev && values.includes(prev)) el.value = prev;
   };
   makeOptions([...data, ...personalEntries].map(d => d.process), processFilter);
   makeOptions([...data, ...personalEntries].map(d => d.ritual),  ritualFilter);
@@ -881,23 +993,16 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const safeId = esc(kpi.id).replace(/'/g, "\\'");
   const safeKey = esc(key).replace(/'/g, "\\'");
 
-  const siteBadges = [
-    kpi.logistiport ? `<span class="site-badge logistiport"><span class="dot"></span>LOG</span>` : "",
-    kpi.armement    ? `<span class="site-badge armement"><span class="dot"></span>MG+D</span>` : "",
-    kpi.armateur    ? `<span class="site-badge armateur"><span class="dot"></span>ATEUR</span>` : "",
-    kpi.global      ? `<span class="site-badge global"><span class="dot"></span>GLOBAL</span>` : ""
-  ].join("");
+  // Périmètres présents pour ce KPI, dans l'ordre de la config des sites
+  const present = sites.filter(s => kpi[s.key]);
+  const siteBadges = present.map(s =>
+    `<span class="site-badge" style="background:${esc(s.color || "#64748B")}"><span class="dot"></span>${esc(siteBadgeLabel(s))}</span>`
+  ).join("");
 
-  // Options de rapport : value = SITE, data-url = lien de CETTE temporalité
-  const sites = [
-    kpi.logistiport && { k: "logistiport", label: "Logistiport", url: kpi.logistiport },
-    kpi.armement    && { k: "armement",    label: "MG + Débords", url: kpi.armement },
-    kpi.armateur    && { k: "armateur",    label: "Armateur",     url: kpi.armateur },
-    kpi.global      && { k: "global",      label: "Global",       url: kpi.global }
-  ].filter(Boolean);
+  // Options de rapport : value = clé du site, data-url = lien de CETTE temporalité
   const savedSite = groupReport[key];
-  const options = sites.map(s =>
-    `<option value="${s.k}" data-url="${esc(s.url)}"${s.k === savedSite ? " selected" : ""}>${s.label}</option>`
+  const options = present.map(s =>
+    `<option value="${esc(s.key)}" data-url="${esc(kpi[s.key])}"${s.key === savedSite ? " selected" : ""}>${esc(s.name)}</option>`
   ).join("");
 
   return `
@@ -1139,6 +1244,7 @@ function buildSyncPayload() {
     kpiData: [...excelData, ...manualEntries],
     kpiOverrides: overrides,
     kpiDeleted: deletedIds,
+    kpiSites: sites,
     favoritesByUser,
     updatedAt: localUpdatedAt || Date.now()
   };
@@ -1186,6 +1292,10 @@ function applyRemoteData(payload, fromSync) {
   if (Array.isArray(payload.kpiDeleted)) {
     deletedIds = payload.kpiDeleted;
     saveDeletedIds(false);
+  }
+  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) {
+    sites = payload.kpiSites;
+    saveSites(false);
   }
   if (payload.favoritesByUser) {
     localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));

@@ -127,6 +127,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
         Rafraîchir
       </button>
+      <button class="btn-refresh" id="manageSitesBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        Gérer les sites
+      </button>
       <button class="btn-refresh" id="tutorialBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         Tutoriel
@@ -420,25 +424,9 @@
       <div class="modal-links-title">
         Liens vers les rapports
         <button type="button" id="pbiHelpBtn" class="help-dot" title="Comment récupérer un lien Power BI ?">?</button>
+        <button type="button" id="manageSitesBtn2" class="manage-sites-link">⚙ Gérer les sites</button>
       </div>
-      <div class="form-grid">
-        <div>
-          <label class="modal-label" for="kpiLinkLog">Logistiport</label>
-          <input type="url" id="kpiLinkLog" class="modal-input" placeholder="https://…">
-        </div>
-        <div>
-          <label class="modal-label" for="kpiLinkArmement">MG + Débords</label>
-          <input type="url" id="kpiLinkArmement" class="modal-input" placeholder="https://…">
-        </div>
-        <div>
-          <label class="modal-label" for="kpiLinkArmateur">Armateur</label>
-          <input type="url" id="kpiLinkArmateur" class="modal-input" placeholder="https://…">
-        </div>
-        <div>
-          <label class="modal-label" for="kpiLinkGlobal">Global</label>
-          <input type="url" id="kpiLinkGlobal" class="modal-input" placeholder="https://…">
-        </div>
-      </div>
+      <div class="form-grid" id="kpiLinksGrid"></div>
     </div>
 
     <div class="modal-actions">
@@ -493,6 +481,33 @@
       <button id="pushSyncBtn" class="btn-secondary">⬆️ Envoyer</button>
       <button id="pullSyncBtn" class="btn-secondary">⬇️ Récupérer</button>
       <button id="disconnectSyncBtn" class="btn-secondary">🔌 Désactiver</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODALE GÉRER LES SITES -->
+<div id="sitesModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>⚙ Gérer les sites (périmètres)</h3>
+      <button id="closeSitesModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Ajoutez, renommez ou supprimez les périmètres proposés dans les fiches KPI
+      (par défaut : Logistiport, MG + Débords, Armateur, Global). Les modifications
+      sont partagées et synchronisées.
+    </p>
+
+    <div id="sitesList" class="sites-list"></div>
+
+    <button id="addSiteBtn" class="btn-add" style="margin-top:6px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Ajouter un site
+    </button>
+
+    <div class="modal-actions">
+      <button id="saveSitesBtn" class="btn-primary">💾 Enregistrer</button>
+      <button id="cancelSitesBtn" class="btn-secondary">Annuler</button>
     </div>
   </div>
 </div>
