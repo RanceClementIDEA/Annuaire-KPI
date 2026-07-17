@@ -1118,6 +1118,7 @@ function render(groups, matchCount) {
     if (selIdx < 0) selIdx = variants.findIndex(v => matchIds.has(v.id));
     if (selIdx < 0) selIdx = 0;
     const selected = variants[selIdx];
+    groupSel[key] = selected.id; // verrouille la temporalité affichée (survit aux re-rendus)
 
     const gid = "g" + i + "_" + key.replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 40);
     kpiGroups[gid] = { key, variants };
@@ -1408,13 +1409,13 @@ function bindNetworkHandlers() {
     if (cfg && cfg.enabled) setSyncStatusUI("offline");
   });
 
-  // Reprise sur l'onglet : on récupère les éventuels changements manqués
+  // Reprise sur l'onglet : on renvoie seulement d'éventuelles modifications en attente.
+  // (L'écoute temps réel onSnapshot garde déjà les données à jour, inutile de tout re-rendre.)
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     const cfg = getSyncConfig();
     if (!cfg || !cfg.enabled || !fbDb || !navigator.onLine) return;
     if (pendingPush) pushToCloud(false);
-    else pullFromCloud(false);
   });
 }
 
