@@ -14,7 +14,27 @@ let editingKpiId = null; // id de référence du KPI en cours d'édition (pour S
 
 // ─── État de la modale multi-temporalités ───
 const STD_FREQS = ["Mensuelle", "Hebdomadaire", "Quotidienne"];
-let modalSlots = {};        // freq → { id, active, ritual, logistiport, armement, armateur, global }
+let modalSlots = {};        // freq → { id, active, ritual, links:{siteKey:url} }
+
+// ─── Sites configurables (périmètres) ───
+const SITE_PALETTE = ["#0891B2", "#059669", "#D97706", "#64748B", "#7C3AED", "#DB2777", "#0D9488", "#B45309", "#4F46E5", "#BE123C"];
+const DEFAULT_SITES = [
+  { key: "logistiport", name: "Logistiport",  badge: "LOG",    color: "#0891B2" },
+  { key: "armement",    name: "MG + Débords", badge: "MG+D",   color: "#059669" },
+  { key: "armateur",    name: "Armateur",     badge: "ATEUR",  color: "#D97706" },
+  { key: "global",      name: "Global",       badge: "GLOBAL", color: "#64748B" }
+];
+let sites = [];
+
+function loadSites() {
+  try { sites = JSON.parse(localStorage.getItem("kpiSites")); } catch { sites = null; }
+  if (!Array.isArray(sites) || !sites.length) sites = JSON.parse(JSON.stringify(DEFAULT_SITES));
+}
+function saveSites(sync = true) {
+  localStorage.setItem("kpiSites", JSON.stringify(sites));
+  if (sync) scheduleAutoSync();
+}
+function siteBadgeLabel(s) { return (s.badge || s.name || "").toUpperCase().slice(0, 8); }
 let modalCurrentFreq = "Mensuelle";
 let modalExtraVariants = []; // variantes de fréquence non-standard, préservées telles quelles
 let modalInitialIds = {};   // freq → id d'origine (pour détecter les suppressions)
@@ -97,11 +117,6 @@ function login(user) {
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
-
-  // Premier lancement : on propose le tutoriel automatiquement
-  if (localStorage.getItem("kpiTutoSeen") !== "1") {
-    setTimeout(() => { try { openTutorial(); } catch (e) {} }, 600);
-  }
 }
 
 loginBtn.addEventListener("click", () => {
@@ -184,6 +199,7 @@ function toggleFavorite(id) {
   }
   saveFavorites();
   updateCounts();
+  animateNextRender = false;
   filterData();
 }
 
@@ -301,6 +317,8 @@ function rebuildData(sync) {
   data = [...excelWithEdits, ...manualEntries];
   initFilters();
   updateCounts();
+  // Une mise à jour (sync=true) ou une synchro distante ne doit pas rejouer l'animation d'entrée
+  if (sync || applyingRemoteSync) animateNextRender = false;
   filterData();
   updateRestoreDeletedBtn();
   // Cache la donnée d'origine (surcharges et suppressions sont stockées à part)
@@ -348,6 +366,7 @@ function deletePersonalKpi(id) {
   savePersonalEntries();
   initFilters();
   updateCounts();
+  animateNextRender = false;
   filterData();
   showToast("🗑 Signet personnel supprimé");
 }
@@ -852,6 +871,7 @@ function typeTagClass(t) {
 let kpiGroups = {}; // gid → { key, variants } (reconstruit à chaque rendu)
 let groupSel = {};  // titleKey → id de la variante sélectionnée (persiste entre rendus)
 let groupReport = {}; // titleKey → site de rapport choisi (logistiport/armement/…)
+let animateNextRender = true; // anime l'entrée des cartes seulement quand utile (pas sur simple mise à jour)
 
 // Corps d'une carte pour UNE variante de KPI (grouped = true si la carte
 // regroupe plusieurs temporalités : la fréquence est alors dans le sélecteur)
@@ -953,6 +973,10 @@ function freqSelectorHtml(gid, variants, selIdx) {
 }
 
 function render(groups, matchCount) {
+  // Mémorise le défilement pour ne pas revenir en haut après une mise à jour
+  const prevScroll = container.scrollTop;
+  const animate = animateNextRender;
+  animateNextRender = true; // par défaut, les rendus suivants animent
   container.innerHTML = "";
   kpiGroups = {};
 
@@ -994,8 +1018,8 @@ function render(groups, matchCount) {
     kpiGroups[gid] = { key, variants };
 
     const card = document.createElement("div");
-    card.className = "card" + (isFavorite(selected.id) ? " favorite" : "");
-    card.style.animationDelay = `${Math.min(i * 30, 180)}ms`;
+    card.className = "card" + (isFavorite(selected.id) ? " favorite" : "") + (animate ? "" : " no-anim");
+    if (animate) card.style.animationDelay = `${Math.min(i * 30, 180)}ms`;
 
     if (variants.length > 1) {
       card.innerHTML = `<div class="group-body" id="body_${gid}">${cardBody(selected, true, freqSelectorHtml(gid, variants, selIdx), key)}</div>`;
@@ -1005,6 +1029,9 @@ function render(groups, matchCount) {
 
     container.appendChild(card);
   });
+
+  // Rétablit le défilement là où l'utilisateur était (évite le retour en haut)
+  container.scrollTop = prevScroll;
 }
 
 
@@ -1459,7 +1486,6 @@ function openTutorial() {
     d.addEventListener("click", () => tutoGo(i));
     dots.appendChild(d);
   }
-  document.getElementById("tutoDontShow").checked = localStorage.getItem("kpiTutoSeen") === "1";
   tutoIndex = 0;
   tutoRender();
   document.getElementById("tutorialModal").classList.remove("hidden");
@@ -1474,9 +1500,6 @@ document.getElementById("closeTutorialBtn")?.addEventListener("click", closeTuto
 document.getElementById("tutoPrev")?.addEventListener("click", () => tutoGo(tutoIndex - 1));
 document.getElementById("tutoNext")?.addEventListener("click", () => {
   if (tutoIndex === tutoCount - 1) closeTutorial(); else tutoGo(tutoIndex + 1);
-});
-document.getElementById("tutoDontShow")?.addEventListener("change", function () {
-  localStorage.setItem("kpiTutoSeen", this.checked ? "1" : "0");
 });
 document.getElementById("tutorialModal")?.addEventListener("click", e => {
   if (e.target === document.getElementById("tutorialModal")) closeTutorial();
