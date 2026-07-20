@@ -3,12 +3,21 @@ import { StatutMission } from "@prisma/client";
 import { getAppUser } from "@/lib/auth";
 import { getAlternantOwnedByTuteur } from "@/lib/data/alternants";
 import { prisma } from "@/lib/prisma";
+import { rateLimit } from "@/lib/rate-limit";
 import { suggererMissions } from "@/lib/ia/suggestion-missions";
 
 export async function POST(request: Request) {
   const user = await getAppUser();
   if (!user || user.role !== "TUTEUR" || !user.entityId) {
     return NextResponse.json({ error: "Non autorisé." }, { status: 401 });
+  }
+
+  // Garde-fou anti-abus : 10 générations/minute par utilisateur.
+  if (!rateLimit(`ia:sugg:${user.entityId}`, 10, 60_000).allowed) {
+    return NextResponse.json(
+      { error: "Trop de requêtes. Réessayez dans un instant." },
+      { status: 429 },
+    );
   }
 
   let body: { alternantId?: string };
