@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireUser, type AppRole } from "@/lib/auth";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { signOut } from "../(auth)/actions";
+import { arreterImpersonation } from "./superadmin/actions";
 
 const ROLE_LABELS: Record<AppRole, string> = {
   TUTEUR: "Tuteur",
@@ -16,10 +17,41 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const user = await requireUser();
-  const roleLabel = user.role ? ROLE_LABELS[user.role] : "Compte en attente";
+  const roleLabel =
+    user.isSuperAdmin && !user.impersonating
+      ? "Mode administrateur"
+      : user.role
+        ? ROLE_LABELS[user.role]
+        : "Compte en attente";
 
   return (
     <div className="min-h-screen bg-muted">
+      {user.impersonating && (
+        <div className="no-print bg-amber-500 text-amber-950 dark:bg-amber-400">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-2 px-4 py-2 text-sm">
+            <span>
+              Mode admin — vous consultez l&apos;espace de{" "}
+              <strong>{user.impersonating}</strong>.
+            </span>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/superadmin"
+                className="rounded-lg bg-amber-950/10 px-3 py-1 text-xs font-medium hover:bg-amber-950/20"
+              >
+                Changer d&apos;espace
+              </Link>
+              <form action={arreterImpersonation}>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-amber-950/10 px-3 py-1 text-xs font-medium hover:bg-amber-950/20"
+                >
+                  Revenir au mode admin
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="border-b bg-card no-print">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <div className="text-lg font-bold tracking-tight">

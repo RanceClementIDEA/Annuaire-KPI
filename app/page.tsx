@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { dashboardPathForRole, getAppUser } from "@/lib/auth";
+import { getAppUser, homePathForUser } from "@/lib/auth";
 import { signOut } from "./(auth)/actions";
 
 /**
@@ -12,7 +12,8 @@ export default async function Home() {
   const user = await getAppUser();
 
   if (!user) redirect("/login");
-  if (user.role) redirect(dashboardPathForRole(user.role));
+  if (user.isSuperAdmin && !user.impersonating) redirect("/superadmin");
+  if (user.role) redirect(homePathForUser(user));
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted p-4">

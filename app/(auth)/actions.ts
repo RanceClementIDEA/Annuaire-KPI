@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
-import { dashboardPathForRole, getAppUser } from "@/lib/auth";
+import { getAppUser, homePathForUser } from "@/lib/auth";
+import { IMPERSONATION_COOKIE } from "@/lib/superadmin";
+import { cookies } from "next/headers";
 
 function siteUrl(): string {
   return process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
@@ -27,7 +29,7 @@ export async function signIn(formData: FormData): Promise<void> {
 
   const user = await getAppUser();
   revalidatePath("/", "layout");
-  redirect(dashboardPathForRole(user?.role ?? null));
+  redirect(user ? homePathForUser(user) : "/login");
 }
 
 /**
@@ -90,6 +92,8 @@ export async function signUp(formData: FormData): Promise<void> {
 export async function signOut(): Promise<void> {
   const supabase = createClient();
   await supabase.auth.signOut();
+  // Nettoie une éventuelle bascule d'identité (mode super-admin).
+  cookies().delete(IMPERSONATION_COOKIE);
   revalidatePath("/", "layout");
   redirect("/login");
 }

@@ -8,10 +8,16 @@ import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { synchroniserQuantiteStripe } from "@/lib/stripe-sync";
 
+/** Refuse toute mutation de compte pendant une bascule d'identité (mode admin). */
+const ERREUR_MODE_ADMIN =
+  "/mon-compte?error=" +
+  encodeURIComponent("Action indisponible en mode admin (consultation seule).");
+
 /** Enregistre (ou efface) le téléphone pour les alertes SMS/WhatsApp. */
 export async function mettreAJourTelephone(formData: FormData): Promise<void> {
   const user = await getAppUser();
   if (!user) redirect("/login");
+  if (user.impersonating) redirect(ERREUR_MODE_ADMIN);
 
   const saisi = String(formData.get("telephone") ?? "").trim();
   // Vide = effacement ; sinon format international plausible.
@@ -48,6 +54,7 @@ export async function mettreAJourTelephone(formData: FormData): Promise<void> {
 export async function supprimerMonCompte(formData: FormData): Promise<void> {
   const user = await getAppUser();
   if (!user) redirect("/login");
+  if (user.impersonating) redirect(ERREUR_MODE_ADMIN);
 
   if (String(formData.get("confirmation") ?? "").trim() !== "SUPPRIMER") {
     redirect(
