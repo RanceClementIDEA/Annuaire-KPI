@@ -8,6 +8,39 @@ import { createClient } from "@/lib/supabase/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { synchroniserQuantiteStripe } from "@/lib/stripe-sync";
 
+/** Enregistre (ou efface) le téléphone pour les alertes SMS/WhatsApp. */
+export async function mettreAJourTelephone(formData: FormData): Promise<void> {
+  const user = await getAppUser();
+  if (!user) redirect("/login");
+
+  const saisi = String(formData.get("telephone") ?? "").trim();
+  // Vide = effacement ; sinon format international plausible.
+  if (saisi && !/^\+?[0-9 ().-]{6,20}$/.test(saisi)) {
+    redirect(
+      "/mon-compte?error=" +
+        encodeURIComponent(
+          "Numéro invalide. Utilisez le format international, ex. +33 6 12 34 56 78.",
+        ),
+    );
+  }
+  const valeur = saisi || null;
+
+  if (user.role === "ALTERNANT" && user.entityId) {
+    await prisma.alternant.update({
+      where: { id: user.entityId },
+      data: { telephone: valeur },
+    });
+  } else if (user.entityId) {
+    await prisma.user.update({
+      where: { id: user.entityId },
+      data: { telephone: valeur },
+    });
+  }
+
+  revalidatePath("/mon-compte");
+  redirect("/mon-compte?tel=1");
+}
+
 /**
  * Suppression du compte et des données personnelles (droit à l'effacement).
  * Sécurisé : confirmation explicite + refus si des dépendances subsistent.

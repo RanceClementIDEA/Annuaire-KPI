@@ -19,6 +19,10 @@ export interface AppUser {
   /** id du `User` ou de l'`Alternant` correspondant (null si non rattaché). */
   entityId: string | null;
   organisationId: string | null;
+  /** CFA de rattachement (renseigné pour les référents CFA). */
+  cfaId: string | null;
+  /** Téléphone (optionnel) pour les alertes SMS/WhatsApp. */
+  telephone: string | null;
 }
 
 /**
@@ -43,6 +47,8 @@ export async function getAppUser(): Promise<AppUser | null> {
         role: dbUser.role,
         entityId: dbUser.id,
         organisationId: dbUser.organisationId,
+        cfaId: dbUser.cfaId,
+        telephone: dbUser.telephone,
       };
     }
 
@@ -57,6 +63,8 @@ export async function getAppUser(): Promise<AppUser | null> {
         role: "ALTERNANT",
         entityId: alternant.id,
         organisationId: alternant.organisationId,
+        cfaId: null,
+        telephone: alternant.telephone,
       };
     }
 
@@ -68,6 +76,8 @@ export async function getAppUser(): Promise<AppUser | null> {
       role: null,
       entityId: null,
       organisationId: null,
+      cfaId: null,
+      telephone: null,
     };
   } catch (e) {
     // Laisser passer les signaux internes de Next.js — rendu dynamique

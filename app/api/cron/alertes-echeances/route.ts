@@ -3,6 +3,7 @@ import { StatutMission } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { dateLimite, estEnRetard, messageAlerte } from "@/lib/alertes";
 import { creerNotification } from "@/lib/notifications/notifier";
+import { envoyerSMS, smsConfigure } from "@/lib/notifications/sms";
 
 export const dynamic = "force-dynamic";
 
@@ -40,15 +41,12 @@ export async function GET(request: Request) {
 
   let creees = 0;
   let emailsEnvoyes = 0;
+  let smsEnvoyes = 0;
   for (const m of missions) {
     if (!m.echeance) continue;
     const echeanceIso = m.echeance.toISOString().slice(0, 10);
-    const contenu = messageAlerte(
-      m.titre,
-      m.alternant.nom,
-      echeanceIso,
-      estEnRetard(echeanceIso, todayIso),
-    );
+    const enRetard = estEnRetard(echeanceIso, todayIso);
+    const contenu = messageAlerte(m.titre, m.alternant.nom, echeanceIso, enRetard);
 
     // Déduplication : ne pas recréer une alerte identique pour ce tuteur.
     const existe = await prisma.notification.findFirst({
@@ -64,6 +62,18 @@ export async function GET(request: Request) {
     });
     creees += 1;
     if (email.sent) emailsEnvoyes += 1;
+
+    // Alerte critique (échéance dépassée) : double notification par SMS.
+    if (enRetard && smsConfigure()) {
+      const tuteur = await prisma.user.findUnique({
+        where: { id: m.alternant.tuteurId },
+        select: { telephone: true },
+      });
+      if (tuteur?.telephone) {
+        const sms = await envoyerSMS(tuteur.telephone, contenu);
+        if (sms.sent) smsEnvoyes += 1;
+      }
+    }
   }
 
   return NextResponse.json({
@@ -71,5 +81,6 @@ export async function GET(request: Request) {
     verifiees: missions.length,
     creees,
     emailsEnvoyes,
+    smsEnvoyes,
   });
 }

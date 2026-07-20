@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { dashboardPathForRole, requireUser } from "@/lib/auth";
-import { supprimerMonCompte } from "./actions";
+import { mettreAJourTelephone, supprimerMonCompte } from "./actions";
 
 export const metadata = { title: "Mon compte · AlternPilot" };
 
 export default async function MonComptePage({
   searchParams,
 }: {
-  searchParams: { error?: string };
+  searchParams: { error?: string; tel?: string };
 }) {
   const user = await requireUser();
 
@@ -32,6 +32,11 @@ export default async function MonComptePage({
         </div>
       </dl>
 
+      {searchParams.tel && (
+        <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          Téléphone enregistré.
+        </p>
+      )}
       {searchParams.error && (
         <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {searchParams.error}
@@ -39,6 +44,35 @@ export default async function MonComptePage({
       )}
 
       <section className="mt-8 rounded-2xl border bg-card p-5 shadow-soft">
+        <h2 className="text-sm font-semibold text-foreground">
+          Téléphone (alertes SMS)
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Facultatif. Utilisé uniquement pour les alertes critiques par SMS, si
+          le service est activé. Laissez vide pour ne pas être contacté par SMS.
+        </p>
+        <form
+          action={mettreAJourTelephone}
+          className="mt-3 flex flex-wrap items-center gap-2"
+        >
+          <input
+            name="telephone"
+            type="tel"
+            defaultValue={user.telephone ?? ""}
+            placeholder="+33 6 12 34 56 78"
+            autoComplete="tel"
+            className="w-full max-w-xs rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+          />
+          <button
+            type="submit"
+            className="rounded-xl border px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            Enregistrer
+          </button>
+        </form>
+      </section>
+
+      <section className="mt-6 rounded-2xl border bg-card p-5 shadow-soft">
         <h2 className="text-sm font-semibold text-foreground">Mes données</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Téléchargez l&apos;ensemble de vos données personnelles au format JSON.

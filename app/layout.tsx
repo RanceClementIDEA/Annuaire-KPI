@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { PostHogProvider } from "@/lib/posthog/provider";
+import { ThemeProvider } from "@/components/theme/theme-provider";
 
 export const metadata: Metadata = {
   title: "AlternPilot — Le copilote du maître d'apprentissage",
@@ -14,9 +15,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="fr">
+    <html lang="fr" suppressHydrationWarning>
       <body>
-        <PostHogProvider>{children}</PostHogProvider>
+        <ThemeProvider>
+          <PostHogProvider>{children}</PostHogProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

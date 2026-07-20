@@ -22,9 +22,11 @@ function MoveButton({
     <form action={changerStatutMission.bind(null, missionId, vers)}>
       <button
         type="submit"
+        aria-label={`Déplacer vers « ${LABELS[vers]} »`}
+        title={`Déplacer vers « ${LABELS[vers]} »`}
         className="rounded-md border px-1.5 py-0.5 text-xs text-foreground transition-colors hover:bg-accent"
       >
-        {children}
+        <span aria-hidden>{children}</span>
       </button>
     </form>
   );
@@ -105,10 +107,11 @@ export function MissionBoard({
                       >
                         <button
                           type="submit"
+                          aria-label={`Supprimer la mission « ${m.titre} »`}
                           title="Supprimer"
-                          className="rounded-md px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50"
+                          className="rounded-md px-1.5 py-0.5 text-xs text-red-600 transition-colors hover:bg-red-50 dark:hover:bg-red-500/15"
                         >
-                          ✕
+                          <span aria-hidden>✕</span>
                         </button>
                       </form>
                     </div>

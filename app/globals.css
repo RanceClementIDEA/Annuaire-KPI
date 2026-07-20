@@ -46,3 +46,23 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* Impression (fiche navette → PDF via le navigateur).
+   Masque la navigation et neutralise le fond pour un rendu propre. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .print-plain {
+    border: none !important;
+    box-shadow: none !important;
+    background: #fff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+}

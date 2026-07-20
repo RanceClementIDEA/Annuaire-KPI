@@ -5,8 +5,10 @@ import { getAlternantsForTuteur } from "@/lib/data/alternants";
 import { getNotificationsForUser } from "@/lib/data/notifications";
 import { etatAbonnement } from "@/lib/data/abonnement";
 import { getReferentiels } from "@/lib/data/referentiels";
+import { risquesForTuteur } from "@/lib/data/risque";
 import { placesGratuitesRestantes } from "@/lib/abonnement";
 import { parseRythme, typeForDate } from "@/lib/rythme";
+import { RisqueBadge } from "@/components/risque/risque-badge";
 import { ajouterAlternantTuteur } from "./actions";
 
 export const metadata = { title: "Espace tuteur · AlternPilot" };
@@ -25,13 +27,15 @@ export default async function TuteurPage({
   const user = await requireRole(["TUTEUR"]);
   if (!user.organisationId) redirect("/onboarding");
 
-  const [alternants, notifications, etat, referentiels] = await Promise.all([
-    getAlternantsForTuteur(user.entityId!),
-    getNotificationsForUser(user.entityId!),
-    etatAbonnement(user.organisationId),
-    getReferentiels(),
-  ]);
   const today = new Date().toISOString().slice(0, 10);
+  const [alternants, notifications, etat, referentiels, risques] =
+    await Promise.all([
+      getAlternantsForTuteur(user.entityId!),
+      getNotificationsForUser(user.entityId!),
+      etatAbonnement(user.organisationId),
+      getReferentiels(),
+      risquesForTuteur(user.entityId!, today),
+    ]);
 
   const inputClass =
     "w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
@@ -109,13 +113,17 @@ export default async function TuteurPage({
                   : rythme.length === 0
                     ? "Rythme non saisi"
                     : "Hors période";
+            const risque = risques.get(a.id);
             return (
               <li key={a.id}>
                 <Link
                   href={`/tuteur/alternants/${a.id}`}
                   className="block rounded-2xl border bg-card p-5 shadow-soft transition-colors hover:border-primary/50"
                 >
-                  <div className="text-sm font-semibold text-foreground">{a.nom}</div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-sm font-semibold text-foreground">{a.nom}</div>
+                    {risque && <RisqueBadge risque={risque} />}
+                  </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {a.diplome.nom}
                   </div>

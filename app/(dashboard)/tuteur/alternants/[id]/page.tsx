@@ -7,6 +7,8 @@ import { nbJours, parseRythme } from "@/lib/rythme";
 import { libelleSemaine } from "@/lib/semaine";
 import { CalendrierAlternance } from "@/components/calendrier/calendrier-alternance";
 import { GenererResume } from "@/components/bilan/generer-resume";
+import { RisqueCard } from "@/components/risque/risque-badge";
+import { risqueAlternant } from "@/lib/data/risque";
 import {
   ajouterMission,
   ajouterPeriode,
@@ -43,6 +45,8 @@ export default async function AlternantDetailPage({
     take: 8,
   });
 
+  const risque = await risqueAlternant(alternant.id, today);
+
   const inputClass =
     "w-full rounded-xl border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
 
@@ -52,10 +56,30 @@ export default async function AlternantDetailPage({
         ← Mes alternants
       </Link>
 
-      <div className="mt-3">
-        <h1 className="text-xl font-semibold text-foreground">{alternant.nom}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{alternant.diplome.nom}</p>
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-foreground">{alternant.nom}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{alternant.diplome.nom}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={`/tuteur/alternants/${alternant.id}/fiche-navette`}
+            className="rounded-xl border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            Fiche navette (PDF)
+          </Link>
+          <a
+            href={`/api/alternants/${alternant.id}/calendrier`}
+            className="rounded-xl border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            Ajouter au calendrier (.ics)
+          </a>
+        </div>
       </div>
+
+      <section className="mt-4">
+        <RisqueCard risque={risque} />
+      </section>
 
       {searchParams.error && (
         <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
