@@ -451,6 +451,16 @@
     </p>
     <p id="syncStatus" class="sync-status">⚪ Synchronisation non configurée</p>
 
+    <div id="fileProtocolWarning" class="sync-warning" style="display:none">
+      ⚠️ <b>Vous avez ouvert l'application par double-clic sur le fichier (<code>file://</code>).</b>
+      Dans ce mode, la synchronisation cloud est <b>impossible</b> : Firebase refuse les connexions
+      sans véritable adresse web. De plus, les données enregistrées ici sont <b>séparées</b> de celles
+      de la version en ligne. Ouvrez l'application via son adresse <code>https://…</code> (GitHub Pages)
+      pour que la synchronisation fonctionne.
+    </div>
+
+    <div id="syncDiag" class="sync-diag"></div>
+
     <div id="builtinConfigBanner" class="builtin-banner" style="display:none">
       ✅ Configuration fournie par l'application — aucune saisie nécessaire.
       La synchronisation démarre automatiquement.
@@ -482,6 +492,18 @@
       <button id="pullSyncBtn" class="btn-secondary">⬇️ Récupérer</button>
       <button id="disconnectSyncBtn" class="btn-secondary">🔌 Désactiver</button>
     </div>
+
+    <div class="modal-links-title">Dépannage</div>
+    <p class="modal-hint">
+      Transférez vos données entre la version locale et la version en ligne, ou repartez de zéro
+      si la synchronisation pointe vers le mauvais projet.
+    </p>
+    <div class="modal-actions">
+      <button id="exportBackupBtn" class="btn-secondary">💾 Exporter une sauvegarde</button>
+      <button id="importBackupBtn" class="btn-secondary">📂 Importer une sauvegarde</button>
+      <button id="resetSyncBtn" class="btn-danger">🧨 Réinitialiser la synchronisation</button>
+    </div>
+    <input type="file" id="backupFileInput" accept=".json" style="display:none">
   </div>
 </div>
 

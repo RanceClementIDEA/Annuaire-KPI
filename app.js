@@ -1424,6 +1424,12 @@ function connectSync(manual) {
     ensureBuiltinConfig(); // nouvel appareil : installe la config intégrée si dispo
     const cfg = getSyncConfig();
     if (!cfg || !cfg.config || !cfg.code) { setSyncStatusUI("off"); return; }
+    // Firebase refuse les origines "file://" : inutile d'essayer, on l'explique clairement
+    if (isFileProtocol()) {
+      setSyncStatusUI("error", "impossible en mode fichier local (file://). Ouvrez l'application via son adresse https://…");
+      if (manual) showToast("⚠️ Synchro impossible en local (file://) — utilisez l'adresse https", 4000);
+      return;
+    }
     if (typeof firebase === "undefined") {
       setSyncStatusUI("error", "Librairie Firebase non chargée (vérifiez votre connexion).");
       return;
@@ -1463,6 +1469,28 @@ function disconnectSync() {
   showToast("Synchronisation désactivée", 2200);
 }
 
+function isFileProtocol() { return location.protocol === "file:"; }
+
+// Panneau de diagnostic : où sont stockées les données, et vers quel cloud on pointe
+function renderSyncDiag() {
+  const el = document.getElementById("syncDiag");
+  if (!el) return;
+  const cfg = getSyncConfig();
+  const origin = isFileProtocol() ? "fichier local (file://)" : location.origin;
+  const proj = cfg?.config?.projectId || "—";
+  const code = cfg?.code || "—";
+  const auto = cfg?.enabled ? "activée" : "en pause";
+  const nb = data.length + personalEntries.length;
+  el.innerHTML = `
+    <div class="diag-row"><span>Emplacement des données</span><b>${esc(origin)}</b></div>
+    <div class="diag-row"><span>Projet Firebase</span><b>${esc(proj)}</b></div>
+    <div class="diag-row"><span>Code de synchro</span><b>${esc(code)}</b></div>
+    <div class="diag-row"><span>Synchro automatique</span><b>${auto}</b></div>
+    <div class="diag-row"><span>KPIs sur cet appareil</span><b>${nb}</b></div>`;
+  const warn = document.getElementById("fileProtocolWarning");
+  if (warn) warn.style.display = isFileProtocol() ? "" : "none";
+}
+
 function initSyncModal() {
   ensureBuiltinConfig();
   const cfg = getSyncConfig();
@@ -1489,6 +1517,7 @@ function initSyncModal() {
   }
 
   if (cfg && cfg.config && cfg.code) connectSync(false); else setSyncStatusUI("off");
+  renderSyncDiag();
 }
 
 // Bouton « Paramètres avancés » : révèle la saisie manuelle de config
@@ -1558,6 +1587,102 @@ document.getElementById("pullSyncBtn")?.addEventListener("click", () => {
 });
 document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
   if (confirm("Désactiver la synchronisation cloud sur cet appareil ?")) disconnectSync();
+});
+
+/* ============================================
+   DÉPANNAGE : réinitialisation + sauvegarde locale
+============================================ */
+
+// Coupe tout lien cloud et efface la config (les KPIs locaux sont conservés)
+function resetSyncCompletely() {
+  if (!confirm(
+    "Réinitialiser complètement la synchronisation ?\n\n" +
+    "• Le lien avec le projet cloud actuel sera coupé\n" +
+    "• La configuration enregistrée sera effacée\n" +
+    "• Vos KPIs présents sur cet appareil sont CONSERVÉS\n\n" +
+    "Vous pourrez ensuite reconnecter le bon projet."
+  )) return;
+
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  fbApp = null; fbDb = null; connectedSyncCode = null;
+  pendingPush = false;
+  clearTimeout(syncDebounceHandle);
+  localStorage.removeItem(LS_SYNC);
+  localStorage.setItem(LS_SYNC_OPTOUT, "1"); // évite la réinstallation auto de la config intégrée
+  localStorage.removeItem("kpiLocalUpdatedAt");
+  localUpdatedAt = 0;
+  lastSyncPushAt = 0; lastAppliedSyncAt = 0;
+  setSyncStatusUI("off");
+  renderSyncDiag();
+  initSyncModal();
+  showToast("🧨 Synchronisation réinitialisée", 3000);
+}
+
+// Exporte TOUTES les données locales dans un fichier JSON
+function exportBackup() {
+  const backup = {
+    _format: "annuaire-kpi-backup",
+    _version: 1,
+    exportedAt: new Date().toISOString(),
+    exportedFrom: isFileProtocol() ? "file://" : location.origin,
+    user: currentUser,
+    excelData, manualEntries, overrides, deletedIds, sites,
+    personalEntries,
+    favoritesByUser: JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}")
+  };
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `annuaire-kpi-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showToast("💾 Sauvegarde exportée", 2500);
+}
+
+// Restaure une sauvegarde JSON (remplace les données de cet appareil)
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let b;
+    try { b = JSON.parse(reader.result); }
+    catch { showToast("❌ Fichier illisible", 3000); return; }
+    if (!b || b._format !== "annuaire-kpi-backup") {
+      showToast("❌ Ce fichier n'est pas une sauvegarde de l'annuaire", 3200); return;
+    }
+    if (!confirm(
+      `Restaurer la sauvegarde du ${(b.exportedAt || "").slice(0, 10)} ` +
+      `(${(b.excelData?.length || 0) + (b.manualEntries?.length || 0)} KPIs) ?\n\n` +
+      "Les données actuelles de cet appareil seront remplacées."
+    )) return;
+
+    if (Array.isArray(b.excelData))       excelData = b.excelData;
+    if (Array.isArray(b.manualEntries))   manualEntries = b.manualEntries;
+    if (Array.isArray(b.personalEntries)) personalEntries = b.personalEntries;
+    if (Array.isArray(b.deletedIds))      deletedIds = b.deletedIds;
+    if (Array.isArray(b.sites) && b.sites.length) sites = b.sites;
+    if (b.overrides && typeof b.overrides === "object") overrides = b.overrides;
+    if (b.favoritesByUser) {
+      localStorage.setItem("kpiSyncFavorites", JSON.stringify(b.favoritesByUser));
+      if (b.favoritesByUser[currentUser]) { favorites = b.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
+    }
+    saveManualEntries(false); savePersonalEntries(); saveOverrides(false);
+    saveDeletedIds(false); saveSites(false);
+    markLocalChange();          // la restauration devient la version la plus récente
+    rebuildData(true);          // ré-envoie vers le cloud si la synchro est active
+    renderSyncDiag();
+    showToast("✅ Sauvegarde restaurée", 3000);
+  };
+  reader.readAsText(file);
+}
+
+document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
+document.getElementById("exportBackupBtn")?.addEventListener("click", exportBackup);
+document.getElementById("importBackupBtn")?.addEventListener("click", () => {
+  document.getElementById("backupFileInput").click();
+});
+document.getElementById("backupFileInput")?.addEventListener("change", function () {
+  if (this.files && this.files[0]) importBackup(this.files[0]);
+  this.value = "";
 });
 
 /* ============================================
