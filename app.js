@@ -12,10 +12,10 @@ let deletedIds = [];    // Fiches Excel supprimées : [{id, title, freq, at, by}
 function normalizeDeleted(arr) {
   if (!Array.isArray(arr)) return [];
   return arr.map(d => typeof d === "string"
-    ? { id: d, title: "", freq: "", at: null, by: "" }
-    : d).filter(d => d && d.id);
+    ? { id: d, title: "", freq: "", at: null, by: "", state: "deleted" }
+    : { state: "deleted", ...d }).filter(d => d && d.id);
 }
-function isDeleted(id) { return deletedIds.some(d => d.id === id); }
+function isDeleted(id) { return deletedIds.some(d => d.id === id && d.state !== "restored"); }
 
 // Fiches purgées définitivement : masquées pour toujours, plus listées dans la corbeille
 let purgedIds = [];
@@ -170,6 +170,9 @@ function login(user) {
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
+
+  // Le chargement est terminé : les modifications suivantes sont de vraies actions utilisateur
+  setTimeout(() => { isBooting = false; }, 2500);
 }
 
 loginBtn.addEventListener("click", () => {
@@ -252,6 +255,7 @@ function toggleFavorite(id) {
     favorites.push(id);
     showToast("⭐ Ajouté aux favoris");
   }
+  touchMeta("favAt");
   saveFavorites();
   updateCounts();
   animateNextRender = false;
@@ -269,7 +273,16 @@ fileInput.addEventListener("change", e => {
   const reader = new FileReader();
   reader.onload = evt => {
     const buf = evt.target.result;
-    localStorage.setItem("kpiFile", JSON.stringify(Array.from(new Uint8Array(buf))));
+    try {
+      const u8 = new Uint8Array(buf);
+      let bin = ""; const CH = 0x8000;
+      for (let i = 0; i < u8.length; i += CH) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+      localStorage.setItem("kpiFileB64", btoa(bin));
+      localStorage.removeItem("kpiFile"); // ancien format volumineux
+    } catch (err) {
+      showToast("⚠️ Fichier trop volumineux pour être conservé localement", 3500);
+    }
+    touchMeta("excelAt");            // ce bloc Excel devient le plus récent
     loadWorkbook(buf);
     showToast("✅ Fichier importé");
   };
@@ -277,11 +290,22 @@ fileInput.addEventListener("change", e => {
 });
 
 function loadSavedFile() {
-  const stored = localStorage.getItem("kpiFile");
+  const b64 = localStorage.getItem("kpiFileB64");
+  if (b64) {
+    try {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      loadWorkbook(bytes);
+      return;
+    } catch { /* illisible : on tente les autres sources */ }
+  }
+  const stored = localStorage.getItem("kpiFile"); // ancien format
   if (stored) {
-    const bytes = new Uint8Array(JSON.parse(stored));
-    loadWorkbook(bytes);
-    return;
+    try {
+      loadWorkbook(new Uint8Array(JSON.parse(stored)));
+      return;
+    } catch { /* illisible */ }
   }
   // Pas de fichier Excel local : on utilise les données déjà synchronisées depuis le cloud, si disponibles
   const cached = localStorage.getItem("kpiDataCache");
@@ -477,9 +501,9 @@ function deleteExcelKpi(id) {
   const kpi = data.find(k => k.id === id) || excelData.find(k => k.id === id);
   if (!kpi) return;
   if (!confirm(`Supprimer le signet « ${kpi.title} » ?\n\nIl restera masqué même après un ré-import Excel. Vous pourrez le réafficher depuis « Corbeille » dans le menu.`)) return;
-  if (!isDeleted(id)) {
-    deletedIds.push({ id, title: kpi.title || "", freq: kpi.freq || "", at: Date.now(), by: currentUser || "?" });
-  }
+  deletedIds = deletedIds.filter(d => d.id !== id);
+  deletedIds.push({ id, title: kpi.title || "", freq: kpi.freq || "",
+                    at: now(), by: currentUser || "?", state: "deleted" });
   delete overrides[id];
   favorites = favorites.filter(f => f !== id);
   saveFavoritesLocalOnly();
@@ -501,7 +525,7 @@ function updateRestoreDeletedBtn() {
   const btn = document.getElementById("restoreDeletedBtn");
   const label = document.getElementById("restoreDeletedLabel");
   if (!btn) return;
-  const n = deletedIds.length;
+  const n = deletedIds.filter(d => d.state !== "restored").length;
   btn.style.display = n ? "" : "none";
   if (label) label.textContent = `Corbeille (${n})`;
 }
@@ -518,12 +542,13 @@ function fmtDate(ts) {
 function renderTrashList() {
   const el = document.getElementById("trashList");
   if (!el) return;
-  if (!deletedIds.length) {
+  const active = deletedIds.filter(d => d.state !== "restored");
+  if (!active.length) {
     el.innerHTML = `<p class="modal-hint" style="margin:0">La corbeille est vide.</p>`;
     return;
   }
   // Plus récentes en premier
-  const rows = deletedIds.map((d, i) => ({ ...d, _i: i }))
+  const rows = active.map((d, i) => ({ ...d, _i: i }))
     .sort((a, b) => (b.at || 0) - (a.at || 0));
   el.innerHTML = "";
   rows.forEach(d => {
@@ -552,13 +577,16 @@ function restoreSelectedTrash() {
   const ids = getTrashSelection();
   if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
   const restored = deletedIds.filter(d => ids.includes(d.id));
-  deletedIds = deletedIds.filter(d => !ids.includes(d.id));
+  // On marque « restauré » et daté : un autre poste ne pourra pas re-masquer la fiche
+  deletedIds = deletedIds.map(d => ids.includes(d.id)
+    ? { ...d, state: "restored", at: now(), by: currentUser || "?" }
+    : d);
   saveDeletedIds(false);
   restored.forEach(d => logActivity("restore", d.title || d.id, d.freq ? `temporalité ${d.freq}` : ""));
   rebuildData(true);
   renderTrashList();
   showToast(`✅ ${ids.length} fiche${ids.length > 1 ? "s" : ""} réaffichée${ids.length > 1 ? "s" : ""}`);
-  if (!deletedIds.length) closeTrashModal();
+  if (!deletedIds.some(d => d.state !== "restored")) closeTrashModal();
 }
 
 function getTrashSelection() {
@@ -920,7 +948,7 @@ function saveKpiForm() {
 
     // Variante Excel existante → surcharge (préserve l'original au ré-import)
     if (kind === "excel" && space === "shared") {
-      overrides[initialId] = fields;
+      overrides[initialId] = stamp(fields);
       touchesShared = true;
       updated++; updatedFreqs.push(freq);
       return;
@@ -937,6 +965,7 @@ function saveKpiForm() {
     // Retire l'ancienne occurrence des deux espaces (gère le déplacement)
     manualEntries   = manualEntries.filter(k => k.id !== entry.id);
     personalEntries = personalEntries.filter(k => k.id !== entry.id);
+    stamp(entry);
     if (targetPerso) { personalEntries.push(entry); touchesPerso = true; }
     else             { manualEntries.push(entry);   touchesShared = true; }
     if (initialId) { updated++; updatedFreqs.push(freq); } else { created++; createdFreqs.push(freq); }
@@ -1028,6 +1057,7 @@ function saveSitesFromModal() {
   });
   if (!cleaned.length) { showToast("⚠️ Gardez au moins un site", 2600); return; }
   sites = cleaned;
+  touchMeta("sitesAt");   // cette config devient la plus récente
   saveSites(true);
   rebuildData(true);       // rafraîchit les cartes avec les nouveaux périmètres
   // Si la modale KPI est ouverte, on régénère ses champs de liens
@@ -1459,6 +1489,79 @@ let lastAppliedSyncAt = 0;
 let connectedSyncCode = null;
 let applyingRemoteSync = false;
 let localUpdatedAt = +(localStorage.getItem("kpiLocalUpdatedAt") || 0); // dernière modif locale
+let isBooting = true;   // pendant le chargement initial : aucune modification "réelle", donc aucun envoi
+let clockOffset = +(localStorage.getItem("kpiClockOffset") || 0); // écart horloge poste ↔ serveur
+
+// Heure corrigée de l'écart avec le serveur (évite qu'un PC mal réglé gagne tous les arbitrages)
+function now() { return Date.now() + clockOffset; }
+
+/* ============================================
+   MOTEUR DE FUSION (par élément, pas en bloc)
+   Chaque fiche porte sa propre date de modification :
+   deux personnes peuvent modifier deux KPIs différents
+   en même temps sans que l'un efface le travail de l'autre.
+============================================ */
+
+// Estampille une fiche comme modifiée maintenant, par l'utilisateur courant
+function stamp(entry) {
+  entry._mtime = now();
+  entry._by = currentUser || "?";
+  return entry;
+}
+
+// Fusionne deux listes de fiches par id : la version la plus récente gagne
+function mergeEntries(localArr, remoteArr) {
+  const map = new Map();
+  (remoteArr || []).forEach(e => { if (e && e.id) map.set(e.id, e); });
+  (localArr || []).forEach(e => {
+    if (!e || !e.id) return;
+    const other = map.get(e.id);
+    if (!other || (e._mtime || 0) >= (other._mtime || 0)) map.set(e.id, e);
+  });
+  return [...map.values()];
+}
+
+// Fusionne deux dictionnaires de surcharges (clé = id de fiche Excel)
+function mergeOverrides(localObj, remoteObj) {
+  const out = { ...(remoteObj || {}) };
+  Object.entries(localObj || {}).forEach(([id, v]) => {
+    const other = out[id];
+    if (!other || (v._mtime || 0) >= (other._mtime || 0)) out[id] = v;
+  });
+  return out;
+}
+
+// Fusionne les états supprimé/restauré : le dernier geste daté l'emporte.
+// On conserve aussi les marqueurs « restauré » : ils annulent une suppression
+// plus ancienne venue d'un autre poste (sans eux, la fiche redisparaîtrait).
+function mergeDeleted(localArr, remoteArr) {
+  const map = new Map();
+  [...(remoteArr || []), ...(localArr || [])].forEach(d => {
+    if (!d || !d.id) return;
+    const prev = map.get(d.id);
+    if (!prev || (d.at || 0) >= (prev.at || 0)) map.set(d.id, d);
+  });
+  return [...map.values()];
+}
+
+// Fusionne les favoris utilisateur par utilisateur (jamais en bloc)
+function mergeFavorites(localMap, localMeta, remoteMap, remoteMeta) {
+  const map = { ...(remoteMap || {}) };
+  const meta = { ...(remoteMeta || {}) };
+  Object.keys(localMap || {}).forEach(u => {
+    const lt = (localMeta || {})[u] || 0;
+    const rt = (remoteMeta || {})[u] || 0;
+    if (lt >= rt) { map[u] = localMap[u]; meta[u] = lt; }
+  });
+  return { map, meta };
+}
+
+// Métadonnées locales de fusion (horodatages des blocs non listés)
+function getMeta() {
+  try { return JSON.parse(localStorage.getItem("kpiMeta")) || {}; } catch { return {}; }
+}
+function setMeta(m) { localStorage.setItem("kpiMeta", JSON.stringify(m)); }
+function touchMeta(key) { const m = getMeta(); m[key] = now(); setMeta(m); return m; }
 let pendingPush = false;    // un envoi n'a pas pu aboutir (hors-ligne) et devra être rejoué
 let netHandlersBound = false;
 
@@ -1497,26 +1600,34 @@ function syncDocRef(code) {
 }
 
 function buildSyncPayload() {
+  const meta = getMeta();
   const favoritesByUser = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
+  const favoritesMeta   = JSON.parse(localStorage.getItem("kpiFavMeta") || "{}");
   favoritesByUser[currentUser] = favorites;
+  favoritesMeta[currentUser]   = meta.favAt || now();
   localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
-  // On envoie les fiches d'origine + les surcharges séparément,
-  // pour que "Restaurer l'original" fonctionne sur tous les appareils
+  localStorage.setItem("kpiFavMeta", JSON.stringify(favoritesMeta));
+
   return {
-    kpiData: [...excelData, ...manualEntries],
+    kpiExcel: excelData,          // bloc Excel, arbitré par excelAt
+    excelAt: meta.excelAt || 0,
+    kpiManual: manualEntries,     // fusionnées fiche par fiche
     kpiOverrides: overrides,
     kpiDeleted: deletedIds,
     kpiSites: sites,
+    sitesAt: meta.sitesAt || 0,
     kpiPurged: purgedIds,
     kpiActivity: activityLog,
     favoritesByUser,
-    updatedAt: localUpdatedAt || Date.now()
+    favoritesMeta,
+    updatedAt: now()
   };
 }
 
 function scheduleAutoSync() {
   const cfg = getSyncConfig();
-  if (!cfg || !cfg.enabled || applyingRemoteSync) return;
+  // Pendant le démarrage, rien n'a été modifié par l'utilisateur : on n'envoie rien
+  if (!cfg || !cfg.enabled || applyingRemoteSync || isBooting) return;
   markLocalChange();
   if (!fbDb || !navigator.onLine) { pendingPush = true; if (!navigator.onLine) setSyncStatusUI("offline"); return; }
   clearTimeout(syncDebounceHandle);
@@ -1543,32 +1654,51 @@ async function pushToCloud(manual) {
 }
 
 function applyRemoteData(payload, fromSync) {
-  // Filet de sécurité : on garde une copie de l'état local AVANT écrasement
+  // Filet de sécurité : on garde une copie de l'état local AVANT fusion
   pushSnapshot(fromSync ? "avant réception cloud" : "avant récupération manuelle");
   applyingRemoteSync = true;
-  if (Array.isArray(payload.kpiData)) {
-    excelData     = payload.kpiData.filter(d => !d.manual);
-    manualEntries = payload.kpiData.filter(d => d.manual);
+  const meta = getMeta();
+
+  // ─── Bloc Excel : arbitré par sa propre date d'import ───
+  const remoteExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
+                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : null);
+  if (remoteExcel && (payload.excelAt || 0) > (meta.excelAt || 0)) {
+    excelData = remoteExcel;
+    meta.excelAt = payload.excelAt || 0;
+  } else if (remoteExcel && !excelData.length) {
+    excelData = remoteExcel; // on n'avait rien : on prend ce qui existe
+  }
+
+  // ─── Fiches manuelles : fusion fiche par fiche ───
+  const remoteManual = Array.isArray(payload.kpiManual) ? payload.kpiManual
+                     : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : null);
+  if (remoteManual) {
+    manualEntries = mergeEntries(manualEntries, remoteManual);
     saveManualEntries(false);
   }
+
+  // ─── Surcharges : fusion clé par clé ───
   if (payload.kpiOverrides && typeof payload.kpiOverrides === "object") {
-    overrides = payload.kpiOverrides;
+    overrides = mergeOverrides(overrides, payload.kpiOverrides);
     saveOverrides(false);
   }
+
+  // ─── Suppressions / restaurations : le dernier geste daté gagne ───
   if (Array.isArray(payload.kpiDeleted)) {
-    deletedIds = normalizeDeleted(payload.kpiDeleted);
+    deletedIds = mergeDeleted(deletedIds, normalizeDeleted(payload.kpiDeleted));
     saveDeletedIds(false);
   }
   if (Array.isArray(payload.kpiPurged)) {
-    purgedIds = payload.kpiPurged;
+    purgedIds = [...new Set([...(purgedIds || []), ...payload.kpiPurged])];
     savePurged(false);
   }
+
+  // ─── Journal : fusion sans doublon ───
   if (Array.isArray(payload.kpiActivity)) {
-    // Fusionne les journaux (le nôtre + le distant), sans doublons, plus récent d'abord
     const seen = new Set();
     activityLog = [...payload.kpiActivity, ...activityLog]
       .filter(e => {
-        const k = e.at + "|" + e.by + "|" + e.action + "|" + e.title;
+        const k = e.at + "|" + e.by + "|" + e.action + "|" + e.title + "|" + (e.detail || "");
         if (seen.has(k)) return false;
         seen.add(k); return true;
       })
@@ -1576,21 +1706,30 @@ function applyRemoteData(payload, fromSync) {
       .slice(0, MAX_ACTIVITY);
     saveActivity(false);
   }
-  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) {
+
+  // ─── Sites : arbitrés par date, un poste neuf n'écrase plus la config ───
+  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length &&
+      (payload.sitesAt || 0) > (meta.sitesAt || 0)) {
     sites = payload.kpiSites;
+    meta.sitesAt = payload.sitesAt || 0;
     saveSites(false);
   }
+
+  // ─── Favoris : fusion utilisateur par utilisateur ───
   if (payload.favoritesByUser) {
-    localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
-    if (payload.favoritesByUser[currentUser]) {
-      favorites = payload.favoritesByUser[currentUser];
-      saveFavoritesLocalOnly();
-    }
+    const localMap  = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
+    const localMeta = JSON.parse(localStorage.getItem("kpiFavMeta") || "{}");
+    const { map, meta: fmeta } = mergeFavorites(localMap, localMeta, payload.favoritesByUser, payload.favoritesMeta);
+    localStorage.setItem("kpiSyncFavorites", JSON.stringify(map));
+    localStorage.setItem("kpiFavMeta", JSON.stringify(fmeta));
+    if (map[currentUser]) { favorites = map[currentUser]; saveFavoritesLocalOnly(); }
   }
+
+  setMeta(meta);
   rebuildData(false);
   applyingRemoteSync = false;
   if (payload.updatedAt) {
-    localUpdatedAt = payload.updatedAt;
+    localUpdatedAt = Math.max(localUpdatedAt, payload.updatedAt);
     localStorage.setItem("kpiLocalUpdatedAt", String(localUpdatedAt));
   }
   if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
@@ -1638,28 +1777,46 @@ function listenForRemoteChanges(code) {
 
 // Premier échange à la connexion : récupère si le cloud est plus récent,
 // envoie si nos données locales sont plus récentes (ou si le cloud est vide).
+// Mesure l'écart entre l'horloge du poste et celle du serveur Firestore.
+// Sans ça, un PC mal réglé (avance de plusieurs heures) gagnerait tous les arbitrages.
+async function syncClockOffset(code) {
+  try {
+    const ref = syncDocRef(code + "__clock");
+    await ref.set({ t: firebase.firestore.FieldValue.serverTimestamp() });
+    const snap = await ref.get();
+    const t = snap.data() && snap.data().t;
+    if (t && typeof t.toMillis === "function") {
+      const offset = t.toMillis() - Date.now();
+      // On n'applique une correction que si l'écart est significatif (> 5 s)
+      clockOffset = Math.abs(offset) > 5000 ? offset : 0;
+      localStorage.setItem("kpiClockOffset", String(clockOffset));
+      if (Math.abs(offset) > 60000) {
+        console.warn("Horloge du poste décalée de", Math.round(offset / 1000), "s — correction appliquée.");
+      }
+    }
+  } catch (e) { /* non bloquant : on garde l'horloge locale */ }
+}
+
 async function initialSync(code, manual) {
   if (!fbDb || !navigator.onLine) { if (!navigator.onLine) setSyncStatusUI("offline"); return; }
   setSyncStatusUI("syncing");
   try {
+    await syncClockOffset(code);
     const snap = await syncDocRef(code).get();
     const remote = snap.exists ? snap.data() : null;
-    const remoteAt = remote?.updatedAt || 0;
     const cfg = getSyncConfig();
     const canPush = cfg && cfg.enabled;
 
     if (!remote) {
       // Rien dans le cloud : on y dépose nos données locales
       if (canPush) await pushToCloud(false);
-    } else if (remoteAt > localUpdatedAt) {
-      // Le cloud est plus récent : on récupère
-      applyRemoteData(remote, true);
-    } else if (localUpdatedAt > remoteAt && canPush) {
-      // Nos données locales sont plus récentes : on envoie
-      await pushToCloud(false);
     } else {
-      // À égalité : on s'aligne sur le cloud sans rien réécrire
-      lastAppliedSyncAt = remoteAt;
+      // Fusion systématique : personne n'écrase personne.
+      // On intègre le distant chez nous, puis on renvoie le résultat fusionné
+      // pour que les autres postes reçoivent aussi nos apports.
+      lastAppliedSyncAt = remote.updatedAt || 0;
+      applyRemoteData(remote, true);
+      if (canPush) await pushToCloud(false);
     }
     setSyncStatusUI("connected");
   } catch (err) {
