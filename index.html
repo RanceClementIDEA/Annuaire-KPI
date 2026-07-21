@@ -8,8 +8,10 @@
   <!-- PWA : installation sur téléphone -->
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#06202E">
-  <link rel="icon" type="image/png" href="logo-idea.png">
-  <link rel="apple-touch-icon" href="logo-idea.png">
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="logo-annuaire.svg">
+  <link rel="icon" type="image/png" sizes="512x512" href="logo-annuaire.png">
+  <link rel="apple-touch-icon" href="logo-annuaire-180.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Annuaire KPI">
@@ -119,10 +121,6 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Nouveau KPI
       </button>
-      <label class="btn-upload" for="fileInput">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        Importer Excel
-      </label>
       <button class="btn-refresh" id="refreshBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
         Rafraîchir
@@ -131,17 +129,17 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 12-9 12s-9-5-9-12a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
         Gérer les sites
       </button>
-      <button class="btn-refresh" id="tutorialBtn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        Tutoriel
-      </button>
       <button class="btn-refresh" id="syncSettingsBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Synchronisation
       </button>
+      <button class="btn-refresh" id="historyBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Historique
+      </button>
       <button class="btn-refresh" id="restoreDeletedBtn" style="display:none">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-        <span id="restoreDeletedLabel">Réafficher les fiches supprimées</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <span id="restoreDeletedLabel">Corbeille</span>
       </button>
     </div>
 
@@ -164,6 +162,10 @@
         <span class="search-count" id="searchCount"></span>
       </div>
       <div class="topbar-right">
+        <button class="topbar-tuto" id="tutorialBtn" title="Tutoriel : créer et modifier un KPI">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span class="topbar-tuto-text">Tutoriel</span>
+        </button>
         <button class="sync-pill" id="syncPill" title="Synchronisation cloud" style="display:none">
           <span class="sync-dot"></span>
           <span class="sync-pill-text" id="syncPillText">Sync</span>
@@ -493,6 +495,13 @@
       <button id="disconnectSyncBtn" class="btn-secondary">🔌 Désactiver</button>
     </div>
 
+    <div class="modal-links-title">Historique des versions</div>
+    <p class="modal-hint">
+      Une copie est enregistrée automatiquement avant chaque réception de données du cloud.
+      Vous pouvez revenir à un état antérieur.
+    </p>
+    <div id="snapshotList" class="snap-list"></div>
+
     <div class="modal-links-title">Dépannage</div>
     <p class="modal-hint">
       Transférez vos données entre la version locale et la version en ligne, ou repartez de zéro
@@ -504,6 +513,17 @@
       <button id="resetSyncBtn" class="btn-danger">🧨 Réinitialiser la synchronisation</button>
     </div>
     <input type="file" id="backupFileInput" accept=".json" style="display:none">
+
+    <div class="modal-links-title">Dernier recours</div>
+    <p class="modal-hint">
+      Ré-importer le fichier Excel remplace toutes les fiches issues d'Excel.
+      Vos fiches créées dans l'application, vos modifications et vos favoris sont conservés.
+      N'utilisez ceci que si les autres méthodes n'ont pas suffi.
+    </p>
+    <label class="btn-danger last-resort" for="fileInput">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Importer un fichier Excel
+    </label>
   </div>
 </div>
 
@@ -530,6 +550,64 @@
     <div class="modal-actions">
       <button id="saveSitesBtn" class="btn-primary">💾 Enregistrer</button>
       <button id="cancelSitesBtn" class="btn-secondary">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODALE CORBEILLE -->
+<div id="trashModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>🗑 Corbeille</h3>
+      <button id="closeTrashModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Fiches supprimées de l'annuaire. Cochez celles que vous souhaitez réafficher.
+    </p>
+
+    <button type="button" id="trashSelectAll" class="btn-link">☑ Tout cocher / décocher</button>
+    <div id="trashList" class="trash-list"></div>
+
+    <div class="modal-actions">
+      <button id="restoreSelectedBtn" class="btn-primary">↩ Réafficher la sélection</button>
+      <button id="purgeSelectedBtn" class="btn-danger">🔥 Supprimer définitivement</button>
+      <button id="cancelTrashBtn" class="btn-secondary">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODALE HISTORIQUE D'ACTIVITÉ -->
+<div id="historyModal" class="modal-overlay hidden">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3>🕓 Historique d'activité</h3>
+      <button id="closeHistoryModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Créations, modifications et suppressions de fiches, avec leur auteur et leur date.
+      L'historique est partagé entre tous les appareils synchronisés.
+    </p>
+
+    <div class="history-filters">
+      <select id="historyActionFilter" class="modal-input">
+        <option value="">Toutes les actions</option>
+        <option value="create">Créations</option>
+        <option value="update">Modifications</option>
+        <option value="delete">Suppressions</option>
+        <option value="restore">Restaurations</option>
+        <option value="purge">Suppressions définitives</option>
+      </select>
+      <select id="historyUserFilter" class="modal-input">
+        <option value="">Tous les utilisateurs</option>
+      </select>
+    </div>
+
+    <div id="historyList" class="history-list"></div>
+
+    <div class="modal-actions">
+      <button id="exportHistoryBtn" class="btn-secondary">💾 Exporter (CSV)</button>
+      <button id="clearHistoryBtn" class="btn-danger">🧹 Vider l'historique</button>
+      <button id="closeHistoryBtn2" class="btn-secondary">Fermer</button>
     </div>
   </div>
 </div>

@@ -6,7 +6,57 @@ let excelData = [];     // KPIs issus du fichier Excel (version d'origine, jamai
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
 let personalEntries = []; // Signets personnels de l'utilisateur (locaux, jamais synchronisés)
 let overrides = {};     // Modifications apportées aux KPIs Excel, par id
-let deletedIds = [];    // Fiches Excel supprimées dans l'app (masquées même après ré-import)
+let deletedIds = [];    // Fiches Excel supprimées : [{id, title, freq, at, by}]
+
+// Compatibilité : ancien format = simple tableau d'identifiants
+function normalizeDeleted(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.map(d => typeof d === "string"
+    ? { id: d, title: "", freq: "", at: null, by: "" }
+    : d).filter(d => d && d.id);
+}
+function isDeleted(id) { return deletedIds.some(d => d.id === id); }
+
+// Fiches purgées définitivement : masquées pour toujours, plus listées dans la corbeille
+let purgedIds = [];
+function loadPurged() {
+  try { purgedIds = JSON.parse(localStorage.getItem("kpiPurgedIds")) || []; }
+  catch { purgedIds = []; }
+}
+function savePurged(sync = true) {
+  localStorage.setItem("kpiPurgedIds", JSON.stringify(purgedIds));
+  if (sync) scheduleAutoSync();
+}
+function isPurged(id) { return purgedIds.includes(id); }
+
+/* ============================================
+   JOURNAL D'ACTIVITÉ (qui a fait quoi, quand)
+============================================ */
+const LS_ACTIVITY = "kpiActivity";
+const MAX_ACTIVITY = 400;
+let activityLog = [];
+
+function loadActivity() {
+  try { activityLog = JSON.parse(localStorage.getItem(LS_ACTIVITY)) || []; }
+  catch { activityLog = []; }
+}
+function saveActivity(sync = true) {
+  localStorage.setItem(LS_ACTIVITY, JSON.stringify(activityLog));
+  if (sync) scheduleAutoSync();
+}
+// action : "create" | "update" | "delete" | "restore"
+function logActivity(action, title, detail, space) {
+  activityLog.unshift({
+    at: Date.now(),
+    by: currentUser || "?",
+    action,
+    title: title || "",
+    detail: detail || "",
+    space: space || "shared"
+  });
+  while (activityLog.length > MAX_ACTIVITY) activityLog.pop();
+  saveActivity(false); // l'appelant déclenche la synchro
+}
 let currentUser = localStorage.getItem("kpiUser");
 let favorites = [];
 let currentView = "all"; // "all" | "fav"
@@ -115,6 +165,8 @@ function login(user) {
   loadPersonalEntries();
   loadOverrides();
   loadDeletedIds();
+  loadPurged();
+  loadActivity();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -138,6 +190,8 @@ logoutBtn.addEventListener("click", () => {
   personalEntries = [];
   overrides = {};
   deletedIds = [];
+  purgedIds = [];
+  activityLog = [];
   favorites = [];
   currentView = "all";
   container.innerHTML = "";
@@ -320,7 +374,7 @@ function rebuildData(sync) {
   // Applique les modifications utilisateur par-dessus les fiches Excel d'origine,
   // et masque celles qui ont été supprimées dans l'application
   const excelWithEdits = excelData
-    .filter(d => !deletedIds.includes(d.id))
+    .filter(d => !isDeleted(d.id) && !isPurged(d.id))
     .map(d => overrides[d.id] ? { ...d, ...overrides[d.id], edited: true } : d);
   data = [...excelWithEdits, ...manualEntries];
   initFilters();
@@ -372,6 +426,7 @@ function deletePersonalKpi(id) {
   favorites = favorites.filter(f => f !== id);
   saveFavoritesLocalOnly();
   savePersonalEntries();
+  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "", "perso");
   initFilters();
   updateCounts();
   animateNextRender = false;
@@ -398,7 +453,8 @@ function restoreOriginalKpi(id) {
   const original = excelData.find(k => k.id === id);
   if (!confirm(`Restaurer la version d'origine de « ${original ? original.title : id} » ?`)) return;
   delete overrides[id];
-  saveOverrides();
+  saveOverrides(false);
+  logActivity("restore", original ? original.title : id, "version d'origine rétablie");
   rebuildData(true);
   showToast("↩ Version d'origine restaurée");
 }
@@ -408,7 +464,7 @@ function restoreOriginalKpi(id) {
 ============================================ */
 function loadDeletedIds() {
   try {
-    deletedIds = JSON.parse(localStorage.getItem("kpiDeletedIds")) || [];
+    deletedIds = normalizeDeleted(JSON.parse(localStorage.getItem("kpiDeletedIds")));
   } catch { deletedIds = []; }
 }
 
@@ -420,13 +476,16 @@ function saveDeletedIds(sync = true) {
 function deleteExcelKpi(id) {
   const kpi = data.find(k => k.id === id) || excelData.find(k => k.id === id);
   if (!kpi) return;
-  if (!confirm(`Supprimer le signet « ${kpi.title} » ?\n\nIl restera masqué même après un ré-import Excel. Vous pourrez le réafficher via « Réafficher les fiches supprimées » dans le menu.`)) return;
-  if (!deletedIds.includes(id)) deletedIds.push(id);
+  if (!confirm(`Supprimer le signet « ${kpi.title} » ?\n\nIl restera masqué même après un ré-import Excel. Vous pourrez le réafficher depuis « Corbeille » dans le menu.`)) return;
+  if (!isDeleted(id)) {
+    deletedIds.push({ id, title: kpi.title || "", freq: kpi.freq || "", at: Date.now(), by: currentUser || "?" });
+  }
   delete overrides[id];
   favorites = favorites.filter(f => f !== id);
   saveFavoritesLocalOnly();
   saveOverrides(false);
-  saveDeletedIds();
+  saveDeletedIds(false);
+  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "");
   rebuildData(true);
   showToast("🗑 Signet supprimé");
 }
@@ -444,16 +503,209 @@ function updateRestoreDeletedBtn() {
   if (!btn) return;
   const n = deletedIds.length;
   btn.style.display = n ? "" : "none";
-  if (label) label.textContent = `Réafficher ${n} fiche${n > 1 ? "s" : ""} supprimée${n > 1 ? "s" : ""}`;
+  if (label) label.textContent = `Corbeille (${n})`;
 }
 
-document.getElementById("restoreDeletedBtn")?.addEventListener("click", () => {
-  if (!deletedIds.length) return;
-  if (!confirm(`Réafficher les ${deletedIds.length} fiche(s) supprimée(s) ?`)) return;
-  deletedIds = [];
-  saveDeletedIds();
+/* ============================================
+   CORBEILLE : liste des fiches supprimées
+============================================ */
+function fmtDate(ts) {
+  if (!ts) return "date inconnue";
+  const d = new Date(ts);
+  return d.toLocaleDateString("fr-FR") + " à " + d.toLocaleTimeString("fr-FR").slice(0, 5);
+}
+
+function renderTrashList() {
+  const el = document.getElementById("trashList");
+  if (!el) return;
+  if (!deletedIds.length) {
+    el.innerHTML = `<p class="modal-hint" style="margin:0">La corbeille est vide.</p>`;
+    return;
+  }
+  // Plus récentes en premier
+  const rows = deletedIds.map((d, i) => ({ ...d, _i: i }))
+    .sort((a, b) => (b.at || 0) - (a.at || 0));
+  el.innerHTML = "";
+  rows.forEach(d => {
+    const orig = excelData.find(k => k.id === d.id);
+    const title = d.title || (orig ? orig.title : d.id);
+    const freq = d.freq || (orig ? orig.freq : "");
+    const row = document.createElement("label");
+    row.className = "trash-row";
+    row.innerHTML = `
+      <input type="checkbox" class="trash-check" data-id="${esc(d.id)}">
+      <div class="trash-info">
+        <b>${esc(title)}</b>
+        <span>${freq ? esc(freq) + " · " : ""}supprimée le ${fmtDate(d.at)}${d.by ? " par " + esc(d.by) : ""}</span>
+      </div>`;
+    el.appendChild(row);
+  });
+}
+
+function openTrashModal() {
+  renderTrashList();
+  document.getElementById("trashModal").classList.remove("hidden");
+}
+function closeTrashModal() { document.getElementById("trashModal").classList.add("hidden"); }
+
+function restoreSelectedTrash() {
+  const ids = getTrashSelection();
+  if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
+  const restored = deletedIds.filter(d => ids.includes(d.id));
+  deletedIds = deletedIds.filter(d => !ids.includes(d.id));
+  saveDeletedIds(false);
+  restored.forEach(d => logActivity("restore", d.title || d.id, d.freq ? `temporalité ${d.freq}` : ""));
   rebuildData(true);
-  showToast("✅ Fiches réaffichées");
+  renderTrashList();
+  showToast(`✅ ${ids.length} fiche${ids.length > 1 ? "s" : ""} réaffichée${ids.length > 1 ? "s" : ""}`);
+  if (!deletedIds.length) closeTrashModal();
+}
+
+function getTrashSelection() {
+  return Array.from(document.querySelectorAll("#trashList .trash-check:checked"))
+    .map(c => c.dataset.id);
+}
+
+// Suppression définitive : la fiche disparaît de la corbeille et ne reviendra plus,
+// même après un ré-import du fichier Excel.
+function purgeSelectedTrash() {
+  const ids = getTrashSelection();
+  if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
+  const targets = deletedIds.filter(d => ids.includes(d.id));
+  const noms = targets.slice(0, 5).map(d => "• " + (d.title || d.id)).join("\n");
+  if (!confirm(
+    `Supprimer DÉFINITIVEMENT ${ids.length} fiche${ids.length > 1 ? "s" : ""} ?\n\n` +
+    noms + (targets.length > 5 ? `\n… et ${targets.length - 5} autre(s)` : "") +
+    "\n\nElles quitteront la corbeille et ne réapparaîtront plus, même après un ré-import Excel. " +
+    "Cette action est irréversible."
+  )) return;
+
+  ids.forEach(id => { if (!purgedIds.includes(id)) purgedIds.push(id); });
+  deletedIds = deletedIds.filter(d => !ids.includes(d.id));
+  excelData  = excelData.filter(k => !ids.includes(k.id));
+  ids.forEach(id => delete overrides[id]);
+  favorites = favorites.filter(f => !ids.includes(f));
+  saveFavoritesLocalOnly();
+  savePurged(false);
+  saveDeletedIds(false);
+  saveOverrides(false);
+  targets.forEach(d => logActivity("purge", d.title || d.id, "suppression définitive"));
+  rebuildData(true);
+  renderTrashList();
+  showToast(`🔥 ${ids.length} fiche${ids.length > 1 ? "s" : ""} définitivement supprimée${ids.length > 1 ? "s" : ""}`, 3000);
+  if (!deletedIds.length) closeTrashModal();
+}
+
+document.getElementById("restoreDeletedBtn")?.addEventListener("click", openTrashModal);
+document.getElementById("purgeSelectedBtn")?.addEventListener("click", purgeSelectedTrash);document.getElementById("closeTrashModalBtn")?.addEventListener("click", closeTrashModal);
+document.getElementById("cancelTrashBtn")?.addEventListener("click", closeTrashModal);
+document.getElementById("restoreSelectedBtn")?.addEventListener("click", restoreSelectedTrash);
+document.getElementById("trashSelectAll")?.addEventListener("click", () => {
+  const boxes = document.querySelectorAll("#trashList .trash-check");
+  const allChecked = Array.from(boxes).every(b => b.checked);
+  boxes.forEach(b => b.checked = !allChecked);
+});
+document.getElementById("trashModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("trashModal")) closeTrashModal();
+});
+
+/* ============================================
+   HISTORIQUE D'ACTIVITÉ (interface)
+============================================ */
+const ACTION_META = {
+  create:  { icon: "➕", label: "Création",     cls: "act-create" },
+  update:  { icon: "✏️", label: "Modification", cls: "act-update" },
+  delete:  { icon: "🗑", label: "Suppression",  cls: "act-delete" },
+  restore: { icon: "↩",  label: "Restauration", cls: "act-restore" },
+  purge:   { icon: "🔥", label: "Suppression définitive", cls: "act-purge" }
+};
+
+function renderHistoryList() {
+  const el = document.getElementById("historyList");
+  if (!el) return;
+  const fa = document.getElementById("historyActionFilter").value;
+  const fu = document.getElementById("historyUserFilter").value;
+
+  const rows = activityLog.filter(e => (!fa || e.action === fa) && (!fu || e.by === fu));
+  if (!rows.length) {
+    el.innerHTML = `<p class="modal-hint" style="margin:0">Aucune activité enregistrée${(fa || fu) ? " pour ce filtre" : " pour l'instant"}.</p>`;
+    return;
+  }
+  el.innerHTML = "";
+  rows.forEach(e => {
+    const m = ACTION_META[e.action] || { icon: "•", label: e.action, cls: "" };
+    const row = document.createElement("div");
+    row.className = "history-row " + m.cls;
+    row.innerHTML = `
+      <span class="hist-icon">${m.icon}</span>
+      <div class="hist-info">
+        <b>${esc(e.title || "(sans titre)")}</b>
+        <span>${m.label}${e.detail ? " · " + esc(e.detail) : ""}${e.space === "perso" ? " · espace personnel" : ""}</span>
+      </div>
+      <div class="hist-meta">
+        <b>${esc(e.by || "?")}</b>
+        <span>${fmtDate(e.at)}</span>
+      </div>`;
+    el.appendChild(row);
+  });
+}
+
+function refreshHistoryUserFilter() {
+  const sel = document.getElementById("historyUserFilter");
+  if (!sel) return;
+  const prev = sel.value;
+  const users = [...new Set(activityLog.map(e => e.by).filter(Boolean))].sort();
+  sel.innerHTML = `<option value="">Tous les utilisateurs</option>`;
+  users.forEach(u => {
+    const o = document.createElement("option");
+    o.value = o.textContent = u;
+    sel.appendChild(o);
+  });
+  if (users.includes(prev)) sel.value = prev;
+}
+
+function openHistoryModal() {
+  refreshHistoryUserFilter();
+  renderHistoryList();
+  document.getElementById("historyModal").classList.remove("hidden");
+}
+function closeHistoryModal() { document.getElementById("historyModal").classList.add("hidden"); }
+
+function exportHistoryCsv() {
+  if (!activityLog.length) { showToast("Historique vide", 2200); return; }
+  const esc2 = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = ["Date;Utilisateur;Action;Fiche;Détail;Espace"];
+  activityLog.forEach(e => {
+    const m = ACTION_META[e.action] || { label: e.action };
+    lines.push([fmtDate(e.at), e.by, m.label, e.title, e.detail, e.space === "perso" ? "personnel" : "partagé"]
+      .map(esc2).join(";"));
+  });
+  // BOM pour qu'Excel ouvre correctement les accents
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `annuaire-kpi-historique-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  showToast("💾 Historique exporté", 2500);
+}
+
+document.getElementById("historyBtn")?.addEventListener("click", openHistoryModal);
+document.getElementById("closeHistoryModalBtn")?.addEventListener("click", closeHistoryModal);
+document.getElementById("closeHistoryBtn2")?.addEventListener("click", closeHistoryModal);
+document.getElementById("historyActionFilter")?.addEventListener("change", renderHistoryList);
+document.getElementById("historyUserFilter")?.addEventListener("change", renderHistoryList);
+document.getElementById("exportHistoryBtn")?.addEventListener("click", exportHistoryCsv);
+document.getElementById("clearHistoryBtn")?.addEventListener("click", () => {
+  if (!confirm("Vider tout l'historique d'activité ?\n\nCette action est définitive et s'appliquera aux appareils synchronisés.")) return;
+  activityLog = [];
+  saveActivity(true);
+  renderHistoryList();
+  refreshHistoryUserFilter();
+  showToast("🧹 Historique vidé");
+});
+document.getElementById("historyModal")?.addEventListener("click", e => {
+  if (e.target === document.getElementById("historyModal")) closeHistoryModal();
 });
 
 function fillDatalists() {
@@ -633,6 +885,7 @@ function saveKpiForm() {
   const space = document.getElementById("kpiSpaceInput").value; // "shared" | "perso"
 
   let created = 0, updated = 0, removed = 0;
+  const createdFreqs = [], updatedFreqs = [], removedFreqs = [];
   let touchesShared = false, touchesPerso = false;
 
   STD_FREQS.forEach(freq => {
@@ -643,7 +896,7 @@ function saveKpiForm() {
     // Temporalité désactivée : supprimer la variante qui existait
     if (!slot.active) {
       if (initialId) {
-        removed++;
+        removed++; removedFreqs.push(freq);
         if (kind === "excel") {
           if (!deletedIds.includes(initialId)) deletedIds.push(initialId);
           delete overrides[initialId];
@@ -669,7 +922,7 @@ function saveKpiForm() {
     if (kind === "excel" && space === "shared") {
       overrides[initialId] = fields;
       touchesShared = true;
-      updated++;
+      updated++; updatedFreqs.push(freq);
       return;
     }
 
@@ -686,12 +939,19 @@ function saveKpiForm() {
     personalEntries = personalEntries.filter(k => k.id !== entry.id);
     if (targetPerso) { personalEntries.push(entry); touchesPerso = true; }
     else             { manualEntries.push(entry);   touchesShared = true; }
-    if (initialId) updated++; else created++;
+    if (initialId) { updated++; updatedFreqs.push(freq); } else { created++; createdFreqs.push(freq); }
   });
 
   // Persiste selon les espaces touchés
   if (touchesPerso)  savePersonalEntries();
   if (touchesShared) { saveManualEntries(false); saveOverrides(false); saveDeletedIds(false); }
+
+  // Journal : une entrée par type d'opération réalisée
+  const spaceLabel = space === "perso" ? "perso" : "shared";
+  if (created) logActivity("create", title, `${created} temporalité${created > 1 ? "s" : ""} : ${createdFreqs.join(", ")}`, spaceLabel);
+  if (updated) logActivity("update", title, `${updated} temporalité${updated > 1 ? "s" : ""} : ${updatedFreqs.join(", ")}`, spaceLabel);
+  if (removed) logActivity("delete", title, `temporalité${removed > 1 ? "s" : ""} retirée${removed > 1 ? "s" : ""} : ${removedFreqs.join(", ")}`, spaceLabel);
+
   rebuildData(true);
 
   const parts = [];
@@ -802,7 +1062,8 @@ function deleteManualKpi(id) {
   manualEntries = manualEntries.filter(k => k.id !== id);
   favorites = favorites.filter(f => f !== id);
   saveFavoritesLocalOnly();
-  saveManualEntries();
+  saveManualEntries(false);
+  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "");
   rebuildData(true);
   showToast("🗑 KPI supprimé");
 }
@@ -1246,6 +1507,8 @@ function buildSyncPayload() {
     kpiOverrides: overrides,
     kpiDeleted: deletedIds,
     kpiSites: sites,
+    kpiPurged: purgedIds,
+    kpiActivity: activityLog,
     favoritesByUser,
     updatedAt: localUpdatedAt || Date.now()
   };
@@ -1293,8 +1556,25 @@ function applyRemoteData(payload, fromSync) {
     saveOverrides(false);
   }
   if (Array.isArray(payload.kpiDeleted)) {
-    deletedIds = payload.kpiDeleted;
+    deletedIds = normalizeDeleted(payload.kpiDeleted);
     saveDeletedIds(false);
+  }
+  if (Array.isArray(payload.kpiPurged)) {
+    purgedIds = payload.kpiPurged;
+    savePurged(false);
+  }
+  if (Array.isArray(payload.kpiActivity)) {
+    // Fusionne les journaux (le nôtre + le distant), sans doublons, plus récent d'abord
+    const seen = new Set();
+    activityLog = [...payload.kpiActivity, ...activityLog]
+      .filter(e => {
+        const k = e.at + "|" + e.by + "|" + e.action + "|" + e.title;
+        if (seen.has(k)) return false;
+        seen.add(k); return true;
+      })
+      .sort((a, b) => b.at - a.at)
+      .slice(0, MAX_ACTIVITY);
+    saveActivity(false);
   }
   if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) {
     sites = payload.kpiSites;
