@@ -1280,6 +1280,8 @@ async function pushToCloud(manual) {
 }
 
 function applyRemoteData(payload, fromSync) {
+  // Filet de sécurité : on garde une copie de l'état local AVANT écrasement
+  pushSnapshot(fromSync ? "avant réception cloud" : "avant récupération manuelle");
   applyingRemoteSync = true;
   if (Array.isArray(payload.kpiData)) {
     excelData     = payload.kpiData.filter(d => !d.manual);
@@ -1518,6 +1520,7 @@ function initSyncModal() {
 
   if (cfg && cfg.config && cfg.code) connectSync(false); else setSyncStatusUI("off");
   renderSyncDiag();
+  renderSnapshotList();
 }
 
 // Bouton « Paramètres avancés » : révèle la saisie manuelle de config
@@ -1590,6 +1593,102 @@ document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
 });
 
 /* ============================================
+   INSTANTANÉS DE SÉCURITÉ (historique local)
+   Une copie est prise AVANT toute opération
+   destructive (réception cloud, import, reset).
+============================================ */
+const LS_SNAPSHOTS = "kpiSnapshots";
+const MAX_SNAPSHOTS = 12;
+
+function getSnapshots() {
+  try { return JSON.parse(localStorage.getItem(LS_SNAPSHOTS)) || []; } catch { return []; }
+}
+
+function pushSnapshot(reason) {
+  try {
+    const snap = {
+      at: Date.now(),
+      reason: reason || "sauvegarde",
+      user: currentUser,
+      counts: {
+        excel: excelData.length,
+        manual: manualEntries.length,
+        perso: personalEntries.length
+      },
+      excelData, manualEntries, personalEntries,
+      overrides, deletedIds, sites,
+      favorites
+    };
+    const list = getSnapshots();
+    // Évite les doublons rapprochés (moins de 5 s avec le même motif)
+    if (list.length && list[0].reason === snap.reason && snap.at - list[0].at < 5000) return;
+    list.unshift(snap);
+    while (list.length > MAX_SNAPSHOTS) list.pop();
+    try {
+      localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list));
+    } catch (e) {
+      // Espace saturé : on réduit l'historique et on réessaie
+      while (list.length > 3) { list.pop(); }
+      try { localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list)); } catch {}
+    }
+  } catch (e) { console.error("pushSnapshot:", e); }
+}
+
+function restoreSnapshot(index) {
+  const list = getSnapshots();
+  const s = list[index];
+  if (!s) return;
+  const d = new Date(s.at);
+  if (!confirm(
+    `Restaurer la version du ${d.toLocaleDateString("fr-FR")} à ${d.toLocaleTimeString("fr-FR").slice(0,5)} ?\n` +
+    `(${s.counts.excel} KPIs Excel, ${s.counts.manual} manuels, ${s.counts.perso} personnels)\n\n` +
+    "L'état actuel sera lui-même sauvegardé avant restauration."
+  )) return;
+
+  pushSnapshot("avant restauration");
+
+  if (Array.isArray(s.excelData))       excelData = s.excelData;
+  if (Array.isArray(s.manualEntries))   manualEntries = s.manualEntries;
+  if (Array.isArray(s.personalEntries)) personalEntries = s.personalEntries;
+  if (Array.isArray(s.deletedIds))      deletedIds = s.deletedIds;
+  if (Array.isArray(s.sites) && s.sites.length) sites = s.sites;
+  if (s.overrides && typeof s.overrides === "object") overrides = s.overrides;
+  if (Array.isArray(s.favorites))       { favorites = s.favorites; saveFavoritesLocalOnly(); }
+
+  saveManualEntries(false); savePersonalEntries(); saveOverrides(false);
+  saveDeletedIds(false); saveSites(false);
+  markLocalChange();     // cette version devient la plus récente
+  rebuildData(true);     // et repart vers le cloud si la synchro est active
+  renderSnapshotList();
+  renderSyncDiag();
+  showToast("↩ Version restaurée", 3000);
+}
+
+function renderSnapshotList() {
+  const el = document.getElementById("snapshotList");
+  if (!el) return;
+  const list = getSnapshots();
+  if (!list.length) {
+    el.innerHTML = `<p class="modal-hint" style="margin:0">Aucune version enregistrée pour l'instant.</p>`;
+    return;
+  }
+  el.innerHTML = "";
+  list.forEach((s, i) => {
+    const d = new Date(s.at);
+    const row = document.createElement("div");
+    row.className = "snap-row";
+    row.innerHTML = `
+      <div class="snap-info">
+        <b>${d.toLocaleDateString("fr-FR")} ${d.toLocaleTimeString("fr-FR").slice(0,5)}</b>
+        <span>${esc(s.reason)} · ${s.counts.excel} Excel · ${s.counts.manual} manuels · ${s.counts.perso} perso</span>
+      </div>
+      <button type="button" class="btn-secondary snap-restore">↩ Restaurer</button>`;
+    row.querySelector(".snap-restore").addEventListener("click", () => restoreSnapshot(i));
+    el.appendChild(row);
+  });
+}
+
+/* ============================================
    DÉPANNAGE : réinitialisation + sauvegarde locale
 ============================================ */
 
@@ -1654,6 +1753,8 @@ function importBackup(file) {
       `(${(b.excelData?.length || 0) + (b.manualEntries?.length || 0)} KPIs) ?\n\n` +
       "Les données actuelles de cet appareil seront remplacées."
     )) return;
+
+    pushSnapshot("avant import de sauvegarde");
 
     if (Array.isArray(b.excelData))       excelData = b.excelData;
     if (Array.isArray(b.manualEntries))   manualEntries = b.manualEntries;
