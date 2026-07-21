@@ -17,6 +17,19 @@ function normalizeDeleted(arr) {
 }
 function isDeleted(id) { return deletedIds.some(d => d.id === id && d.state !== "restored"); }
 
+// Enregistre un marqueur de suppression daté (unique point d'entrée).
+// Indispensable avec la fusion : sans marqueur, la fiche serait ressuscitée
+// par la version encore présente sur le cloud ou un autre poste.
+function markDeleted(id, kpi) {
+  deletedIds = deletedIds.filter(d => d.id !== id);
+  deletedIds.push({
+    id,
+    title: (kpi && kpi.title) || "",
+    freq:  (kpi && kpi.freq)  || "",
+    at: now(), by: currentUser || "?", state: "deleted"
+  });
+}
+
 // Fiches purgées définitivement : masquées pour toujours, plus listées dans la corbeille
 let purgedIds = [];
 function loadPurged() {
@@ -47,7 +60,7 @@ function saveActivity(sync = true) {
 // action : "create" | "update" | "delete" | "restore"
 function logActivity(action, title, detail, space) {
   activityLog.unshift({
-    at: Date.now(),
+    at: now(),
     by: currentUser || "?",
     action,
     title: title || "",
@@ -400,7 +413,9 @@ function rebuildData(sync) {
   const excelWithEdits = excelData
     .filter(d => !isDeleted(d.id) && !isPurged(d.id))
     .map(d => overrides[d.id] ? { ...d, ...overrides[d.id], edited: true } : d);
-  data = [...excelWithEdits, ...manualEntries];
+  // Les fiches manuelles supprimées restent stockées (pour la corbeille) mais sont masquées
+  const manualVisible = manualEntries.filter(d => !isDeleted(d.id) && !isPurged(d.id));
+  data = [...excelWithEdits, ...manualVisible];
   initFilters();
   updateCounts();
   // Une mise à jour (sync=true) ou une synchro distante ne doit pas rejouer l'animation d'entrée
@@ -552,7 +567,7 @@ function renderTrashList() {
     .sort((a, b) => (b.at || 0) - (a.at || 0));
   el.innerHTML = "";
   rows.forEach(d => {
-    const orig = excelData.find(k => k.id === d.id);
+    const orig = excelData.find(k => k.id === d.id) || manualEntries.find(k => k.id === d.id);
     const title = d.title || (orig ? orig.title : d.id);
     const freq = d.freq || (orig ? orig.freq : "");
     const row = document.createElement("label");
@@ -925,15 +940,19 @@ function saveKpiForm() {
     if (!slot.active) {
       if (initialId) {
         removed++; removedFreqs.push(freq);
+        const gone = data.find(k => k.id === initialId) ||
+                     manualEntries.find(k => k.id === initialId) ||
+                     excelData.find(k => k.id === initialId);
         if (kind === "excel") {
-          if (!deletedIds.includes(initialId)) deletedIds.push(initialId);
+          markDeleted(initialId, gone);
           delete overrides[initialId];
           touchesShared = true;
         } else if (kind === "perso") {
           personalEntries = personalEntries.filter(k => k.id !== initialId);
           touchesPerso = true;
         } else if (kind === "manual") {
-          manualEntries = manualEntries.filter(k => k.id !== initialId);
+          // Marqueur daté : la fiche reste stockée mais masquée, et ne peut pas revenir
+          markDeleted(initialId, gone);
           touchesShared = true;
         }
         favorites = favorites.filter(f => f !== initialId);
@@ -1089,9 +1108,10 @@ function deleteManualKpi(id) {
   const kpi = manualEntries.find(k => k.id === id);
   if (!kpi) return;
   if (!confirm(`Supprimer le KPI « ${kpi.title} » ?`)) return;
-  manualEntries = manualEntries.filter(k => k.id !== id);
+  markDeleted(id, kpi);            // marqueur daté (évite la résurrection via la fusion)
   favorites = favorites.filter(f => f !== id);
   saveFavoritesLocalOnly();
+  saveDeletedIds(false);
   saveManualEntries(false);
   logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "");
   rebuildData(true);
@@ -2054,6 +2074,7 @@ function pushSnapshot(reason) {
       },
       excelData, manualEntries, personalEntries,
       overrides, deletedIds, sites,
+      purgedIds, activityLog, meta: getMeta(),
       favorites
     };
     const list = getSnapshots();
@@ -2087,8 +2108,11 @@ function restoreSnapshot(index) {
   if (Array.isArray(s.excelData))       excelData = s.excelData;
   if (Array.isArray(s.manualEntries))   manualEntries = s.manualEntries;
   if (Array.isArray(s.personalEntries)) personalEntries = s.personalEntries;
-  if (Array.isArray(s.deletedIds))      deletedIds = s.deletedIds;
+  if (Array.isArray(s.deletedIds))      deletedIds = normalizeDeleted(s.deletedIds);
   if (Array.isArray(s.sites) && s.sites.length) sites = s.sites;
+  if (Array.isArray(s.purgedIds))       { purgedIds = s.purgedIds; savePurged(false); }
+  if (Array.isArray(s.activityLog))     { activityLog = s.activityLog; saveActivity(false); }
+  if (s.meta && typeof s.meta === "object") setMeta(s.meta);
   if (s.overrides && typeof s.overrides === "object") overrides = s.overrides;
   if (Array.isArray(s.favorites))       { favorites = s.favorites; saveFavoritesLocalOnly(); }
 
@@ -2163,7 +2187,8 @@ function exportBackup() {
     exportedFrom: isFileProtocol() ? "file://" : location.origin,
     user: currentUser,
     excelData, manualEntries, overrides, deletedIds, sites,
-    personalEntries,
+    personalEntries, purgedIds, activityLog, meta: getMeta(),
+    favoritesMeta: JSON.parse(localStorage.getItem("kpiFavMeta") || "{}"),
     favoritesByUser: JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}")
   };
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
@@ -2196,7 +2221,11 @@ function importBackup(file) {
     if (Array.isArray(b.excelData))       excelData = b.excelData;
     if (Array.isArray(b.manualEntries))   manualEntries = b.manualEntries;
     if (Array.isArray(b.personalEntries)) personalEntries = b.personalEntries;
-    if (Array.isArray(b.deletedIds))      deletedIds = b.deletedIds;
+    if (Array.isArray(b.deletedIds))      deletedIds = normalizeDeleted(b.deletedIds);
+    if (Array.isArray(b.purgedIds))       { purgedIds = b.purgedIds; savePurged(false); }
+    if (Array.isArray(b.activityLog))     { activityLog = b.activityLog; saveActivity(false); }
+    if (b.meta && typeof b.meta === "object") setMeta(b.meta);
+    if (b.favoritesMeta) localStorage.setItem("kpiFavMeta", JSON.stringify(b.favoritesMeta));
     if (Array.isArray(b.sites) && b.sites.length) sites = b.sites;
     if (b.overrides && typeof b.overrides === "object") overrides = b.overrides;
     if (b.favoritesByUser) {
