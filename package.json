@@ -1,0 +1,13 @@
+{
+  "name": "annuaire-kpi-idea",
+  "version": "1.0.0",
+  "description": "Annuaire des KPIs IDEA — application web autonome (PWA) avec synchronisation cloud",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "lint": "npx --yes eslint js/ app.js"
+  },
+  "keywords": ["kpi", "annuaire", "pwa", "logistique"],
+  "license": "UNLICENSED"
+}

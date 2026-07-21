@@ -8,14 +8,7 @@ let personalEntries = []; // Signets personnels de l'utilisateur (locaux, jamais
 let overrides = {};     // Modifications apportées aux KPIs Excel, par id
 let deletedIds = [];    // Fiches Excel supprimées : [{id, title, freq, at, by}]
 
-// Compatibilité : ancien format = simple tableau d'identifiants
-function normalizeDeleted(arr) {
-  if (!Array.isArray(arr)) return [];
-  return arr.map(d => typeof d === "string"
-    ? { id: d, title: "", freq: "", at: null, by: "", state: "deleted" }
-    : { state: "deleted", ...d }).filter(d => d && d.id);
-}
-function isDeleted(id) { return deletedIds.some(d => d.id === id && d.state !== "restored"); }
+function isDeleted(id) { return isDeletedIn(deletedIds, id); }
 
 // Enregistre un marqueur de suppression daté (unique point d'entrée).
 // Indispensable avec la fusion : sans marqueur, la fiche serait ressuscitée
@@ -311,14 +304,18 @@ function loadSavedFile() {
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       loadWorkbook(bytes);
       return;
-    } catch { /* illisible : on tente les autres sources */ }
+    } catch (err) {
+      console.warn("[Excel] Fichier local illisible (base64), tentative sur les autres sources.", err);
+    }
   }
   const stored = localStorage.getItem("kpiFile"); // ancien format
   if (stored) {
     try {
       loadWorkbook(new Uint8Array(JSON.parse(stored)));
       return;
-    } catch { /* illisible */ }
+    } catch (err) {
+      console.warn("[Excel] Fichier local illisible (ancien format).", err);
+    }
   }
   // Pas de fichier Excel local : on utilise les données déjà synchronisées depuis le cloud, si disponibles
   const cached = localStorage.getItem("kpiDataCache");
@@ -333,7 +330,9 @@ function loadSavedFile() {
       saveManualEntries(false);
       rebuildData(false);
       return;
-    } catch { /* cache invalide, on retombe sur l'import */ }
+    } catch (err) {
+      console.warn("[Cache] Cache de données invalide, import requis.", err);
+    }
   }
   // Pas d'Excel ni de cache : on affiche au moins les fiches créées à la main
   if (manualEntries.length) { rebuildData(false); return; }
@@ -909,26 +908,100 @@ function normalizeUrl(v) {
   return v;
 }
 
-function saveKpiForm() {
+/**
+ * Lit les champs communs de la modale (valables pour toutes les temporalités).
+ * @returns {{title:string,type:string,process:string,desc:string}|null} null si l'intitulé manque
+ */
+function readSharedFields() {
   const title = document.getElementById("kpiTitleInput").value.trim();
   if (!title) {
     showToast("⚠️ L'intitulé est obligatoire", 2600);
     document.getElementById("kpiTitleInput").focus();
-    return;
+    return null;
   }
-  // Fige les valeurs de la temporalité affichée avant de tout parcourir
-  syncInputsIntoSlot(modalCurrentFreq);
-
-  const shared = {
+  return {
     title,
     type:    document.getElementById("kpiTypeInput").value.trim(),
     process: document.getElementById("kpiProcessInput").value.trim(),
     desc:    document.getElementById("kpiDescInput").value.trim()
   };
+}
+
+/**
+ * Retire une temporalité décochée dans la modale.
+ * Les fiches partagées reçoivent un marqueur daté (jamais de suppression
+ * sèche, sinon la fusion les ferait réapparaître). Les fiches personnelles,
+ * qui ne sont pas synchronisées, sont retirées directement.
+ * @returns {{shared:boolean, perso:boolean}} espaces impactés
+ */
+function removeTemporality(initialId, kind) {
+  const gone = data.find(k => k.id === initialId) ||
+               manualEntries.find(k => k.id === initialId) ||
+               excelData.find(k => k.id === initialId);
+  if (kind === "excel") {
+    markDeleted(initialId, gone);
+    delete overrides[initialId];
+    return { shared: true, perso: false };
+  }
+  if (kind === "manual") {
+    markDeleted(initialId, gone);
+    return { shared: true, perso: false };
+  }
+  if (kind === "perso") {
+    personalEntries = personalEntries.filter(k => k.id !== initialId);
+    return { shared: false, perso: true };
+  }
+  return { shared: false, perso: false };
+}
+
+/**
+ * Crée ou met à jour une temporalité.
+ * Une fiche Excel passe par une surcharge (l'original reste intact pour
+ * survivre à un ré-import) ; les autres sont des fiches à part entière.
+ * @returns {{shared:boolean, perso:boolean, isNew:boolean}}
+ */
+function upsertTemporality(freq, slot, initialId, kind, shared, space) {
+  const fields = { ...shared, freq, ritual: slot.ritual };
+  sites.forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
+
+  if (kind === "excel" && space === "shared") {
+    overrides[initialId] = stamp(fields);
+    return { shared: true, perso: false, isNew: false };
+  }
+
+  const targetPerso = space === "perso";
+  const entry = {
+    id: initialId && kind !== "excel"
+      ? initialId
+      : ((targetPerso ? "perso_" : "manual_") + Date.now() + "_" + freq),
+    manual: true,
+    ...(targetPerso ? { personal: true } : {}),
+    ...fields
+  };
+  stamp(entry);
+  // Retire l'ancienne occurrence des deux espaces (gère le déplacement)
+  manualEntries   = manualEntries.filter(k => k.id !== entry.id);
+  personalEntries = personalEntries.filter(k => k.id !== entry.id);
+  if (targetPerso) personalEntries.push(entry);
+  else             manualEntries.push(entry);
+
+  return { shared: !targetPerso, perso: targetPerso, isNew: !initialId };
+}
+
+/**
+ * Enregistre le formulaire : parcourt les trois temporalités et applique
+ * la création, la mise à jour ou le retrait de chacune, puis persiste,
+ * journalise et resynchronise.
+ */
+function saveKpiForm() {
+  const shared = readSharedFields();
+  if (!shared) return;
+
+  // Fige les valeurs de la temporalité affichée avant de tout parcourir
+  syncInputsIntoSlot(modalCurrentFreq);
   const space = document.getElementById("kpiSpaceInput").value; // "shared" | "perso"
 
-  let created = 0, updated = 0, removed = 0;
-  const createdFreqs = [], updatedFreqs = [], removedFreqs = [];
+  const done = { created: [], updated: [], removed: [] };
   let touchesShared = false, touchesPerso = false;
 
   STD_FREQS.forEach(freq => {
@@ -936,78 +1009,48 @@ function saveKpiForm() {
     const initialId = modalInitialIds[freq] || null;
     const kind = initialId ? classifyId(initialId) : null;
 
-    // Temporalité désactivée : supprimer la variante qui existait
     if (!slot.active) {
-      if (initialId) {
-        removed++; removedFreqs.push(freq);
-        const gone = data.find(k => k.id === initialId) ||
-                     manualEntries.find(k => k.id === initialId) ||
-                     excelData.find(k => k.id === initialId);
-        if (kind === "excel") {
-          markDeleted(initialId, gone);
-          delete overrides[initialId];
-          touchesShared = true;
-        } else if (kind === "perso") {
-          personalEntries = personalEntries.filter(k => k.id !== initialId);
-          touchesPerso = true;
-        } else if (kind === "manual") {
-          // Marqueur daté : la fiche reste stockée mais masquée, et ne peut pas revenir
-          markDeleted(initialId, gone);
-          touchesShared = true;
-        }
-        favorites = favorites.filter(f => f !== initialId);
-        saveFavoritesLocalOnly();
-      }
+      if (!initialId) return;                       // rien à retirer
+      done.removed.push(freq);
+      const t = removeTemporality(initialId, kind);
+      touchesShared = touchesShared || t.shared;
+      touchesPerso  = touchesPerso  || t.perso;
+      favorites = favorites.filter(f => f !== initialId);
+      saveFavoritesLocalOnly();
       return;
     }
 
-    // Temporalité active : construire la variante
-    const fields = { ...shared, freq, ritual: slot.ritual };
-    sites.forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
-
-    // Variante Excel existante → surcharge (préserve l'original au ré-import)
-    if (kind === "excel" && space === "shared") {
-      overrides[initialId] = stamp(fields);
-      touchesShared = true;
-      updated++; updatedFreqs.push(freq);
-      return;
-    }
-
-    // Sinon : fiche manuelle ou personnelle (création ou mise à jour)
-    const targetPerso = space === "perso";
-    const entry = {
-      id: initialId && kind !== "excel" ? initialId : ((targetPerso ? "perso_" : "manual_") + Date.now() + "_" + freq),
-      manual: true,
-      ...(targetPerso ? { personal: true } : {}),
-      ...fields
-    };
-    // Retire l'ancienne occurrence des deux espaces (gère le déplacement)
-    manualEntries   = manualEntries.filter(k => k.id !== entry.id);
-    personalEntries = personalEntries.filter(k => k.id !== entry.id);
-    stamp(entry);
-    if (targetPerso) { personalEntries.push(entry); touchesPerso = true; }
-    else             { manualEntries.push(entry);   touchesShared = true; }
-    if (initialId) { updated++; updatedFreqs.push(freq); } else { created++; createdFreqs.push(freq); }
+    const t = upsertTemporality(freq, slot, initialId, kind, shared, space);
+    touchesShared = touchesShared || t.shared;
+    touchesPerso  = touchesPerso  || t.perso;
+    (t.isNew ? done.created : done.updated).push(freq);
   });
 
-  // Persiste selon les espaces touchés
+  persistKpiChanges(touchesShared, touchesPerso, shared.title, space, done);
+  closeKpiModal();
+}
+
+/** Persiste les espaces modifiés, journalise et notifie. */
+function persistKpiChanges(touchesShared, touchesPerso, title, space, done) {
   if (touchesPerso)  savePersonalEntries();
   if (touchesShared) { saveManualEntries(false); saveOverrides(false); saveDeletedIds(false); }
 
-  // Journal : une entrée par type d'opération réalisée
   const spaceLabel = space === "perso" ? "perso" : "shared";
-  if (created) logActivity("create", title, `${created} temporalité${created > 1 ? "s" : ""} : ${createdFreqs.join(", ")}`, spaceLabel);
-  if (updated) logActivity("update", title, `${updated} temporalité${updated > 1 ? "s" : ""} : ${updatedFreqs.join(", ")}`, spaceLabel);
-  if (removed) logActivity("delete", title, `temporalité${removed > 1 ? "s" : ""} retirée${removed > 1 ? "s" : ""} : ${removedFreqs.join(", ")}`, spaceLabel);
+  const plural = n => n > 1 ? "s" : "";
+  if (done.created.length)
+    logActivity("create", title, `${done.created.length} temporalité${plural(done.created.length)} : ${done.created.join(", ")}`, spaceLabel);
+  if (done.updated.length)
+    logActivity("update", title, `${done.updated.length} temporalité${plural(done.updated.length)} : ${done.updated.join(", ")}`, spaceLabel);
+  if (done.removed.length)
+    logActivity("delete", title, `temporalité${plural(done.removed.length)} retirée${plural(done.removed.length)} : ${done.removed.join(", ")}`, spaceLabel);
 
   rebuildData(true);
 
   const parts = [];
-  if (created) parts.push(`${created} créée${created > 1 ? "s" : ""}`);
-  if (updated) parts.push(`${updated} modifiée${updated > 1 ? "s" : ""}`);
-  if (removed) parts.push(`${removed} retirée${removed > 1 ? "s" : ""}`);
+  if (done.created.length) parts.push(`${done.created.length} créée${plural(done.created.length)}`);
+  if (done.updated.length) parts.push(`${done.updated.length} modifiée${plural(done.updated.length)}`);
+  if (done.removed.length) parts.push(`${done.removed.length} retirée${plural(done.removed.length)}`);
   showToast("✅ Temporalités : " + (parts.join(", ") || "aucun changement"), 2800);
-  closeKpiModal();
 }
 
 function editKPI(id) { openKpiModal(id); }
@@ -1529,52 +1572,9 @@ function stamp(entry) {
   return entry;
 }
 
-// Fusionne deux listes de fiches par id : la version la plus récente gagne
-function mergeEntries(localArr, remoteArr) {
-  const map = new Map();
-  (remoteArr || []).forEach(e => { if (e && e.id) map.set(e.id, e); });
-  (localArr || []).forEach(e => {
-    if (!e || !e.id) return;
-    const other = map.get(e.id);
-    if (!other || (e._mtime || 0) >= (other._mtime || 0)) map.set(e.id, e);
-  });
-  return [...map.values()];
-}
-
-// Fusionne deux dictionnaires de surcharges (clé = id de fiche Excel)
-function mergeOverrides(localObj, remoteObj) {
-  const out = { ...(remoteObj || {}) };
-  Object.entries(localObj || {}).forEach(([id, v]) => {
-    const other = out[id];
-    if (!other || (v._mtime || 0) >= (other._mtime || 0)) out[id] = v;
-  });
-  return out;
-}
-
-// Fusionne les états supprimé/restauré : le dernier geste daté l'emporte.
-// On conserve aussi les marqueurs « restauré » : ils annulent une suppression
-// plus ancienne venue d'un autre poste (sans eux, la fiche redisparaîtrait).
-function mergeDeleted(localArr, remoteArr) {
-  const map = new Map();
-  [...(remoteArr || []), ...(localArr || [])].forEach(d => {
-    if (!d || !d.id) return;
-    const prev = map.get(d.id);
-    if (!prev || (d.at || 0) >= (prev.at || 0)) map.set(d.id, d);
-  });
-  return [...map.values()];
-}
-
-// Fusionne les favoris utilisateur par utilisateur (jamais en bloc)
-function mergeFavorites(localMap, localMeta, remoteMap, remoteMeta) {
-  const map = { ...(remoteMap || {}) };
-  const meta = { ...(remoteMeta || {}) };
-  Object.keys(localMap || {}).forEach(u => {
-    const lt = (localMeta || {})[u] || 0;
-    const rt = (remoteMeta || {})[u] || 0;
-    if (lt >= rt) { map[u] = localMap[u]; meta[u] = lt; }
-  });
-  return { map, meta };
-}
+// Les fonctions de fusion (mergeEntries, mergeDeleted, mergeFavorites,
+// mergeOverrides, mergeActivity, normalizeDeleted) vivent dans js/merge.js :
+// logique pure, sans DOM ni stockage, couverte par merge.test.js.
 
 // Métadonnées locales de fusion (horodatages des blocs non listés)
 function getMeta() {
@@ -1673,37 +1673,31 @@ async function pushToCloud(manual) {
   }
 }
 
-function applyRemoteData(payload, fromSync) {
-  // Filet de sécurité : on garde une copie de l'état local AVANT fusion
-  pushSnapshot(fromSync ? "avant réception cloud" : "avant récupération manuelle");
-  applyingRemoteSync = true;
-  const meta = getMeta();
-
-  // ─── Bloc Excel : arbitré par sa propre date d'import ───
+/** Intègre le bloc Excel distant s'il est plus récent que le nôtre. */
+function mergeRemoteExcel(payload, meta) {
   const remoteExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
                     : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : null);
-  if (remoteExcel && (payload.excelAt || 0) > (meta.excelAt || 0)) {
+  if (!remoteExcel) return;
+  if ((payload.excelAt || 0) > (meta.excelAt || 0)) {
     excelData = remoteExcel;
     meta.excelAt = payload.excelAt || 0;
-  } else if (remoteExcel && !excelData.length) {
+  } else if (!excelData.length) {
     excelData = remoteExcel; // on n'avait rien : on prend ce qui existe
   }
+}
 
-  // ─── Fiches manuelles : fusion fiche par fiche ───
+/** Fusionne fiches manuelles, surcharges, suppressions, purges et journal. */
+function mergeRemoteContent(payload) {
   const remoteManual = Array.isArray(payload.kpiManual) ? payload.kpiManual
                      : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : null);
   if (remoteManual) {
     manualEntries = mergeEntries(manualEntries, remoteManual);
     saveManualEntries(false);
   }
-
-  // ─── Surcharges : fusion clé par clé ───
   if (payload.kpiOverrides && typeof payload.kpiOverrides === "object") {
     overrides = mergeOverrides(overrides, payload.kpiOverrides);
     saveOverrides(false);
   }
-
-  // ─── Suppressions / restaurations : le dernier geste daté gagne ───
   if (Array.isArray(payload.kpiDeleted)) {
     deletedIds = mergeDeleted(deletedIds, normalizeDeleted(payload.kpiDeleted));
     saveDeletedIds(false);
@@ -1712,71 +1706,57 @@ function applyRemoteData(payload, fromSync) {
     purgedIds = [...new Set([...(purgedIds || []), ...payload.kpiPurged])];
     savePurged(false);
   }
-
-  // ─── Journal : fusion sans doublon ───
   if (Array.isArray(payload.kpiActivity)) {
-    const seen = new Set();
-    activityLog = [...payload.kpiActivity, ...activityLog]
-      .filter(e => {
-        const k = e.at + "|" + e.by + "|" + e.action + "|" + e.title + "|" + (e.detail || "");
-        if (seen.has(k)) return false;
-        seen.add(k); return true;
-      })
-      .sort((a, b) => b.at - a.at)
-      .slice(0, MAX_ACTIVITY);
+    activityLog = mergeActivity(activityLog, payload.kpiActivity, MAX_ACTIVITY);
     saveActivity(false);
   }
+}
 
-  // ─── Sites : arbitrés par date, un poste neuf n'écrase plus la config ───
-  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length &&
-      (payload.sitesAt || 0) > (meta.sitesAt || 0)) {
-    sites = payload.kpiSites;
-    meta.sitesAt = payload.sitesAt || 0;
-    saveSites(false);
-  }
+/** Intègre la configuration des sites si elle est plus récente. */
+function mergeRemoteSites(payload, meta) {
+  if (!Array.isArray(payload.kpiSites) || !payload.kpiSites.length) return;
+  if ((payload.sitesAt || 0) <= (meta.sitesAt || 0)) return;
+  sites = payload.kpiSites;
+  meta.sitesAt = payload.sitesAt || 0;
+  saveSites(false);
+}
 
-  // ─── Favoris : fusion utilisateur par utilisateur ───
-  if (payload.favoritesByUser) {
-    const localMap  = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
-    const localMeta = JSON.parse(localStorage.getItem("kpiFavMeta") || "{}");
-    const { map, meta: fmeta } = mergeFavorites(localMap, localMeta, payload.favoritesByUser, payload.favoritesMeta);
-    localStorage.setItem("kpiSyncFavorites", JSON.stringify(map));
-    localStorage.setItem("kpiFavMeta", JSON.stringify(fmeta));
-    if (map[currentUser]) { favorites = map[currentUser]; saveFavoritesLocalOnly(); }
-  }
+/** Fusionne les favoris utilisateur par utilisateur. */
+function mergeRemoteFavorites(payload) {
+  if (!payload.favoritesByUser) return;
+  const localMap  = Store.readJSON(Store.KEYS.SYNC_FAV, {});
+  const localMeta = Store.readJSON(Store.KEYS.FAV_META, {});
+  const { map, meta: fmeta } =
+    mergeFavorites(localMap, localMeta, payload.favoritesByUser, payload.favoritesMeta);
+  Store.writeJSON(Store.KEYS.SYNC_FAV, map);
+  Store.writeJSON(Store.KEYS.FAV_META, fmeta);
+  if (map[currentUser]) { favorites = map[currentUser]; saveFavoritesLocalOnly(); }
+}
+
+/**
+ * Intègre les données reçues du cloud par FUSION (jamais par écrasement).
+ * Un instantané local est pris au préalable : il permet de revenir en
+ * arrière si la fusion produit un résultat inattendu.
+ */
+function applyRemoteData(payload, fromSync) {
+  pushSnapshot(fromSync ? "avant réception cloud" : "avant récupération manuelle");
+  applyingRemoteSync = true;
+  const meta = getMeta();
+
+  mergeRemoteExcel(payload, meta);
+  mergeRemoteContent(payload);
+  mergeRemoteSites(payload, meta);
+  mergeRemoteFavorites(payload);
 
   setMeta(meta);
   rebuildData(false);
   applyingRemoteSync = false;
+
   if (payload.updatedAt) {
     localUpdatedAt = Math.max(localUpdatedAt, payload.updatedAt);
-    localStorage.setItem("kpiLocalUpdatedAt", String(localUpdatedAt));
+    Store.writeRaw(Store.KEYS.LOCAL_AT, String(localUpdatedAt));
   }
   if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
-}
-
-// Sauvegarde locale des favoris SANS redéclencher une synchronisation (évite les boucles)
-function saveFavoritesLocalOnly() {
-  localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
-}
-
-async function pullFromCloud(manual) {
-  const cfg = getSyncConfig();
-  if (!cfg || !fbDb) return;
-  setSyncStatusUI("syncing");
-  try {
-    const snap = await syncDocRef(cfg.code).get();
-    if (!snap.exists) {
-      setSyncStatusUI("connected");
-      if (manual) showToast("Aucune donnée cloud pour ce code", 2800);
-      return;
-    }
-    applyRemoteData(snap.data(), false);
-    setSyncStatusUI("connected");
-  } catch (err) {
-    setSyncStatusUI("error", err.message);
-    if (manual) showToast("❌ Erreur de synchronisation", 3000);
-  }
 }
 
 function listenForRemoteChanges(code) {
@@ -1814,7 +1794,10 @@ async function syncClockOffset(code) {
         console.warn("Horloge du poste décalée de", Math.round(offset / 1000), "s — correction appliquée.");
       }
     }
-  } catch (e) { /* non bloquant : on garde l'horloge locale */ }
+  } catch (err) {
+    // Non bloquant, mais on trace : un échec répété fausserait l'arbitrage temporel
+    console.warn("[Sync] Mesure de l'horloge serveur impossible, horloge locale conservée.", err);
+  }
 }
 
 async function initialSync(code, manual) {
@@ -2087,7 +2070,12 @@ function pushSnapshot(reason) {
     } catch (e) {
       // Espace saturé : on réduit l'historique et on réessaie
       while (list.length > 3) { list.pop(); }
-      try { localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list)); } catch {}
+      try {
+        localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list));
+      } catch (err2) {
+        console.error("[Instantanés] Stockage saturé : impossible d'enregistrer un instantané.", err2);
+        if (typeof showToast === "function") showToast("⚠️ Stockage saturé — instantané non enregistré", 4000);
+      }
     }
   } catch (e) { console.error("pushSnapshot:", e); }
 }
@@ -2253,139 +2241,25 @@ document.getElementById("backupFileInput")?.addEventListener("change", function 
 });
 
 /* ============================================
-   TUTORIEL ANIMÉ (carrousel)
+   TUTORIEL ANIMÉ + AIDE POWER BI
+   Les deux utilisent la même fabrique (js/carousel.js) :
+   navigation, points, clavier, tactile et fermeture y sont
+   écrits une seule fois.
 ============================================ */
-let tutoIndex = 0;
-let tutoCount = 0;
-
-function tutoRender() {
-  const track = document.getElementById("tutoTrack");
-  const dots = document.getElementById("tutoDots");
-  if (!track) return;
-  track.style.transform = `translateX(-${tutoIndex * 100}%)`;
-  // Points
-  Array.from(dots.children).forEach((d, i) => d.classList.toggle("active", i === tutoIndex));
-  // Boutons
-  const prev = document.getElementById("tutoPrev");
-  const next = document.getElementById("tutoNext");
-  prev.style.visibility = tutoIndex === 0 ? "hidden" : "visible";
-  next.textContent = tutoIndex === tutoCount - 1 ? "Terminer ✓" : "Suivant →";
-}
-
-function tutoGo(i) {
-  tutoIndex = Math.max(0, Math.min(tutoCount - 1, i));
-  tutoRender();
-}
-
-function openTutorial() {
-  const track = document.getElementById("tutoTrack");
-  const dots = document.getElementById("tutoDots");
-  if (!track) return;
-  tutoCount = track.children.length;
-  // (Re)génère les points
-  dots.innerHTML = "";
-  for (let i = 0; i < tutoCount; i++) {
-    const d = document.createElement("span");
-    d.addEventListener("click", () => tutoGo(i));
-    dots.appendChild(d);
-  }
-  tutoIndex = 0;
-  tutoRender();
-  document.getElementById("tutorialModal").classList.remove("hidden");
-}
-
-function closeTutorial() {
-  document.getElementById("tutorialModal").classList.add("hidden");
-}
-
+const tutoCarousel = createCarousel({
+  modalId: "tutorialModal", trackId: "tutoTrack", dotsId: "tutoDots",
+  prevId: "tutoPrev", nextId: "tutoNext", closeId: "closeTutorialBtn",
+  lastLabel: "Terminer ✓"
+});
+function openTutorial() { tutoCarousel.open(); }
 document.getElementById("tutorialBtn")?.addEventListener("click", openTutorial);
-document.getElementById("closeTutorialBtn")?.addEventListener("click", closeTutorial);
-document.getElementById("tutoPrev")?.addEventListener("click", () => tutoGo(tutoIndex - 1));
-document.getElementById("tutoNext")?.addEventListener("click", () => {
-  if (tutoIndex === tutoCount - 1) closeTutorial(); else tutoGo(tutoIndex + 1);
-});
-document.getElementById("tutorialModal")?.addEventListener("click", e => {
-  if (e.target === document.getElementById("tutorialModal")) closeTutorial();
-});
-// Navigation clavier + gestes tactiles
-document.addEventListener("keydown", e => {
-  if (document.getElementById("tutorialModal")?.classList.contains("hidden")) return;
-  if (e.key === "ArrowRight") tutoGo(tutoIndex + 1);
-  else if (e.key === "ArrowLeft") tutoGo(tutoIndex - 1);
-  else if (e.key === "Escape") closeTutorial();
-});
-(function bindTutoSwipe() {
-  const vp = document.querySelector(".tuto-viewport");
-  if (!vp) return;
-  let x0 = null;
-  vp.addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
-  vp.addEventListener("touchend", e => {
-    if (x0 === null) return;
-    const dx = e.changedTouches[0].clientX - x0;
-    if (Math.abs(dx) > 45) tutoGo(tutoIndex + (dx < 0 ? 1 : -1));
-    x0 = null;
-  }, { passive: true });
-})();
 
-/* ============================================
-   GUIDE POWER BI (carrousel image)
-============================================ */
-let pbiIndex = 0, pbiCount = 0;
-
-function pbiRender() {
-  const track = document.getElementById("pbiTrack");
-  const dots = document.getElementById("pbiDots");
-  if (!track) return;
-  track.style.transform = `translateX(-${pbiIndex * 100}%)`;
-  Array.from(dots.children).forEach((d, i) => d.classList.toggle("active", i === pbiIndex));
-  document.getElementById("pbiPrev").style.visibility = pbiIndex === 0 ? "hidden" : "visible";
-  document.getElementById("pbiNext").textContent = pbiIndex === pbiCount - 1 ? "Compris ✓" : "Suivant →";
-}
-function pbiGo(i) { pbiIndex = Math.max(0, Math.min(pbiCount - 1, i)); pbiRender(); }
-
-function openPbiHelp() {
-  const track = document.getElementById("pbiTrack");
-  const dots = document.getElementById("pbiDots");
-  if (!track) return;
-  pbiCount = track.children.length;
-  dots.innerHTML = "";
-  for (let i = 0; i < pbiCount; i++) {
-    const d = document.createElement("span");
-    d.addEventListener("click", () => pbiGo(i));
-    dots.appendChild(d);
-  }
-  pbiIndex = 0; pbiRender();
-  document.getElementById("pbiHelpModal").classList.remove("hidden");
-}
-function closePbiHelp() { document.getElementById("pbiHelpModal").classList.add("hidden"); }
-
-document.getElementById("pbiHelpBtn")?.addEventListener("click", openPbiHelp);
-document.getElementById("closePbiHelpBtn")?.addEventListener("click", closePbiHelp);
-document.getElementById("pbiPrev")?.addEventListener("click", () => pbiGo(pbiIndex - 1));
-document.getElementById("pbiNext")?.addEventListener("click", () => {
-  if (pbiIndex === pbiCount - 1) closePbiHelp(); else pbiGo(pbiIndex + 1);
+const pbiCarousel = createCarousel({
+  modalId: "pbiHelpModal", trackId: "pbiTrack", dotsId: "pbiDots",
+  prevId: "pbiPrev", nextId: "pbiNext", closeId: "closePbiHelpBtn",
+  lastLabel: "Compris ✓"
 });
-document.getElementById("pbiHelpModal")?.addEventListener("click", e => {
-  if (e.target === document.getElementById("pbiHelpModal")) closePbiHelp();
-});
-document.addEventListener("keydown", e => {
-  if (document.getElementById("pbiHelpModal")?.classList.contains("hidden")) return;
-  if (e.key === "ArrowRight") pbiGo(pbiIndex + 1);
-  else if (e.key === "ArrowLeft") pbiGo(pbiIndex - 1);
-  else if (e.key === "Escape") closePbiHelp();
-});
-(function bindPbiSwipe() {
-  const vp = document.querySelector("#pbiHelpModal .tuto-viewport");
-  if (!vp) return;
-  let x0 = null;
-  vp.addEventListener("touchstart", e => { x0 = e.touches[0].clientX; }, { passive: true });
-  vp.addEventListener("touchend", e => {
-    if (x0 === null) return;
-    const dx = e.changedTouches[0].clientX - x0;
-    if (Math.abs(dx) > 45) pbiGo(pbiIndex + (dx < 0 ? 1 : -1));
-    x0 = null;
-  }, { passive: true });
-})();
+document.getElementById("pbiHelpBtn")?.addEventListener("click", () => pbiCarousel.open());
 
 /* ============================================
    PWA : service worker
