@@ -2049,15 +2049,73 @@ function renderSyncDiag() {
   const proj = cfg?.config?.projectId || "—";
   const code = cfg?.code || "—";
   const auto = cfg?.enabled ? "activée" : "en pause";
-  const nb = data.length + personalEntries.length;
+
+  // Analyse fiches vs variantes (temporalités)
+  const all = [...data, ...personalEntries];
+  const fiches = countFiches(all);
+  const variantes = all.length;
+  const anomalies = findVariantAnomalies(all);
+
   el.innerHTML = `
     <div class="diag-row"><span>Emplacement des données</span><b>${esc(origin)}</b></div>
     <div class="diag-row"><span>Projet Firebase</span><b>${esc(proj)}</b></div>
     <div class="diag-row"><span>Code de synchro</span><b>${esc(code)}</b></div>
     <div class="diag-row"><span>Synchro automatique</span><b>${auto}</b></div>
-    <div class="diag-row"><span>KPIs sur cet appareil</span><b>${nb}</b></div>`;
+    <div class="diag-row"><span>Fiches (KPIs)</span><b>${fiches}</b></div>
+    <div class="diag-row"><span>Variantes (temporalités)</span><b>${variantes}</b></div>
+    ${anomalies.length
+      ? `<div class="diag-row" style="color:var(--gold)"><span>⚠️ Anomalies détectées</span><b>${anomalies.length}</b></div>`
+      : `<div class="diag-row" style="color:var(--green)"><span>✓ Aucune anomalie</span><b>—</b></div>`}`;
+
+  const box = document.getElementById("variantAnomalies");
+  if (box) {
+    if (!anomalies.length) { box.innerHTML = ""; box.style.display = "none"; }
+    else {
+      box.style.display = "";
+      box.innerHTML = `<p class="modal-hint" style="margin:8px 0 6px"><b>Fiches à vérifier :</b></p>` +
+        anomalies.map(a =>
+          `<div class="diag-anomaly">
+             <b>${esc(a.title)}</b> — ${a.count} variantes
+             <span>${esc(a.reason)}</span>
+           </div>`).join("");
+    }
+  }
+
   const warn = document.getElementById("fileProtocolWarning");
   if (warn) warn.style.display = isFileProtocol() ? "" : "none";
+}
+
+// Repère les fiches dont le nombre de temporalités est anormal :
+// doublons exacts de temporalité, fréquences non standard, ou plus de 3 variantes.
+function findVariantAnomalies(list) {
+  const byTitle = new Map();
+  list.forEach(k => {
+    const key = titleKey(k.title);
+    if (!byTitle.has(key)) byTitle.set(key, []);
+    byTitle.get(key).push(k);
+  });
+
+  const anomalies = [];
+  byTitle.forEach(variants => {
+    const freqs = variants.map(v => (v.freq || "").trim());
+    const title = variants[0].title;
+
+    // Doublons : deux variantes avec la même temporalité
+    const seen = {}, dups = [];
+    freqs.forEach(f => { const l = f.toLowerCase(); if (seen[l]) dups.push(f || "(vide)"); seen[l] = true; });
+
+    // Fréquences hors des trois standard
+    const nonStd = freqs.filter(f => !STD_FREQS.some(s => s.toLowerCase() === f.toLowerCase()));
+
+    if (dups.length) {
+      anomalies.push({ title, count: variants.length, reason: `temporalité en double : ${[...new Set(dups)].join(", ")}` });
+    } else if (nonStd.length) {
+      anomalies.push({ title, count: variants.length, reason: `temporalité non standard : ${[...new Set(nonStd)].map(f => f || "(vide)").join(", ")}` });
+    } else if (variants.length > STD_FREQS.length) {
+      anomalies.push({ title, count: variants.length, reason: `plus de ${STD_FREQS.length} temporalités` });
+    }
+  });
+  return anomalies;
 }
 
 function initSyncModal() {

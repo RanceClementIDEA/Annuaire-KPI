@@ -1268,3 +1268,16 @@ select.modal-input {
 
 /* Suppression définitive dans le journal */
 .history-row.act-purge { border-left-color: #BE123C; }
+
+/* Anomalies de variantes dans le diagnostic */
+.variant-anomalies {
+  background: rgba(255,176,32,0.08);
+  border: 1px solid rgba(255,176,32,0.35);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;
+}
+.diag-anomaly {
+  padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.diag-anomaly:last-child { border-bottom: none; }
+.diag-anomaly b { color: var(--text-1); }
+.diag-anomaly span { display: block; color: var(--gold); font-size: 11px; margin-top: 2px; }
