@@ -1663,12 +1663,12 @@ refreshBtn.addEventListener("click", () => { rebuildData(false); showToast("🔄
    par les règles Firestore, pas par sa dissimulation.)
    ───────────────────────────────────────────────────────────── */
 const BUILTIN_FIREBASE_CONFIG = {
-  // apiKey: "AIza…",
-  // authDomain: "mon-projet.firebaseapp.com",
-  // projectId: "mon-projet",
-  // storageBucket: "mon-projet.appspot.com",
-  // messagingSenderId: "0000000000",
-  // appId: "1:0000000000:web:xxxxxxxxxxxx"
+  apiKey: "AIzaSyBEWADm3g2ab-vUP-sMlQfjpy_QuxhafXM",
+  authDomain: "annuaire-kpi.firebaseapp.com",
+  projectId: "annuaire-kpi",
+  storageBucket: "annuaire-kpi.firebasestorage.app",
+  messagingSenderId: "701786102556",
+  appId: "1:701786102556:web:9d831bd4efaf25e41778d9"
 };
 const BUILTIN_SYNC_CODE = "idea-kpi-2026";
 
@@ -1683,8 +1683,24 @@ const setSyncConfig = cfg => cfg ? localStorage.setItem(LS_SYNC, JSON.stringify(
 // Sur un nouvel appareil : si aucune config locale et qu'une config est
 // intégrée à l'application, on l'installe automatiquement (sync activée).
 function ensureBuiltinConfig() {
+  // Réinitialisation unique : la config intégrée vient d'être renseignée.
+  // On lève une seule fois l'éventuel « opt-out » posé lors d'essais précédents,
+  // pour que TOUS les appareils se reconnectent automatiquement. Le bouton
+  // « Désactiver » reste fonctionnel ensuite (il reposera le drapeau).
+  if (hasBuiltinConfig() && localStorage.getItem("kpiOptoutClearedV2") !== "1") {
+    localStorage.removeItem(LS_SYNC_OPTOUT);
+    // Si un ancien appareil pointe vers une config/code différents, on le réaligne
+    // une seule fois sur la config intégrée (même projet + même code partout).
+    const existing = getSyncConfig();
+    if (existing && (existing.code !== BUILTIN_SYNC_CODE ||
+                     existing.config?.projectId !== BUILTIN_FIREBASE_CONFIG.projectId)) {
+      setSyncConfig({ config: { ...BUILTIN_FIREBASE_CONFIG }, code: BUILTIN_SYNC_CODE, enabled: true });
+    }
+    localStorage.setItem("kpiOptoutClearedV2", "1");
+  }
+
   if (getSyncConfig()) return;                          // déjà configuré ici
-  if (localStorage.getItem(LS_SYNC_OPTOUT)) return;     // désactivé volontairement
+  if (localStorage.getItem(LS_SYNC_OPTOUT)) return;     // désactivé volontairement (après la réinit ci-dessus)
   if (!hasBuiltinConfig()) return;                       // aucune config intégrée
   setSyncConfig({ config: { ...BUILTIN_FIREBASE_CONFIG }, code: BUILTIN_SYNC_CODE, enabled: true });
 }
