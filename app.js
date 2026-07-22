@@ -4,8 +4,8 @@
 // Version de l'application. À comparer entre appareils via le diagnostic :
 // si deux appareils affichent des versions différentes, l'un a un cache périmé.
 const APP_VERSION = "2026.07.22";
-let data = [];          // Liste affichée = excelData (+ surcharges) + manualEntries
-let excelData = [];     // KPIs issus du fichier Excel (version d'origine, jamais modifiée)
+let data = [];          // Liste affichée = fiches partagées visibles (manualEntries)
+let excelData = [];     // Vestige (toujours vide) : l'Excel n'est plus une source de données
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
 let personalEntries = []; // Signets personnels de l'utilisateur (locaux, jamais synchronisés)
 let overrides = {};     // Modifications apportées aux KPIs Excel, par id
@@ -104,7 +104,6 @@ let modalInitialIds = {};   // freq → id d'origine (pour détecter les suppres
 
 // Classe un id : "excel", "manual", "perso" ou null
 function classifyId(id) {
-  if (excelData.some(k => k.id === id)) return "excel";
   if (personalEntries.some(k => k.id === id)) return "perso";
   if (manualEntries.some(k => k.id === id)) return "manual";
   return null;
@@ -210,6 +209,11 @@ logoutBtn.addEventListener("click", () => {
   purgedIds = [];
   activityLog = [];
   favorites = [];
+  // Coupe proprement la synchro cloud pour le prochain utilisateur
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  connectedSyncCode = null;
+  initialSyncDone = false;
+  syncBusy = false;
   currentView = "all";
   container.innerHTML = "";
   container.appendChild(emptyState);
@@ -311,47 +315,44 @@ fileInput.addEventListener("change", e => {
 });
 
 function loadSavedFile() {
-  const b64 = localStorage.getItem("kpiFileB64");
-  if (b64) {
-    try {
-      const bin = atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      loadWorkbook(bytes);
-      return;
-    } catch (err) {
-      console.warn("[Excel] Fichier local illisible (base64), tentative sur les autres sources.", err);
-    }
-  }
-  const stored = localStorage.getItem("kpiFile"); // ancien format
-  if (stored) {
-    try {
-      loadWorkbook(new Uint8Array(JSON.parse(stored)));
-      return;
-    } catch (err) {
-      console.warn("[Excel] Fichier local illisible (ancien format).", err);
-    }
-  }
-  // Pas de fichier Excel local : on utilise les données déjà synchronisées depuis le cloud, si disponibles
+  migrateExcelToManual();
+  rebuildData(false);
+}
+
+// Migration unique : convertit les anciennes données Excel + surcharges en
+// vraies fiches manuelles, puis efface les traces de l'ancien système.
+// L'Excel n'est plus une source de données vivante, juste un import/export.
+function migrateExcelToManual() {
+  let migrated = 0;
+
+  // 1) Ancien cache Excel encore présent ?
   const cached = localStorage.getItem("kpiDataCache");
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
-      excelData = parsed.filter(d => !d.manual);
-      // Les entrées manuelles du cache complètent celles déjà connues localement
-      const cachedManual = parsed.filter(d => d.manual);
+      const oldExcel = parsed.filter(d => !d.manual);
+      const overr = (() => { try { return JSON.parse(localStorage.getItem("kpiOverrides")) || {}; } catch { return {}; } })();
       const known = new Set(manualEntries.map(m => m.id));
-      cachedManual.forEach(m => { if (!known.has(m.id)) manualEntries.push(m); });
-      saveManualEntries(false);
-      rebuildData(false);
-      return;
+      oldExcel.forEach(d => {
+        // Applique l'éventuelle surcharge, régénère un ID stable, marque comme fiche
+        const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+        const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+        if (known.has(newId) || manualEntries.some(m => m.id === newId)) return;
+        manualEntries.push({ ...merged, id: newId, manual: true, _mtime: merged._mtime || now(), _by: merged._by || (currentUser || "?") });
+        migrated++;
+      });
     } catch (err) {
-      console.warn("[Cache] Cache de données invalide, import requis.", err);
+      console.warn("[Migration] Cache Excel illisible.", err);
     }
   }
-  // Pas d'Excel ni de cache : on affiche au moins les fiches créées à la main
-  if (manualEntries.length) { rebuildData(false); return; }
-  fileInput.click();
+
+  if (migrated) saveManualEntries(false);
+
+  // 2) On efface définitivement les vestiges de l'ancien système Excel-comme-source
+  ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"].forEach(k => localStorage.removeItem(k));
+  excelData = [];
+  overrides = {};
+  if (migrated) console.info(`[Migration] ${migrated} fiche(s) Excel converties en fiches partagées.`);
 }
 
 function loadWorkbook(buffer) {
@@ -397,50 +398,78 @@ function extractLinksByColumn(sheet, headers, rowIndex) {
 function transformData(sheet, rawData) {
   const headers = rawData[0];
   const importAt = now();
-  excelData = rawData.slice(1)
+  const idSeen = {};
+  const imported = rawData.slice(1)
     .filter(row => row.some(cell => cell !== undefined && cell !== ""))
     .map((row, idx) => {
       const obj = {};
       headers.forEach((h, i) => (obj[h] = row[i]));
-      const id = (obj["Intitulé"] || "kpi") + "_" + idx;
+      const title = obj["Intitulé"] || "";
+      const freq  = obj["Fréquence"] || "";
+      // ID STABLE : dérivé de l'intitulé + la fréquence, pas de la position de ligne.
+      let base = "kpi_" + slugifyId(title) + "_" + slugifyId(freq);
+      idSeen[base] = (idSeen[base] || 0) + 1;
+      const id = idSeen[base] > 1 ? base + "_" + idSeen[base] : base;
       const links = extractLinksByColumn(sheet, headers, idx + 1);
       return {
         id,
-        title:   obj["Intitulé"] || "",
+        manual: true,            // fiche à part entière (plus de « bloc Excel »)
+        title,
         type:    obj["Type KPI"] || "",
         process: obj["Processus"] || "",
-        freq:    obj["Fréquence"] || "",
+        freq,
         ritual:  obj["Rituel"] || "",
         desc:    obj["Description / Mode de calcul"] || "",
         ...links,
-        _mtime: importAt,        // date d'import : permet la fusion par fiche
+        _mtime: importAt,
         _by: currentUser || "?"
       };
     });
 
+  // L'Excel n'est qu'un point d'entrée : on fusionne les fiches importées
+  // dans les fiches existantes (mise à jour si l'ID existe, ajout sinon).
+  // L'utilisateur choisit d'écraser ou de compléter.
+  const replace = imported.length && confirm(
+    `Importer ${imported.length} ligne(s) depuis l'Excel.\n\n` +
+    "• OK = REMPLACER : les fiches importées écrasent les versions existantes de même intitulé/temporalité\n" +
+    "• Annuler = COMPLÉTER : on ajoute seulement ce qui n'existe pas encore"
+  );
+
+  imported.forEach(imp => {
+    const existing = manualEntries.find(k => k.id === imp.id);
+    if (!existing) {
+      manualEntries.push(imp);
+    } else if (replace) {
+      Object.assign(existing, imp, { _mtime: now() });
+    }
+    // si !replace et existe déjà : on ne touche pas
+  });
+
+  saveManualEntries(true);
   rebuildData(true);
+  showToast(`✅ Import terminé : ${imported.length} ligne(s) traitée(s)`, 3000);
+}
+
+// Transforme un texte en identifiant stable (minuscules, sans accents ni espaces)
+function slugifyId(txt) {
+  return (txt || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "vide";
 }
 
 /* ============================================
    FUSION EXCEL + FICHES MANUELLES
 ============================================ */
 function rebuildData(sync) {
-  // Applique les modifications utilisateur par-dessus les fiches Excel d'origine,
-  // et masque celles qui ont été supprimées dans l'application
-  const excelWithEdits = excelData
-    .filter(d => !isDeleted(d.id) && !isPurged(d.id))
-    .map(d => overrides[d.id] ? { ...d, ...overrides[d.id], edited: true } : d);
-  // Les fiches manuelles supprimées restent stockées (pour la corbeille) mais sont masquées
-  const manualVisible = manualEntries.filter(d => !isDeleted(d.id) && !isPurged(d.id));
-  data = [...excelWithEdits, ...manualVisible];
+  // Toutes les fiches partagées sont désormais dans manualEntries.
+  // On masque simplement celles supprimées (corbeille) ou purgées.
+  data = manualEntries.filter(d => !isDeleted(d.id) && !isPurged(d.id));
   initFilters();
   updateCounts();
   // Une mise à jour (sync=true) ou une synchro distante ne doit pas rejouer l'animation d'entrée
   if (sync || applyingRemoteSync) animateNextRender = false;
   filterData();
   updateRestoreDeletedBtn();
-  // Cache la donnée d'origine (surcharges et suppressions sont stockées à part)
-  localStorage.setItem("kpiDataCache", JSON.stringify([...excelData, ...manualEntries]));
   if (sync) scheduleAutoSync();
 }
 
@@ -493,25 +522,14 @@ function savePersonalTrash() {
    SURCHARGES : modifications des fiches Excel
    (conservées même après un ré-import du fichier)
 ============================================ */
-function loadOverrides() {
-  try {
-    overrides = JSON.parse(localStorage.getItem("kpiOverrides")) || {};
-  } catch { overrides = {}; }
-}
-
-function saveOverrides(sync = true) {
-  localStorage.setItem("kpiOverrides", JSON.stringify(overrides));
-  if (sync) scheduleAutoSync();
-}
+// Système de surcharges Excel retiré. Ces fonctions sont conservées en
+// « no-op » pour ne pas casser les appels existants ; overrides reste {}.
+function loadOverrides() { overrides = {}; }
+function saveOverrides() { /* plus rien à enregistrer */ }
 
 function restoreOriginalKpi(id) {
-  const original = excelData.find(k => k.id === id);
-  if (!confirm(`Restaurer la version d'origine de « ${original ? original.title : id} » ?`)) return;
-  delete overrides[id];
-  saveOverrides(false);
-  logActivity("restore", original ? original.title : id, "version d'origine rétablie");
-  rebuildData(true);
-  showToast("↩ Version d'origine restaurée");
+  // Obsolète : il n'y a plus de « version d'origine » Excel distincte.
+  showToast("Fonction retirée : les fiches sont désormais éditables directement", 3000);
 }
 
 /* ============================================
@@ -560,11 +578,7 @@ function deleteKPI(id) {
       personalEntries = personalEntries.filter(k => k.id !== v.id);
       personalTrash.push({ ...v, _deletedAt: deletedAt });
       touchedPerso = true;
-    } else if (kind === "excel") {
-      markDeleted(v.id, v);
-      delete overrides[v.id];
-      touchedShared = true;
-    } else { // manual
+    } else { // fiche partagée
       markDeleted(v.id, v);
       touchedShared = true;
     }
@@ -613,7 +627,7 @@ function renderTrashList() {
 
   // Fiches partagées (annuaire)
   active.forEach(d => {
-    const orig = excelData.find(k => k.id === d.id) || manualEntries.find(k => k.id === d.id);
+    const orig = manualEntries.find(k => k.id === d.id);
     const title = d.title || (orig ? orig.title : d.id);
     const key = "shared:" + titleKey(title);
     if (!groups.has(key)) groups.set(key, { title, ids: [], freqs: [], at: 0, by: "", perso: false });
@@ -734,8 +748,6 @@ function purgeSelectedTrash() {
   if (sharedIds.length) {
     sharedIds.forEach(id => { if (!purgedIds.includes(id)) purgedIds.push(id); });
     deletedIds = deletedIds.filter(d => !sharedIds.includes(d.id));
-    excelData  = excelData.filter(k => !sharedIds.includes(k.id));
-    sharedIds.forEach(id => delete overrides[id]);
     favorites = favorites.filter(f => !sharedIds.includes(f));
     savePurged(false);
     saveDeletedIds(false);
@@ -956,9 +968,9 @@ function openKpiModal(id = null) {
   if (!ref) modalSlots[modalCurrentFreq].active = true;
 
   // Pied de modale
-  const isExcelRef = !!(id && excelData.some(k => k.id === id));
   document.getElementById("deleteKpiBtn").style.display = ref ? "" : "none";
-  document.getElementById("restoreKpiBtn").style.display = (isExcelRef && overrides[id]) ? "" : "none";
+  const rb = document.getElementById("restoreKpiBtn");
+  if (rb) rb.style.display = "none";
 
   buildLinkFields();
   loadSlotIntoInputs(modalCurrentFreq);
@@ -1052,23 +1064,14 @@ function readSharedFields() {
  * @returns {{shared:boolean, perso:boolean}} espaces impactés
  */
 function removeTemporality(initialId, kind) {
-  const gone = data.find(k => k.id === initialId) ||
-               manualEntries.find(k => k.id === initialId) ||
-               excelData.find(k => k.id === initialId);
-  if (kind === "excel") {
-    markDeleted(initialId, gone);
-    delete overrides[initialId];
-    return { shared: true, perso: false };
-  }
-  if (kind === "manual") {
-    markDeleted(initialId, gone);
-    return { shared: true, perso: false };
-  }
+  const gone = data.find(k => k.id === initialId) || manualEntries.find(k => k.id === initialId);
   if (kind === "perso") {
     personalEntries = personalEntries.filter(k => k.id !== initialId);
     return { shared: false, perso: true };
   }
-  return { shared: false, perso: false };
+  // fiche partagée : marqueur daté (récupérable en corbeille)
+  markDeleted(initialId, gone);
+  return { shared: true, perso: false };
 }
 
 /**
@@ -1081,22 +1084,16 @@ function upsertTemporality(freq, slot, initialId, kind, shared, space) {
   const fields = { ...shared, freq, ritual: slot.ritual };
   activeSites().forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
 
-  if (kind === "excel" && space === "shared") {
-    overrides[initialId] = stamp(fields);
-    return { shared: true, perso: false, isNew: false };
-  }
-
   const targetPerso = space === "perso";
+  // Réutilise l'ID existant si on modifie, sinon en crée un stable
   const entry = {
-    id: initialId && kind !== "excel"
-      ? initialId
-      : ((targetPerso ? "perso_" : "manual_") + Date.now() + "_" + freq),
+    id: initialId || ((targetPerso ? "perso_" : "kpi_") + slugifyId(shared.title) + "_" + slugifyId(freq) + "_" + Date.now().toString(36)),
     manual: true,
     ...(targetPerso ? { personal: true } : {}),
     ...fields
   };
   stamp(entry);
-  // Retire l'ancienne occurrence des deux espaces (gère le déplacement)
+  // Retire l'ancienne occurrence des deux espaces (gère le déplacement perso ↔ partagé)
   manualEntries   = manualEntries.filter(k => k.id !== entry.id);
   personalEntries = personalEntries.filter(k => k.id !== entry.id);
   if (targetPerso) personalEntries.push(entry);
@@ -1685,6 +1682,8 @@ let lastSyncPushAt = 0;
 let lastAppliedSyncAt = 0;
 let connectedSyncCode = null;
 let applyingRemoteSync = false;
+let syncBusy = false;       // verrou : une seule opération de synchro (fusion/envoi) à la fois
+let initialSyncDone = false; // l'écoute temps réel n'agit qu'après la fusion initiale
 let localUpdatedAt = +(localStorage.getItem("kpiLocalUpdatedAt") || 0); // dernière modif locale
 let isBooting = true;   // pendant le chargement initial : aucune modification "réelle", donc aucun envoi
 let clockOffset = +(localStorage.getItem("kpiClockOffset") || 0); // écart horloge poste ↔ serveur
@@ -1763,10 +1762,7 @@ function buildSyncPayload() {
   localStorage.setItem("kpiFavMeta", JSON.stringify(favoritesMeta));
 
   return {
-    kpiExcel: excelData,          // bloc Excel, arbitré par excelAt
-    excelAt: meta.excelAt || 0,
-    kpiManual: manualEntries,     // fusionnées fiche par fiche
-    kpiOverrides: overrides,
+    kpiManual: manualEntries,     // toutes les fiches partagées, fusionnées par élément
     kpiDeleted: deletedIds,
     kpiSites: sites,
     kpiPurged: purgedIds,
@@ -1806,34 +1802,33 @@ async function pushToCloud(manual) {
   }
 }
 
-/** Intègre le bloc Excel distant s'il est plus récent que le nôtre. */
 /**
- * Fusionne les données Excel LIGNE PAR LIGNE (comme les KPIs manuels).
- * Auparavant le bloc Excel s'échangeait en entier, arbitré par une seule
- * date : un appareil pouvait rester bloqué sur un ancien bloc et ne jamais
- * recevoir un lien pourtant présent ailleurs. Désormais chaque fiche Excel
- * porte sa propre date et se fusionne indépendamment.
+ * Fusionne toutes les fiches partagées, suppressions, purges et journal.
+ * Compatibilité : si un ancien payload contient encore kpiExcel/kpiOverrides,
+ * on les convertit en fiches manuelles à la volée (transition en douceur).
  */
-function mergeRemoteExcel(payload, meta) {
-  const remoteExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
-                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : null);
-  if (!remoteExcel) return;
-  // Fusion par identifiant : la version la plus récente de chaque fiche gagne.
-  excelData = mergeEntries(excelData, remoteExcel);
-  if (payload.excelAt) meta.excelAt = Math.max(meta.excelAt || 0, payload.excelAt);
-}
-
-/** Fusionne fiches manuelles, surcharges, suppressions, purges et journal. */
 function mergeRemoteContent(payload) {
-  const remoteManual = Array.isArray(payload.kpiManual) ? payload.kpiManual
-                     : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : null);
-  if (remoteManual) {
+  // Fiches partagées (nouveau format)
+  let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
+                   : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
+
+  // Compatibilité ancien format : kpiExcel + kpiOverrides → fiches manuelles
+  const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
+                 : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : []);
+  if (oldExcel.length) {
+    const overr = (payload.kpiOverrides && typeof payload.kpiOverrides === "object") ? payload.kpiOverrides : {};
+    oldExcel.forEach(d => {
+      const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+      const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+      if (!remoteManual.some(m => m.id === newId)) {
+        remoteManual.push({ ...merged, id: newId, manual: true, _mtime: merged._mtime || 0 });
+      }
+    });
+  }
+
+  if (remoteManual.length || Array.isArray(payload.kpiManual)) {
     manualEntries = mergeEntries(manualEntries, remoteManual);
     saveManualEntries(false);
-  }
-  if (payload.kpiOverrides && typeof payload.kpiOverrides === "object") {
-    overrides = mergeOverrides(overrides, payload.kpiOverrides);
-    saveOverrides(false);
   }
   if (Array.isArray(payload.kpiDeleted)) {
     deletedIds = mergeDeleted(deletedIds, normalizeDeleted(payload.kpiDeleted));
@@ -1890,14 +1885,11 @@ function mergeRemoteFavorites(payload) {
 function applyRemoteData(payload, fromSync) {
   pushSnapshot(fromSync ? "avant réception cloud" : "avant récupération manuelle");
   applyingRemoteSync = true;
-  const meta = getMeta();
 
-  mergeRemoteExcel(payload, meta);
-  mergeRemoteContent(payload);
+  mergeRemoteContent(payload);   // fiches partagées (+ compat ancien format Excel)
   mergeRemoteSites(payload);
   mergeRemoteFavorites(payload);
 
-  setMeta(meta);
   rebuildData(false);
   applyingRemoteSync = false;
 
@@ -1936,12 +1928,21 @@ function listenForRemoteChanges(code) {
       if (!snap.exists) return;
       const payload = snap.data();
       if (!payload || !payload.updatedAt) return;
+      // Ne rien traiter tant que la fusion initiale n'est pas finie,
+      // ni pendant qu'une autre opération de synchro est en cours (verrou),
+      // ni si c'est l'écho de notre propre écriture.
+      if (!initialSyncDone || syncBusy) return;
       if (payload.updatedAt === lastSyncPushAt || payload.updatedAt === lastAppliedSyncAt) return;
-      lastAppliedSyncAt = payload.updatedAt;
-      applyRemoteData(payload, true);
-      showToast("☁️ Données mises à jour depuis un autre appareil", 2800);
+      syncBusy = true;
+      try {
+        lastAppliedSyncAt = payload.updatedAt;
+        applyRemoteData(payload, true);
+        showToast("☁️ Données mises à jour depuis un autre appareil", 2800);
+      } finally {
+        syncBusy = false;
+      }
     },
-    err => setSyncStatusUI("error", err.message)
+    err => setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message)
   );
 }
 
@@ -1972,6 +1973,8 @@ async function syncClockOffset(code) {
 
 async function initialSync(code, manual) {
   if (!fbDb || !navigator.onLine) { if (!navigator.onLine) setSyncStatusUI("offline"); return; }
+  if (syncBusy) return;      // évite deux fusions concurrentes
+  syncBusy = true;
   setSyncStatusUI("syncing");
   try {
     await syncClockOffset(code);
@@ -1985,17 +1988,34 @@ async function initialSync(code, manual) {
       if (canPush) await pushToCloud(false);
     } else {
       // Fusion systématique : personne n'écrase personne.
-      // On intègre le distant chez nous, puis on renvoie le résultat fusionné
-      // pour que les autres postes reçoivent aussi nos apports.
       lastAppliedSyncAt = remote.updatedAt || 0;
       applyRemoteData(remote, true);
-      if (canPush) await pushToCloud(false);
+      // On ne renvoie au cloud QUE si la fusion a réellement apporté quelque chose
+      // de nouveau de notre côté (évite de réécrire le cloud à chaque ouverture).
+      if (canPush && hasLocalDataNewerThan(remote)) await pushToCloud(false);
     }
+    initialSyncDone = true;
     setSyncStatusUI("connected");
   } catch (err) {
     setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
     if (manual) showToast("❌ Erreur de synchronisation", 3000);
+  } finally {
+    syncBusy = false;
   }
+}
+
+// Notre état local contient-il une fiche plus récente que ce que le cloud connaît ?
+// Sert à ne renvoyer au cloud que si l'on a réellement des apports.
+function hasLocalDataNewerThan(remote) {
+  const remoteMax = Math.max(
+    ...(remote.kpiManual || []).map(k => k._mtime || 0),
+    0
+  );
+  const localMax = Math.max(
+    ...manualEntries.map(k => k._mtime || 0),
+    0
+  );
+  return localMax > remoteMax;
 }
 
 // Reprise automatique : retour du réseau + retour sur l'onglet
@@ -2075,6 +2095,8 @@ function connectSync(manual) {
 function disconnectSync() {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
   connectedSyncCode = null;
+  initialSyncDone = false;
+  syncBusy = false;
   setSyncConfig(null);
   localStorage.setItem(LS_SYNC_OPTOUT, "1"); // n'auto-réinstalle pas la config intégrée ici
   setSyncStatusUI("off");
@@ -2207,11 +2229,7 @@ function cleanDuplicateVariants() {
     if (kind === "perso") {
       personalEntries = personalEntries.filter(k => k.id !== v.id);
       touchedPerso = true;
-    } else if (kind === "excel") {
-      markDeleted(v.id, v);
-      delete overrides[v.id];
-      touchedShared = true;
-    } else { // manual
+    } else { // fiche partagée
       markDeleted(v.id, v);
       touchedShared = true;
     }
@@ -2344,12 +2362,11 @@ function pushSnapshot(reason) {
       reason: reason || "sauvegarde",
       user: currentUser,
       counts: {
-        excel: excelData.length,
-        manual: manualEntries.length,
+        partagees: manualEntries.length,
         perso: personalEntries.length
       },
-      excelData, manualEntries, personalEntries,
-      overrides, deletedIds, sites,
+      manualEntries, personalEntries,
+      deletedIds, sites,
       purgedIds, activityLog, meta: getMeta(),
       favorites
     };
@@ -2386,18 +2403,27 @@ function restoreSnapshot(index) {
 
   pushSnapshot("avant restauration");
 
-  if (Array.isArray(s.excelData))       excelData = s.excelData;
   if (Array.isArray(s.manualEntries))   manualEntries = s.manualEntries;
   if (Array.isArray(s.personalEntries)) personalEntries = s.personalEntries;
+  // Compat : ancien instantané avec excelData/overrides → converti en fiches
+  if (Array.isArray(s.excelData) && s.excelData.length) {
+    const overr = (s.overrides && typeof s.overrides === "object") ? s.overrides : {};
+    s.excelData.forEach(d => {
+      const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+      const id = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+      if (!manualEntries.some(m => m.id === id)) {
+        manualEntries.push({ ...merged, id, manual: true, _mtime: merged._mtime || now() });
+      }
+    });
+  }
   if (Array.isArray(s.deletedIds))      deletedIds = normalizeDeleted(s.deletedIds);
   if (Array.isArray(s.sites) && s.sites.length) sites = s.sites;
   if (Array.isArray(s.purgedIds))       { purgedIds = s.purgedIds; savePurged(false); }
   if (Array.isArray(s.activityLog))     { activityLog = s.activityLog; saveActivity(false); }
   if (s.meta && typeof s.meta === "object") setMeta(s.meta);
-  if (s.overrides && typeof s.overrides === "object") overrides = s.overrides;
   if (Array.isArray(s.favorites))       { favorites = s.favorites; saveFavoritesLocalOnly(); }
 
-  saveManualEntries(false); savePersonalEntries(); saveOverrides(false);
+  saveManualEntries(false); savePersonalEntries();
   saveDeletedIds(false); saveSites(false);
   markLocalChange();     // cette version devient la plus récente
   rebuildData(true);     // et repart vers le cloud si la synchro est active
@@ -2467,7 +2493,7 @@ function exportBackup() {
     exportedAt: new Date().toISOString(),
     exportedFrom: isFileProtocol() ? "file://" : location.origin,
     user: currentUser,
-    excelData, manualEntries, overrides, deletedIds, sites,
+    manualEntries, deletedIds, sites,
     personalEntries, purgedIds, activityLog, meta: getMeta(),
     favoritesMeta: JSON.parse(localStorage.getItem("kpiFavMeta") || "{}"),
     favoritesByUser: JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}")
@@ -2493,27 +2519,36 @@ function importBackup(file) {
     }
     if (!confirm(
       `Restaurer la sauvegarde du ${(b.exportedAt || "").slice(0, 10)} ` +
-      `(${(b.excelData?.length || 0) + (b.manualEntries?.length || 0)} KPIs) ?\n\n` +
+      `(${(b.manualEntries?.length || 0)} fiche(s)) ?\n\n` +
       "Les données actuelles de cet appareil seront remplacées."
     )) return;
 
     pushSnapshot("avant import de sauvegarde");
 
-    if (Array.isArray(b.excelData))       excelData = b.excelData;
     if (Array.isArray(b.manualEntries))   manualEntries = b.manualEntries;
     if (Array.isArray(b.personalEntries)) personalEntries = b.personalEntries;
+    // Compat : ancienne sauvegarde avec excelData/overrides → fiches
+    if (Array.isArray(b.excelData) && b.excelData.length) {
+      const overr = (b.overrides && typeof b.overrides === "object") ? b.overrides : {};
+      b.excelData.forEach(d => {
+        const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+        const id = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+        if (!manualEntries.some(m => m.id === id)) {
+          manualEntries.push({ ...merged, id, manual: true, _mtime: merged._mtime || now() });
+        }
+      });
+    }
     if (Array.isArray(b.deletedIds))      deletedIds = normalizeDeleted(b.deletedIds);
     if (Array.isArray(b.purgedIds))       { purgedIds = b.purgedIds; savePurged(false); }
     if (Array.isArray(b.activityLog))     { activityLog = b.activityLog; saveActivity(false); }
     if (b.meta && typeof b.meta === "object") setMeta(b.meta);
     if (b.favoritesMeta) localStorage.setItem("kpiFavMeta", JSON.stringify(b.favoritesMeta));
     if (Array.isArray(b.sites) && b.sites.length) sites = b.sites;
-    if (b.overrides && typeof b.overrides === "object") overrides = b.overrides;
     if (b.favoritesByUser) {
       localStorage.setItem("kpiSyncFavorites", JSON.stringify(b.favoritesByUser));
       if (b.favoritesByUser[currentUser]) { favorites = b.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
     }
-    saveManualEntries(false); savePersonalEntries(); saveOverrides(false);
+    saveManualEntries(false); savePersonalEntries();
     saveDeletedIds(false); saveSites(false);
     markLocalChange();          // la restauration devient la version la plus récente
     rebuildData(true);          // ré-envoie vers le cloud si la synchro est active
