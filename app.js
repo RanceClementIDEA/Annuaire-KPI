@@ -91,6 +91,10 @@ function saveSites(sync = true) {
   if (sync) scheduleAutoSync();
 }
 function siteBadgeLabel(s) { return (s.badge || s.name || "").toUpperCase().slice(0, 8); }
+
+// Sites réellement visibles (hors marqueurs de suppression), dans l'ordre.
+// `sites` peut contenir des sites _dele:true conservés pour la synchro.
+function activeSites() { return sites.filter(s => s && !s._deleted); }
 let modalCurrentFreq = "Mensuelle";
 let modalExtraVariants = []; // variantes de fréquence non-standard, préservées telles quelles
 let modalInitialIds = {};   // freq → id d'origine (pour détecter les suppressions)
@@ -881,7 +885,7 @@ function emptySlot() {
 function buildLinkFields() {
   const grid = document.getElementById("kpiLinksGrid");
   if (!grid) return;
-  grid.innerHTML = sites.map(s => `
+  grid.innerHTML = activeSites().map(s => `
     <div>
       <label class="modal-label" for="kpiLink_${esc(s.key)}">
         <span class="link-swatch" style="background:${esc(s.color || "#64748B")}"></span>${esc(s.name)}
@@ -929,7 +933,7 @@ function openKpiModal(id = null) {
     const f = STD_FREQS.find(sf => sf.toLowerCase() === (v.freq || "").toLowerCase().trim());
     if (f) {
       const links = {};
-      sites.forEach(s => { if (v[s.key]) links[s.key] = v[s.key]; });
+      activeSites().forEach(s => { if (v[s.key]) links[s.key] = v[s.key]; });
       modalSlots[f] = { id: v.id, active: true, ritual: v.ritual || "", links };
       modalInitialIds[f] = v.id;
     } else {
@@ -963,7 +967,7 @@ function loadSlotIntoInputs(freq) {
   const slot = modalSlots[freq];
   document.getElementById("freqActiveToggle").checked = slot.active;
   document.getElementById("kpiRitualInput").value  = slot.ritual;
-  sites.forEach(s => {
+  activeSites().forEach(s => {
     const el = document.getElementById("kpiLink_" + s.key);
     if (el) el.value = (slot.links && slot.links[s.key]) || "";
   });
@@ -979,7 +983,7 @@ function syncInputsIntoSlot(freq) {
   slot.active = document.getElementById("freqActiveToggle").checked;
   slot.ritual = document.getElementById("kpiRitualInput").value.trim();
   slot.links = {};
-  sites.forEach(s => {
+  activeSites().forEach(s => {
     const el = document.getElementById("kpiLink_" + s.key);
     const url = el ? normalizeUrl(el.value) : "";
     if (url) slot.links[s.key] = url;
@@ -1069,7 +1073,7 @@ function removeTemporality(initialId, kind) {
  */
 function upsertTemporality(freq, slot, initialId, kind, shared, space) {
   const fields = { ...shared, freq, ritual: slot.ritual };
-  sites.forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
+  activeSites().forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
 
   if (kind === "excel" && space === "shared") {
     overrides[initialId] = stamp(fields);
@@ -1204,7 +1208,7 @@ function renderSitesList() {
 }
 
 function openSitesModal() {
-  sitesDraft = JSON.parse(JSON.stringify(sites));
+  sitesDraft = JSON.parse(JSON.stringify(activeSites()));
   renderSitesList();
   document.getElementById("sitesModal").classList.remove("hidden");
 }
@@ -1217,16 +1221,34 @@ function saveSitesFromModal() {
     const name = (s.name || "").trim();
     if (!name) return; // ignore les lignes sans nom
     const key = s.key || slugifySite(name);
+    // Reprend la date existante si le site est inchangé, sinon l'horodate maintenant
+    const prev = sites.find(p => p.key === key);
+    const changed = !prev || prev.name !== name ||
+                    prev.badge !== ((s.badge || "").trim() || name.toUpperCase().slice(0, 6)) ||
+                    prev.color !== (s.color || (prev && prev.color));
     cleaned.push({
       key,
       name,
       badge: (s.badge || "").trim() || name.toUpperCase().slice(0, 6),
-      color: s.color || SITE_PALETTE[cleaned.length % SITE_PALETTE.length]
+      color: s.color || SITE_PALETTE[cleaned.length % SITE_PALETTE.length],
+      _mtime: changed ? now() : (prev._mtime || now()),
+      _deleted: false
     });
   });
   if (!cleaned.length) { showToast("⚠️ Gardez au moins un site", 2600); return; }
+
+  // Sites retirés dans la modale : on les conserve comme marqueurs « supprimés »
+  // datés, pour que la suppression se propage au lieu de « ressusciter » via l'autre poste.
+  const keptKeys = new Set(cleaned.map(s => s.key));
+  sites.forEach(old => {
+    if (!keptKeys.has(old.key) && !old._deleted) {
+      cleaned.push({ ...old, _deleted: true, _mtime: now() });
+    } else if (!keptKeys.has(old.key) && old._deleted) {
+      cleaned.push(old); // déjà supprimé, on garde le marqueur
+    }
+  });
+
   sites = cleaned;
-  touchMeta("sitesAt");   // cette config devient la plus récente
   saveSites(true);
   rebuildData(true);       // rafraîchit les cartes avec les nouveaux périmètres
   // Si la modale KPI est ouverte, on régénère ses champs de liens
@@ -1454,7 +1476,7 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const safeKey = esc(key).replace(/'/g, "\\'");
 
   // Périmètres présents pour ce KPI, dans l'ordre de la config des sites
-  const present = sites.filter(s => kpi[s.key]);
+  const present = activeSites().filter(s => kpi[s.key]);
   const siteBadges = present.map(s =>
     `<span class="site-badge" style="background:${esc(s.color || "#64748B")}"><span class="dot"></span>${esc(siteBadgeLabel(s))}</span>`
   ).join("");
@@ -1741,7 +1763,6 @@ function buildSyncPayload() {
     kpiOverrides: overrides,
     kpiDeleted: deletedIds,
     kpiSites: sites,
-    sitesAt: meta.sitesAt || 0,
     kpiPurged: purgedIds,
     kpiActivity: activityLog,
     favoritesByUser,
@@ -1818,12 +1839,24 @@ function mergeRemoteContent(payload) {
   }
 }
 
-/** Intègre la configuration des sites si elle est plus récente. */
-function mergeRemoteSites(payload, meta) {
+/**
+ * Fusionne la configuration des sites CLÉ PAR CLÉ (comme les KPIs).
+ * Un site ajouté sur un poste et un autre ajouté ailleurs coexistent
+ * désormais : plus d'écrasement de toute la liste. Pour chaque clé,
+ * la version la plus récente gagne, y compris les marqueurs de suppression.
+ */
+function mergeRemoteSites(payload) {
   if (!Array.isArray(payload.kpiSites) || !payload.kpiSites.length) return;
-  if ((payload.sitesAt || 0) <= (meta.sitesAt || 0)) return;
-  sites = payload.kpiSites;
-  meta.sitesAt = payload.sitesAt || 0;
+  const map = new Map();
+  // On part des sites distants…
+  payload.kpiSites.forEach(s => { if (s && s.key) map.set(s.key, s); });
+  // …puis on garde la version locale quand elle est plus récente
+  sites.forEach(s => {
+    if (!s || !s.key) return;
+    const other = map.get(s.key);
+    if (!other || (s._mtime || 0) >= (other._mtime || 0)) map.set(s.key, s);
+  });
+  sites = [...map.values()];
   saveSites(false);
 }
 
@@ -1851,7 +1884,7 @@ function applyRemoteData(payload, fromSync) {
 
   mergeRemoteExcel(payload, meta);
   mergeRemoteContent(payload);
-  mergeRemoteSites(payload, meta);
+  mergeRemoteSites(payload);
   mergeRemoteFavorites(payload);
 
   setMeta(meta);
