@@ -1915,9 +1915,9 @@ function applyRemoteData(payload, fromSync) {
 
 // Récupère et fusionne les données du cloud (bouton « Récupérer »).
 // Utilise le même moteur de fusion : rien n'est écrasé sans arbitrage.
-async function pullFromCloud(manual) {
+async function pullFromCloud(manual, replace) {
   const cfg = getSyncConfig();
-  if (!cfg || !fbDb) return;
+  if (!cfg || !fbDb) { if (manual) showToast("⚠️ Synchronisation non connectée", 3000); return; }
   setSyncStatusUI("syncing");
   try {
     const snap = await syncDocRef(cfg.code).get();
@@ -1926,12 +1926,59 @@ async function pullFromCloud(manual) {
       if (manual) showToast("Aucune donnée cloud pour ce code", 2800);
       return;
     }
-    applyRemoteData(snap.data(), false);
+    if (replace) {
+      replaceLocalWithRemote(snap.data());
+    } else {
+      applyRemoteData(snap.data(), false);
+    }
     setSyncStatusUI("connected");
   } catch (err) {
     setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
-    if (manual) showToast("❌ Erreur de synchronisation", 3000);
+    if (manual) showToast("❌ Erreur de synchronisation : " + (err.message || ""), 3500);
   }
+}
+
+// REMPLACE réellement les données locales par celles du cloud (pas de fusion).
+// Sert à sortir d'une divergence : le cloud fait autorité, le local est écrasé.
+function replaceLocalWithRemote(payload) {
+  pushSnapshot("avant remplacement par le cloud");
+  applyingRemoteSync = true;
+
+  // Fiches partagées : on prend celles du cloud telles quelles
+  let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
+                   : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
+  // Compat ancien format : convertit kpiExcel + overrides en fiches
+  const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel : [];
+  if (oldExcel.length) {
+    const overr = (payload.kpiOverrides && typeof payload.kpiOverrides === "object") ? payload.kpiOverrides : {};
+    oldExcel.forEach(d => {
+      const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+      const id = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+      if (!remoteManual.some(m => m.id === id)) remoteManual.push({ ...merged, id, manual: true, _mtime: merged._mtime || 1 });
+    });
+  }
+  manualEntries = remoteManual;
+  saveManualEntries(false);
+
+  deletedIds = Array.isArray(payload.kpiDeleted) ? normalizeDeleted(payload.kpiDeleted) : [];
+  saveDeletedIds(false);
+  purgedIds = Array.isArray(payload.kpiPurged) ? payload.kpiPurged : [];
+  savePurged(false);
+  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) { sites = payload.kpiSites; saveSites(false); }
+  if (Array.isArray(payload.kpiActivity)) { activityLog = payload.kpiActivity; saveActivity(false); }
+  if (payload.favoritesByUser) {
+    localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
+    if (payload.favoritesByUser[currentUser]) { favorites = payload.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
+  }
+
+  rebuildData(false);
+  applyingRemoteSync = false;
+  if (payload.updatedAt) {
+    localUpdatedAt = payload.updatedAt;
+    Store.writeRaw(Store.KEYS.LOCAL_AT, String(localUpdatedAt));
+    lastAppliedSyncAt = payload.updatedAt;
+  }
+  showToast("✅ Données remplacées par celles du cloud", 3000);
 }
 
 function listenForRemoteChanges(code) {
@@ -2350,7 +2397,11 @@ document.getElementById("syncPill")?.addEventListener("click", () => {
 
 document.getElementById("pushSyncBtn")?.addEventListener("click", () => pushToCloud(true));
 document.getElementById("pullSyncBtn")?.addEventListener("click", () => {
-  if (confirm("Ceci va remplacer vos données locales par celles du cloud. Continuer ?")) pullFromCloud(true);
+  if (confirm(
+    "Remplacer les données de CET appareil par celles du cloud ?\n\n" +
+    "Utile si cet appareil a de mauvaises données : le cloud fait autorité, " +
+    "tout ce qui est ici sera écrasé (une sauvegarde automatique est prise avant)."
+  )) pullFromCloud(true, true);   // true = remplacement réel
 });
 document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
   if (confirm("Désactiver la synchronisation cloud sur cet appareil ?")) disconnectSync();
