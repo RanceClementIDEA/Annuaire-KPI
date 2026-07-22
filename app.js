@@ -2435,6 +2435,21 @@ document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
 const LS_SNAPSHOTS = "kpiSnapshots";
 const MAX_SNAPSHOTS = 12;
 
+// Étiquette « N KPIs · M variantes · P perso » pour un instantané.
+// Gère les anciens formats : partagees, ou excel+manual, ou seulement manual.
+function snapCountLabel(c) {
+  if (!c) return "détail indisponible";
+  if (c.kpis !== undefined || c.variantes !== undefined) {
+    const kpis = c.kpis ?? "?";
+    const varn = c.variantes ?? "?";
+    const perso = c.perso ?? 0;
+    return `${kpis} KPIs · ${varn} variantes${perso ? " · " + perso + " perso" : ""}`;
+  }
+  const partag = c.partagees ?? ((c.excel || 0) + (c.manual || 0));
+  const perso = c.perso ?? 0;
+  return `${partag} variantes partagées${perso ? " · " + perso + " perso" : ""}`;
+}
+
 function getSnapshots() {
   try { return JSON.parse(localStorage.getItem(LS_SNAPSHOTS)) || []; } catch { return []; }
 }
@@ -2446,8 +2461,10 @@ function pushSnapshot(reason) {
       reason: reason || "sauvegarde",
       user: currentUser,
       counts: {
-        partagees: manualEntries.length,
-        perso: personalEntries.length
+        kpis:      countFiches(manualEntries),  // KPIs distincts (regroupés par intitulé)
+        variantes: manualEntries.length,         // total des temporalités
+        persoKpis: countFiches(personalEntries),
+        perso:     personalEntries.length
       },
       manualEntries, personalEntries,
       deletedIds, sites,
@@ -2481,7 +2498,7 @@ function restoreSnapshot(index) {
   const d = new Date(s.at);
   if (!confirm(
     `Restaurer la version du ${d.toLocaleDateString("fr-FR")} à ${d.toLocaleTimeString("fr-FR").slice(0,5)} ?\n` +
-    `(${s.counts.excel} KPIs Excel, ${s.counts.manual} manuels, ${s.counts.perso} personnels)\n\n` +
+    `(${snapCountLabel(s.counts)})\n\n` +
     "L'état actuel sera lui-même sauvegardé avant restauration."
   )) return;
 
@@ -2532,7 +2549,7 @@ function renderSnapshotList() {
     row.innerHTML = `
       <div class="snap-info">
         <b>${d.toLocaleDateString("fr-FR")} ${d.toLocaleTimeString("fr-FR").slice(0,5)}</b>
-        <span>${esc(s.reason)} · ${s.counts.partagees ?? s.counts.manual ?? 0} partagées · ${s.counts.perso ?? 0} perso</span>
+        <span>${esc(s.reason)} · ${snapCountLabel(s.counts)}</span>
       </div>
       <button type="button" class="btn-secondary snap-restore">↩ Restaurer</button>`;
     row.querySelector(".snap-restore").addEventListener("click", () => restoreSnapshot(i));
