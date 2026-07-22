@@ -2512,6 +2512,53 @@ function importBackup(file) {
   reader.readAsText(file);
 }
 
+// Inspecte un KPI par son intitulé : montre, pour chaque temporalité,
+// quels sites ont un lien enregistré. Sert à diagnostiquer un lien manquant
+// (ex. MG absent sur un appareil).
+function inspectKpi(query) {
+  const box = document.getElementById("inspectKpiResult");
+  if (!box) return;
+  const q = (query || "").trim().toLowerCase();
+  if (q.length < 2) { box.innerHTML = ""; return; }
+
+  const all = [...data, ...personalEntries];
+  const matches = all.filter(k => (k.title || "").toLowerCase().includes(q));
+  if (!matches.length) {
+    box.innerHTML = `<p class="modal-hint" style="margin:6px 0">Aucun KPI trouvé pour « ${esc(query)} ».</p>`;
+    return;
+  }
+
+  const byTitle = new Map();
+  matches.forEach(k => {
+    const key = titleKey(k.title);
+    if (!byTitle.has(key)) byTitle.set(key, { title: k.title, variants: [] });
+    byTitle.get(key).variants.push(k);
+  });
+
+  let html = "";
+  byTitle.forEach(g => {
+    html += `<div class="inspect-fiche"><b>${esc(g.title)}</b>`;
+    g.variants.forEach(v => {
+      const withLink = activeSites().filter(s => v[s.key]);
+      const names = withLink.map(s => esc(s.name)).join(", ") || "aucun lien";
+      const src = classifyId(v.id) === "excel"
+        ? (overrides[v.id] ? "Excel + modifié" : "Excel")
+        : (classifyId(v.id) === "perso" ? "personnel" : "manuel");
+      html += `<div class="inspect-temp">
+        <span class="inspect-freq">${esc(v.freq || "sans temporalité")}</span>
+        <span class="inspect-sites">${names}</span>
+        <span class="inspect-src">${src}</span>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  box.innerHTML = html;
+}
+
+document.getElementById("inspectKpiInput")?.addEventListener("input", function () {
+  inspectKpi(this.value);
+});
+
 document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
 
 // Bouton « Nettoyer les doublons » : recréé à chaque diagnostic, on écoute

@@ -1281,3 +1281,18 @@ select.modal-input {
 .diag-anomaly:last-child { border-bottom: none; }
 .diag-anomaly b { color: var(--text-1); }
 .diag-anomaly span { display: block; color: var(--gold); font-size: 11px; margin-top: 2px; }
+
+/* Inspection d'un KPI (diagnostic des liens de site) */
+.inspect-result { margin-bottom: 14px; }
+.inspect-fiche {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin-top: 8px;
+}
+.inspect-fiche > b { color: var(--text-1); font-size: 13px; display: block; margin-bottom: 6px; }
+.inspect-temp {
+  display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  border-top: 1px solid var(--border); font-size: 11.5px;
+}
+.inspect-freq { flex: 0 0 90px; color: var(--accent); font-weight: 600; }
+.inspect-sites { flex: 1; color: var(--text-1); }
+.inspect-src { flex: 0 0 auto; color: var(--text-3); font-size: 10.5px; }
