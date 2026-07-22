@@ -323,22 +323,34 @@ function loadSavedFile() {
 // vraies fiches manuelles, puis efface les traces de l'ancien système.
 // L'Excel n'est plus une source de données vivante, juste un import/export.
 function migrateExcelToManual() {
-  let migrated = 0;
+  // Migration déjà faite ? On ne la rejoue jamais (sinon risque de doublons/écrasement).
+  if (localStorage.getItem("kpiMigratedV2") === "1") {
+    excelData = [];
+    overrides = {};
+    return;
+  }
 
-  // 1) Ancien cache Excel encore présent ?
+  let migrated = 0;
   const cached = localStorage.getItem("kpiDataCache");
   if (cached) {
     try {
       const parsed = JSON.parse(cached);
       const oldExcel = parsed.filter(d => !d.manual);
       const overr = (() => { try { return JSON.parse(localStorage.getItem("kpiOverrides")) || {}; } catch { return {}; } })();
-      const known = new Set(manualEntries.map(m => m.id));
       oldExcel.forEach(d => {
-        // Applique l'éventuelle surcharge, régénère un ID stable, marque comme fiche
         const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
         const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
-        if (known.has(newId) || manualEntries.some(m => m.id === newId)) return;
-        manualEntries.push({ ...merged, id: newId, manual: true, _mtime: merged._mtime || now(), _by: merged._by || (currentUser || "?") });
+        if (manualEntries.some(m => m.id === newId)) return;
+        manualEntries.push({
+          ...merged,
+          id: newId,
+          manual: true,
+          // IMPORTANT : on conserve la date d'origine (jamais now()).
+          // Une date récente ferait croire au cloud que ces données sont
+          // les plus fraîches → le téléphone écraserait tout le monde.
+          _mtime: merged._mtime || 1,
+          _by: merged._by || "import"
+        });
         migrated++;
       });
     } catch (err) {
@@ -348,11 +360,12 @@ function migrateExcelToManual() {
 
   if (migrated) saveManualEntries(false);
 
-  // 2) On efface définitivement les vestiges de l'ancien système Excel-comme-source
+  // Efface les vestiges de l'ancien système et marque la migration comme faite
   ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"].forEach(k => localStorage.removeItem(k));
+  localStorage.setItem("kpiMigratedV2", "1");
   excelData = [];
   overrides = {};
-  if (migrated) console.info(`[Migration] ${migrated} fiche(s) Excel converties en fiches partagées.`);
+  if (migrated) console.info(`[Migration] ${migrated} fiche(s) converties (dates d'origine préservées).`);
 }
 
 function loadWorkbook(buffer) {
@@ -1633,7 +1646,7 @@ function render(groups, matchCount) {
 searchInput.addEventListener("input", filterData);
 processFilter.addEventListener("change", filterData);
 ritualFilter.addEventListener("change", filterData);
-refreshBtn.addEventListener("click", () => { loadSavedFile(); showToast("🔄 Données rafraîchies"); });
+refreshBtn.addEventListener("click", () => { rebuildData(false); showToast("🔄 Affichage rafraîchi"); });
 
 /* ============================================
    SYNCHRONISATION CLOUD (Firebase Firestore)
@@ -2448,7 +2461,7 @@ function renderSnapshotList() {
     row.innerHTML = `
       <div class="snap-info">
         <b>${d.toLocaleDateString("fr-FR")} ${d.toLocaleTimeString("fr-FR").slice(0,5)}</b>
-        <span>${esc(s.reason)} · ${s.counts.excel} Excel · ${s.counts.manual} manuels · ${s.counts.perso} perso</span>
+        <span>${esc(s.reason)} · ${s.counts.partagees ?? s.counts.manual ?? 0} partagées · ${s.counts.perso ?? 0} perso</span>
       </div>
       <button type="button" class="btn-secondary snap-restore">↩ Restaurer</button>`;
     row.querySelector(".snap-restore").addEventListener("click", () => restoreSnapshot(i));
@@ -2602,6 +2615,33 @@ document.getElementById("inspectKpiInput")?.addEventListener("input", function (
 });
 
 document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
+
+// « Cet appareil fait référence » : écrase le cloud avec l'état local.
+// Sert à trancher quand les appareils divergent. Toutes les fiches locales
+// sont réestampillées « maintenant » pour gagner tout arbitrage futur.
+document.getElementById("forceMasterBtn")?.addEventListener("click", async () => {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb) { showToast("⚠️ Synchronisation non connectée", 3000); return; }
+  const nb = manualEntries.filter(d => !isDeleted(d.id) && !isPurged(d.id)).length;
+  if (!confirm(
+    `Faire de CET appareil la référence ?\n\n` +
+    `Ses ${nb} fiche(s) partagées vont ÉCRASER les données du cloud.\n` +
+    `Les autres appareils recevront cette version à leur prochaine synchro.\n\n` +
+    `À n'utiliser que depuis l'appareil qui a les BONNES données.`
+  )) return;
+
+  const t = now();
+  manualEntries.forEach(k => { k._mtime = t; });
+  sites.forEach(s => { s._mtime = t; });
+  saveManualEntries(false);
+  saveSites(false);
+  try {
+    await pushToCloud(true);
+    showToast("⭐ Cloud écrasé avec les données de cet appareil", 3500);
+  } catch (err) {
+    showToast("❌ Échec de l'envoi", 3000);
+  }
+});
 
 // Bouton « Nettoyer les doublons » : recréé à chaque diagnostic, on écoute
 // donc le conteneur parent plutôt que le bouton lui-même.
