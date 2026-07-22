@@ -2072,12 +2072,18 @@ function renderSyncDiag() {
     if (!anomalies.length) { box.innerHTML = ""; box.style.display = "none"; }
     else {
       box.style.display = "";
+      const hasDuplicates = anomalies.some(a => a.reason.includes("double"));
       box.innerHTML = `<p class="modal-hint" style="margin:8px 0 6px"><b>Fiches à vérifier :</b></p>` +
         anomalies.map(a =>
           `<div class="diag-anomaly">
              <b>${esc(a.title)}</b> — ${a.count} variantes
              <span>${esc(a.reason)}</span>
-           </div>`).join("");
+           </div>`).join("") +
+        (hasDuplicates
+          ? `<button type="button" id="cleanDupBtn" class="btn-primary" style="margin-top:10px;width:100%">
+               🧹 Nettoyer les temporalités en double
+             </button>`
+          : "");
     }
   }
 
@@ -2116,6 +2122,64 @@ function findVariantAnomalies(list) {
     }
   });
   return anomalies;
+}
+
+/**
+ * Nettoie les temporalités en double : pour chaque fiche, si une même
+ * temporalité (ex. « Mensuelle ») apparaît plusieurs fois, on GARDE la
+ * variante la plus récente (_mtime le plus grand) et on retire les autres.
+ * Les fiches Excel supprimées reçoivent un marqueur (comme une suppression
+ * normale) ; les fiches manuelles/perso sont retirées directement.
+ * @returns {number} nombre de doublons retirés
+ */
+function cleanDuplicateVariants() {
+  const all = [...data, ...personalEntries];
+  const byTitle = new Map();
+  all.forEach(k => {
+    const key = titleKey(k.title);
+    if (!byTitle.has(key)) byTitle.set(key, []);
+    byTitle.get(key).push(k);
+  });
+
+  const toRemove = []; // variantes en trop à supprimer
+  byTitle.forEach(variants => {
+    const perFreq = new Map(); // temporalité (minuscule) → variante gardée
+    variants.forEach(v => {
+      const f = (v.freq || "").trim().toLowerCase();
+      const kept = perFreq.get(f);
+      if (!kept) { perFreq.set(f, v); return; }
+      // Doublon : on garde la plus récente, l'autre part
+      const keepNew = (v._mtime || 0) >= (kept._mtime || 0);
+      if (keepNew) { toRemove.push(kept); perFreq.set(f, v); }
+      else         { toRemove.push(v); }
+    });
+  });
+
+  if (!toRemove.length) return 0;
+
+  let touchedShared = false, touchedPerso = false;
+  toRemove.forEach(v => {
+    const kind = classifyId(v.id);
+    if (kind === "perso") {
+      personalEntries = personalEntries.filter(k => k.id !== v.id);
+      touchedPerso = true;
+    } else if (kind === "excel") {
+      markDeleted(v.id, v);
+      delete overrides[v.id];
+      touchedShared = true;
+    } else { // manual
+      markDeleted(v.id, v);
+      touchedShared = true;
+    }
+    favorites = favorites.filter(f => f !== v.id);
+  });
+
+  saveFavoritesLocalOnly();
+  if (touchedPerso) savePersonalEntries();
+  if (touchedShared) { saveOverrides(false); saveDeletedIds(false); saveManualEntries(false); }
+  logActivity("delete", `${toRemove.length} doublon(s) de temporalité`, "nettoyage automatique");
+  rebuildData(true);
+  return toRemove.length;
 }
 
 function initSyncModal() {
@@ -2416,6 +2480,24 @@ function importBackup(file) {
 }
 
 document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
+
+// Bouton « Nettoyer les doublons » : recréé à chaque diagnostic, on écoute
+// donc le conteneur parent plutôt que le bouton lui-même.
+document.getElementById("variantAnomalies")?.addEventListener("click", e => {
+  if (e.target && e.target.id === "cleanDupBtn") {
+    const anomalies = findVariantAnomalies([...data, ...personalEntries]);
+    const dups = anomalies.filter(a => a.reason.includes("double"));
+    if (!confirm(
+      `Nettoyer les temporalités en double sur ${dups.length} fiche(s) ?\n\n` +
+      "Pour chaque temporalité présente en double, la version la plus récente est " +
+      "conservée et les autres sont retirées (récupérables dans la corbeille).\n\n" +
+      "Vos fiches et leurs liens ne sont pas perdus."
+    )) return;
+    const n = cleanDuplicateVariants();
+    renderSyncDiag();
+    showToast(n ? `🧹 ${n} doublon(s) retiré(s)` : "Aucun doublon à nettoyer", 3000);
+  }
+});
 document.getElementById("exportBackupBtn")?.addEventListener("click", exportBackup);
 document.getElementById("importBackupBtn")?.addEventListener("click", () => {
   document.getElementById("backupFileInput").click();
