@@ -1,6 +1,9 @@
 /* ============================================
    ÉTAT GLOBAL
 ============================================ */
+// Version de l'application. À comparer entre appareils via le diagnostic :
+// si deux appareils affichent des versions différentes, l'un a un cache périmé.
+const APP_VERSION = "2026.07.22";
 let data = [];          // Liste affichée = excelData (+ surcharges) + manualEntries
 let excelData = [];     // KPIs issus du fichier Excel (version d'origine, jamais modifiée)
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
@@ -393,6 +396,7 @@ function extractLinksByColumn(sheet, headers, rowIndex) {
 ============================================ */
 function transformData(sheet, rawData) {
   const headers = rawData[0];
+  const importAt = now();
   excelData = rawData.slice(1)
     .filter(row => row.some(cell => cell !== undefined && cell !== ""))
     .map((row, idx) => {
@@ -408,7 +412,9 @@ function transformData(sheet, rawData) {
         freq:    obj["Fréquence"] || "",
         ritual:  obj["Rituel"] || "",
         desc:    obj["Description / Mode de calcul"] || "",
-        ...links
+        ...links,
+        _mtime: importAt,        // date d'import : permet la fusion par fiche
+        _by: currentUser || "?"
       };
     });
 
@@ -1801,16 +1807,20 @@ async function pushToCloud(manual) {
 }
 
 /** Intègre le bloc Excel distant s'il est plus récent que le nôtre. */
+/**
+ * Fusionne les données Excel LIGNE PAR LIGNE (comme les KPIs manuels).
+ * Auparavant le bloc Excel s'échangeait en entier, arbitré par une seule
+ * date : un appareil pouvait rester bloqué sur un ancien bloc et ne jamais
+ * recevoir un lien pourtant présent ailleurs. Désormais chaque fiche Excel
+ * porte sa propre date et se fusionne indépendamment.
+ */
 function mergeRemoteExcel(payload, meta) {
   const remoteExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
                     : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : null);
   if (!remoteExcel) return;
-  if ((payload.excelAt || 0) > (meta.excelAt || 0)) {
-    excelData = remoteExcel;
-    meta.excelAt = payload.excelAt || 0;
-  } else if (!excelData.length) {
-    excelData = remoteExcel; // on n'avait rien : on prend ce qui existe
-  }
+  // Fusion par identifiant : la version la plus récente de chaque fiche gagne.
+  excelData = mergeEntries(excelData, remoteExcel);
+  if (payload.excelAt) meta.excelAt = Math.max(meta.excelAt || 0, payload.excelAt);
 }
 
 /** Fusionne fiches manuelles, surcharges, suppressions, purges et journal. */
@@ -2091,6 +2101,7 @@ function renderSyncDiag() {
 
   el.innerHTML = `
     <div class="diag-row"><span>Emplacement des données</span><b>${esc(origin)}</b></div>
+    <div class="diag-row"><span>Version de l'appli</span><b>${APP_VERSION}</b></div>
     <div class="diag-row"><span>Projet Firebase</span><b>${esc(proj)}</b></div>
     <div class="diag-row"><span>Code de synchro</span><b>${esc(code)}</b></div>
     <div class="diag-row"><span>Synchro automatique</span><b>${auto}</b></div>
@@ -2541,13 +2552,9 @@ function inspectKpi(query) {
     g.variants.forEach(v => {
       const withLink = activeSites().filter(s => v[s.key]);
       const names = withLink.map(s => esc(s.name)).join(", ") || "aucun lien";
-      const src = classifyId(v.id) === "excel"
-        ? (overrides[v.id] ? "Excel + modifié" : "Excel")
-        : (classifyId(v.id) === "perso" ? "personnel" : "manuel");
       html += `<div class="inspect-temp">
         <span class="inspect-freq">${esc(v.freq || "sans temporalité")}</span>
         <span class="inspect-sites">${names}</span>
-        <span class="inspect-src">${src}</span>
       </div>`;
     });
     html += `</div>`;
