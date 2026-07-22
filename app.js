@@ -1918,6 +1918,8 @@ function applyRemoteData(payload, fromSync) {
 async function pullFromCloud(manual, replace) {
   const cfg = getSyncConfig();
   if (!cfg || !fbDb) { if (manual) showToast("⚠️ Synchronisation non connectée", 3000); return; }
+  if (syncBusy) { if (manual) showToast("Synchro en cours, réessayez dans un instant", 2500); return; }
+  syncBusy = true;               // bloque l'écoute temps réel pendant l'opération
   setSyncStatusUI("syncing");
   try {
     const snap = await syncDocRef(cfg.code).get();
@@ -1935,6 +1937,8 @@ async function pullFromCloud(manual, replace) {
   } catch (err) {
     setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
     if (manual) showToast("❌ Erreur de synchronisation : " + (err.message || ""), 3500);
+  } finally {
+    syncBusy = false;
   }
 }
 
@@ -2666,6 +2670,60 @@ document.getElementById("inspectKpiInput")?.addEventListener("input", function (
 });
 
 document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
+
+// Test de connexion en direct : écrit puis relit une valeur dans Firestore.
+// Affiche précisément ce qui bloque (config absente, Firebase non chargé,
+// règles refusées, hors-ligne…). Indispensable pour diagnostiquer le mobile.
+document.getElementById("testCloudBtn")?.addEventListener("click", async () => {
+  const box = document.getElementById("cloudTestResult");
+  if (!box) return;
+  box.style.display = "";
+  const line = (ok, txt) => `<div class="diag-row"><span>${ok ? "✓" : "✗"} ${esc(txt)}</span><b>${ok ? "OK" : "ÉCHEC"}</b></div>`;
+  let html = "";
+
+  // 1. Firebase chargé ?
+  const fbLoaded = typeof firebase !== "undefined";
+  html += line(fbLoaded, "Librairie Firebase chargée");
+  if (!fbLoaded) { box.innerHTML = html + `<p class="modal-hint">La librairie ne s'est pas chargée : vérifiez la connexion Internet, ou un bloqueur qui empêcherait gstatic.com.</p>`; return; }
+
+  // 2. Pas en file:// ?
+  html += line(!isFileProtocol(), "Ouvert via une adresse web (pas file://)");
+  if (isFileProtocol()) { box.innerHTML = html + `<p class="modal-hint">En mode fichier local, la synchro est impossible. Ouvrez l'adresse https.</p>`; return; }
+
+  // 3. Config présente ?
+  const cfg = getSyncConfig();
+  const hasCfg = !!(cfg && cfg.config && cfg.config.projectId && cfg.code);
+  html += line(hasCfg, "Configuration Firebase présente");
+  if (!hasCfg) { box.innerHTML = html + `<p class="modal-hint"><b>C'est probablement ça :</b> aucune configuration Firebase sur cet appareil. Ouvrez « Paramètres avancés » et saisissez la même config + le même code que sur l'autre appareil.</p>`; return; }
+
+  // 4. Écriture + lecture réelle
+  box.innerHTML = html + `<p class="modal-hint">Test d'écriture en cours…</p>`;
+  try {
+    if (!fbApp) { fbApp = firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(cfg.config); fbDb = firebase.firestore(); }
+    const testRef = fbDb.collection("kpi_sync").doc(cfg.code + "__conntest");
+    const token = "t" + Date.now();
+    await testRef.set({ token, at: Date.now() });
+    const snap = await testRef.get();
+    const readBack = snap.exists && snap.data().token === token;
+    html += line(true, "Écriture dans le cloud");
+    html += line(readBack, "Relecture depuis le cloud");
+
+    // 5. Le document principal existe-t-il ?
+    const mainSnap = await syncDocRef(cfg.code).get();
+    const exists = mainSnap.exists;
+    const count = exists ? (mainSnap.data().kpiManual?.length || 0) : 0;
+    html += `<div class="diag-row"><span>Document principal (code ${esc(cfg.code)})</span><b>${exists ? count + " fiches" : "VIDE"}</b></div>`;
+    box.innerHTML = html + (exists
+      ? `<p class="modal-hint">✅ Connexion parfaite. Le cloud contient ${count} fiche(s). « Récupérer » va les charger.</p>`
+      : `<p class="modal-hint">⚠️ Connexion OK mais le cloud est VIDE pour le code « ${esc(cfg.code)} ». Depuis l'appareil qui a les bonnes données, utilisez « ⭐ Cet appareil fait référence ».</p>`);
+  } catch (err) {
+    html += line(false, "Écriture/lecture cloud");
+    const msg = (err && err.code === "permission-denied")
+      ? "Refusé par les règles Firestore. Vos règles ont peut-être expiré (mode test) — republiez-les."
+      : (err && err.message) || "Erreur inconnue";
+    box.innerHTML = html + `<p class="modal-hint"><b>Erreur :</b> ${esc(msg)}</p>`;
+  }
+});
 
 // « Cet appareil fait référence » : écrase le cloud avec l'état local.
 // Sert à trancher quand les appareils divergent. Toutes les fiches locales
