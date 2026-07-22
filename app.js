@@ -1459,7 +1459,7 @@ function onReportSelect(selId, key) {
 // Ordre d'affichage des temporalités : Mensuelle → Hebdomadaire → Quotidienne
 const FREQ_ORDER = { "mensuelle": 1, "hebdomadaire": 2, "quotidienne": 3 };
 function freqRank(f) { return FREQ_ORDER[(f || "").toLowerCase().trim()] || 9; }
-function titleKey(t) { return (t || "").toLowerCase().trim(); }
+function titleKey(t) { return (t || "").toLowerCase().replace(/\s+/g, " ").trim(); }
 
 // Classe de couleur du tag Processus : réception / distribution se distinguent des sites
 function processTagClass(p) {
@@ -2195,11 +2195,13 @@ function renderSyncDiag() {
   const code = cfg?.code || "—";
   const auto = cfg?.enabled ? "activée" : "en pause";
 
-  // Analyse fiches vs variantes (temporalités)
-  const all = [...data, ...personalEntries];
-  const fiches = countFiches(all);
-  const variantes = all.length;
-  const anomalies = findVariantAnomalies(all);
+  // Analyse fiches vs variantes (temporalités), en séparant partagé et perso.
+  // On ne compte que le VISIBLE (data exclut déjà la corbeille).
+  const partKpis = countFiches(data);
+  const partVar  = data.length;
+  const persoKpis = countFiches(personalEntries);
+  const persoVar  = personalEntries.length;
+  const anomalies = findVariantAnomalies([...data, ...personalEntries]);
 
   el.innerHTML = `
     <div class="diag-row"><span>Emplacement des données</span><b>${esc(origin)}</b></div>
@@ -2207,8 +2209,10 @@ function renderSyncDiag() {
     <div class="diag-row"><span>Projet Firebase</span><b>${esc(proj)}</b></div>
     <div class="diag-row"><span>Code de synchro</span><b>${esc(code)}</b></div>
     <div class="diag-row"><span>Synchro automatique</span><b>${auto}</b></div>
-    <div class="diag-row"><span>Fiches (KPIs)</span><b>${fiches}</b></div>
-    <div class="diag-row"><span>Variantes (temporalités)</span><b>${variantes}</b></div>
+    <div class="diag-row"><span>KPIs partagés</span><b>${partKpis}</b></div>
+    <div class="diag-row"><span>Variantes partagées</span><b>${partVar}</b></div>
+    ${persoVar ? `<div class="diag-row"><span>KPIs personnels</span><b>${persoKpis}</b></div>
+    <div class="diag-row"><span>Variantes personnelles</span><b>${persoVar}</b></div>` : ""}
     ${anomalies.length
       ? `<div class="diag-row" style="color:var(--gold)"><span>⚠️ Anomalies détectées</span><b>${anomalies.length}</b></div>`
       : `<div class="diag-row" style="color:var(--green)"><span>✓ Aucune anomalie</span><b>—</b></div>`}`;
@@ -2241,25 +2245,28 @@ function renderSyncDiag() {
 // doublons exacts de temporalité, fréquences non standard, ou plus de 3 variantes.
 function findVariantAnomalies(list) {
   const byTitle = new Map();
+  const rawTitles = new Map(); // clé normalisée → ensemble des orthographes exactes
   list.forEach(k => {
     const key = titleKey(k.title);
     if (!byTitle.has(key)) byTitle.set(key, []);
     byTitle.get(key).push(k);
+    if (!rawTitles.has(key)) rawTitles.set(key, new Set());
+    rawTitles.get(key).add(k.title || "");
   });
 
   const anomalies = [];
-  byTitle.forEach(variants => {
+  byTitle.forEach((variants, key) => {
     const freqs = variants.map(v => (v.freq || "").trim());
     const title = variants[0].title;
 
-    // Doublons : deux variantes avec la même temporalité
     const seen = {}, dups = [];
     freqs.forEach(f => { const l = f.toLowerCase(); if (seen[l]) dups.push(f || "(vide)"); seen[l] = true; });
-
-    // Fréquences hors des trois standard
     const nonStd = freqs.filter(f => !STD_FREQS.some(s => s.toLowerCase() === f.toLowerCase()));
+    const variantesOrtho = rawTitles.get(key);
 
-    if (dups.length) {
+    if (variantesOrtho.size > 1) {
+      anomalies.push({ title, count: variants.length, reason: `intitulés qui diffèrent (espaces/majuscules) : « ${[...variantesOrtho].join(" » / « ")} »` });
+    } else if (dups.length) {
       anomalies.push({ title, count: variants.length, reason: `temporalité en double : ${[...new Set(dups)].join(", ")}` });
     } else if (nonStd.length) {
       anomalies.push({ title, count: variants.length, reason: `temporalité non standard : ${[...new Set(nonStd)].map(f => f || "(vide)").join(", ")}` });
@@ -2461,8 +2468,9 @@ function pushSnapshot(reason) {
       reason: reason || "sauvegarde",
       user: currentUser,
       counts: {
-        kpis:      countFiches(manualEntries),  // KPIs distincts (regroupés par intitulé)
-        variantes: manualEntries.length,         // total des temporalités
+        // On compte le VISIBLE (hors corbeille), comme ce que voit l'utilisateur.
+        kpis:      countFiches(data),
+        variantes: data.length,
         persoKpis: countFiches(personalEntries),
         perso:     personalEntries.length
       },
@@ -2668,8 +2676,14 @@ function inspectKpi(query) {
   const q = (query || "").trim().toLowerCase();
   if (q.length < 2) { box.innerHTML = ""; return; }
 
-  const all = [...data, ...personalEntries];
-  const matches = all.filter(k => (k.title || "").toLowerCase().includes(q));
+  // On inspecte tout : visibles ET supprimées (corbeille), partagées ET perso.
+  const deletedSet = new Set(deletedIds.filter(d => d.state !== "restored").map(d => d.id));
+  const tagged = [
+    ...manualEntries.map(k => ({ ...k, _space: "partagé", _del: deletedSet.has(k.id) })),
+    ...personalEntries.map(k => ({ ...k, _space: "perso", _del: false })),
+    ...personalTrash.map(k => ({ ...k, _space: "perso", _del: true }))
+  ];
+  const matches = tagged.filter(k => (k.title || "").toLowerCase().includes(q));
   if (!matches.length) {
     box.innerHTML = `<p class="modal-hint" style="margin:6px 0">Aucun KPI trouvé pour « ${esc(query)} ».</p>`;
     return;
@@ -2677,20 +2691,44 @@ function inspectKpi(query) {
 
   const byTitle = new Map();
   matches.forEach(k => {
-    const key = titleKey(k.title);
-    if (!byTitle.has(key)) byTitle.set(key, { title: k.title, variants: [] });
+    const key = k._space + "|" + titleKey(k.title);
+    if (!byTitle.has(key)) byTitle.set(key, { title: k.title, space: k._space, variants: [] });
     byTitle.get(key).variants.push(k);
   });
 
+  const fmtWhen = t => t ? new Date(t).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+
   let html = "";
   byTitle.forEach(g => {
-    html += `<div class="inspect-fiche"><b>${esc(g.title)}</b>`;
+    // Détecte les temporalités en double dans cette fiche
+    const freqCount = {};
+    g.variants.forEach(v => { const f = (v.freq || "").toLowerCase().trim(); freqCount[f] = (freqCount[f] || 0) + 1; });
+    const dupFreqs = Object.entries(freqCount).filter(([, n]) => n > 1).map(([f]) => f);
+
+    const visibles = g.variants.filter(v => !v._del).length;
+    const badge = g.space === "perso" ? "🔒 perso" : "partagé";
+    html += `<div class="inspect-fiche">
+      <b>${esc(g.title)}</b>
+      <span class="inspect-badge">${badge} · ${visibles}/${g.variants.length} visible(s)</span>`;
+
+    if (dupFreqs.length) {
+      html += `<div class="inspect-warn">⚠️ Temporalité en double : ${dupFreqs.map(f => esc(f || "(vide)")).join(", ")}</div>`;
+    }
+
     g.variants.forEach(v => {
-      const withLink = activeSites().filter(s => v[s.key]);
-      const names = withLink.map(s => esc(s.name)).join(", ") || "aucun lien";
-      html += `<div class="inspect-temp">
-        <span class="inspect-freq">${esc(v.freq || "sans temporalité")}</span>
-        <span class="inspect-sites">${names}</span>
+      const linkDetails = activeSites().map(s => {
+        const url = v[s.key];
+        return url
+          ? `<span class="inspect-link-ok" title="${esc(url)}">${esc(s.name)} ✓</span>`
+          : `<span class="inspect-link-no">${esc(s.name)} ✗</span>`;
+      }).join(" ");
+      html += `<div class="inspect-temp ${v._del ? "inspect-deleted" : ""}">
+        <div class="inspect-line1">
+          <span class="inspect-freq">${esc(v.freq || "sans temporalité")}</span>
+          ${v._del ? `<span class="inspect-trash">🗑 corbeille</span>` : ""}
+        </div>
+        <div class="inspect-links">${linkDetails}</div>
+        <div class="inspect-meta">modifié ${fmtWhen(v._mtime)}${v._by ? " par " + esc(v._by) : ""} · <code>${esc(v.id)}</code></div>
       </div>`;
     });
     html += `</div>`;
