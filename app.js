@@ -253,6 +253,13 @@ function saveFavorites() {
   scheduleAutoSync();
 }
 
+// Enregistre les favoris en local SANS déclencher de synchronisation.
+// Utilisée quand la synchro est gérée séparément (réception cloud, suppression
+// de fiche) pour éviter une double synchro ou une boucle.
+function saveFavoritesLocalOnly() {
+  localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
+}
+
 function toggleFavorite(id) {
   if (favorites.includes(id)) {
     favorites = favorites.filter(f => f !== id);
@@ -456,21 +463,7 @@ function savePersonalEntries() {
   localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
 }
 
-function deletePersonalKpi(id) {
-  const kpi = personalEntries.find(k => k.id === id);
-  if (!kpi) return;
-  if (!confirm(`Supprimer le signet personnel « ${kpi.title} » ?`)) return;
-  personalEntries = personalEntries.filter(k => k.id !== id);
-  favorites = favorites.filter(f => f !== id);
-  saveFavoritesLocalOnly();
-  savePersonalEntries();
-  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "", "perso");
-  initFilters();
-  updateCounts();
-  animateNextRender = false;
-  filterData();
-  showToast("🗑 Signet personnel supprimé");
-}
+
 
 /* ============================================
    SURCHARGES : modifications des fiches Excel
@@ -511,37 +504,62 @@ function saveDeletedIds(sync = true) {
   if (sync) scheduleAutoSync();
 }
 
-function deleteExcelKpi(id) {
-  const kpi = data.find(k => k.id === id) || excelData.find(k => k.id === id);
-  if (!kpi) return;
-  if (!confirm(`Supprimer le signet « ${kpi.title} » ?\n\nIl restera masqué même après un ré-import Excel. Vous pourrez le réafficher depuis « Corbeille » dans le menu.`)) return;
-  deletedIds = deletedIds.filter(d => d.id !== id);
-  deletedIds.push({ id, title: kpi.title || "", freq: kpi.freq || "",
-                    at: now(), by: currentUser || "?", state: "deleted" });
-  delete overrides[id];
-  favorites = favorites.filter(f => f !== id);
-  saveFavoritesLocalOnly();
-  saveOverrides(false);
-  saveDeletedIds(false);
-  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "");
-  rebuildData(true);
-  showToast("🗑 Signet supprimé");
-}
 
-// Point d'entrée unique de la corbeille sur les cartes
+
+// Point d'entrée unique de la corbeille sur les cartes.
+// Supprime TOUTE la fiche : toutes les temporalités portant le même intitulé,
+// dans le même espace (partagé ou personnel), pas seulement la variante affichée.
 function deleteKPI(id) {
-  if (personalEntries.some(k => k.id === id)) deletePersonalKpi(id);
-  else if (manualEntries.some(k => k.id === id)) deleteManualKpi(id);
-  else deleteExcelKpi(id);
+  const ref = data.find(k => k.id === id) || personalEntries.find(k => k.id === id);
+  if (!ref) return;
+  const key = titleKey(ref.title);
+  const isPersonal = personalEntries.some(k => k.id === id);
+  const source = isPersonal ? personalEntries : data;
+
+  // Toutes les variantes (temporalités) de cette fiche dans le même espace
+  const group = source.filter(k => titleKey(k.title) === key);
+  const freqs = group.map(k => k.freq).filter(Boolean);
+
+  const nbTemp = group.length;
+  const detail = nbTemp > 1
+    ? `\n\nCette fiche contient ${nbTemp} temporalités (${freqs.join(", ")}). Toutes seront supprimées.`
+    : "";
+  const suffix = isPersonal ? "" : "\n\nElle restera masquée même après un ré-import Excel. Vous pourrez la réafficher depuis « Corbeille ».";
+  if (!confirm(`Supprimer la fiche « ${ref.title} » ?${detail}${suffix}`)) return;
+
+  let touchedShared = false, touchedPerso = false;
+  group.forEach(v => {
+    const kind = classifyId(v.id);
+    if (kind === "perso") {
+      personalEntries = personalEntries.filter(k => k.id !== v.id);
+      touchedPerso = true;
+    } else if (kind === "excel") {
+      markDeleted(v.id, v);
+      delete overrides[v.id];
+      touchedShared = true;
+    } else { // manual
+      markDeleted(v.id, v);
+      touchedShared = true;
+    }
+    favorites = favorites.filter(f => f !== v.id);
+  });
+
+  saveFavoritesLocalOnly();
+  if (touchedPerso) savePersonalEntries();
+  if (touchedShared) { saveOverrides(false); saveDeletedIds(false); saveManualEntries(false); }
+  logActivity("delete", ref.title, nbTemp > 1 ? `fiche entière (${nbTemp} temporalités : ${freqs.join(", ")})` : "");
+  rebuildData(true);
+  showToast(nbTemp > 1 ? `🗑 Fiche supprimée (${nbTemp} temporalités)` : "🗑 Fiche supprimée");
 }
 
 function updateRestoreDeletedBtn() {
   const btn = document.getElementById("restoreDeletedBtn");
   const label = document.getElementById("restoreDeletedLabel");
   if (!btn) return;
-  const n = deletedIds.filter(d => d.state !== "restored").length;
-  btn.style.display = n ? "" : "none";
-  if (label) label.textContent = `Corbeille (${n})`;
+  const active = deletedIds.filter(d => d.state !== "restored");
+  const nbFiches = new Set(active.map(d => titleKey(d.title))).size;
+  btn.style.display = nbFiches ? "" : "none";
+  if (label) label.textContent = `Corbeille (${nbFiches})`;
 }
 
 /* ============================================
@@ -561,21 +579,34 @@ function renderTrashList() {
     el.innerHTML = `<p class="modal-hint" style="margin:0">La corbeille est vide.</p>`;
     return;
   }
-  // Plus récentes en premier
-  const rows = active.map((d, i) => ({ ...d, _i: i }))
-    .sort((a, b) => (b.at || 0) - (a.at || 0));
-  el.innerHTML = "";
-  rows.forEach(d => {
+  // Regroupe les temporalités supprimées par intitulé : une seule ligne par fiche
+  const groups = new Map();
+  active.forEach(d => {
     const orig = excelData.find(k => k.id === d.id) || manualEntries.find(k => k.id === d.id);
     const title = d.title || (orig ? orig.title : d.id);
-    const freq = d.freq || (orig ? orig.freq : "");
+    const key = titleKey(title);
+    if (!groups.has(key)) groups.set(key, { title, ids: [], freqs: [], at: 0, by: "" });
+    const g = groups.get(key);
+    g.ids.push(d.id);
+    if (d.freq || (orig && orig.freq)) g.freqs.push(d.freq || orig.freq);
+    if ((d.at || 0) >= g.at) { g.at = d.at || 0; g.by = d.by || ""; } // date/auteur du geste le plus récent
+  });
+
+  const rows = [...groups.values()].sort((a, b) => (b.at || 0) - (a.at || 0));
+  el.innerHTML = "";
+  rows.forEach(g => {
+    const nb = g.ids.length;
+    const tempTxt = nb > 1
+      ? `${nb} temporalités (${g.freqs.join(", ")}) · `
+      : (g.freqs[0] ? esc(g.freqs[0]) + " · " : "");
     const row = document.createElement("label");
     row.className = "trash-row";
+    // data-ids regroupe TOUS les identifiants de la fiche
     row.innerHTML = `
-      <input type="checkbox" class="trash-check" data-id="${esc(d.id)}">
+      <input type="checkbox" class="trash-check" data-ids="${esc(g.ids.join(","))}">
       <div class="trash-info">
-        <b>${esc(title)}</b>
-        <span>${freq ? esc(freq) + " · " : ""}supprimée le ${fmtDate(d.at)}${d.by ? " par " + esc(d.by) : ""}</span>
+        <b>${esc(g.title)}</b>
+        <span>${tempTxt}supprimée le ${fmtDate(g.at)}${g.by ? " par " + esc(g.by) : ""}</span>
       </div>`;
     el.appendChild(row);
   });
@@ -591,21 +622,28 @@ function restoreSelectedTrash() {
   const ids = getTrashSelection();
   if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
   const restored = deletedIds.filter(d => ids.includes(d.id));
+  const nbFiches = new Set(restored.map(d => titleKey(d.title))).size;
   // On marque « restauré » et daté : un autre poste ne pourra pas re-masquer la fiche
   deletedIds = deletedIds.map(d => ids.includes(d.id)
     ? { ...d, state: "restored", at: now(), by: currentUser || "?" }
     : d);
   saveDeletedIds(false);
-  restored.forEach(d => logActivity("restore", d.title || d.id, d.freq ? `temporalité ${d.freq}` : ""));
+  // Journalise une fois par fiche
+  [...new Set(restored.map(d => d.title))].forEach(t =>
+    logActivity("restore", t, "fiche réaffichée"));
   rebuildData(true);
   renderTrashList();
-  showToast(`✅ ${ids.length} fiche${ids.length > 1 ? "s" : ""} réaffichée${ids.length > 1 ? "s" : ""}`);
+  showToast(`✅ ${nbFiches} fiche${nbFiches > 1 ? "s" : ""} réaffichée${nbFiches > 1 ? "s" : ""}`);
   if (!deletedIds.some(d => d.state !== "restored")) closeTrashModal();
 }
 
 function getTrashSelection() {
-  return Array.from(document.querySelectorAll("#trashList .trash-check:checked"))
-    .map(c => c.dataset.id);
+  // Chaque case cochée regroupe toutes les temporalités d'une fiche
+  const ids = [];
+  document.querySelectorAll("#trashList .trash-check:checked").forEach(c => {
+    (c.dataset.ids || "").split(",").filter(Boolean).forEach(id => ids.push(id));
+  });
+  return ids;
 }
 
 // Suppression définitive : la fiche disparaît de la corbeille et ne reviendra plus,
@@ -1147,19 +1185,7 @@ document.getElementById("sitesModal")?.addEventListener("click", e => {
 // Accès aussi depuis la modale KPI ("⚙ Gérer les sites")
 document.getElementById("manageSitesBtn2")?.addEventListener("click", openSitesModal);
 
-function deleteManualKpi(id) {
-  const kpi = manualEntries.find(k => k.id === id);
-  if (!kpi) return;
-  if (!confirm(`Supprimer le KPI « ${kpi.title} » ?`)) return;
-  markDeleted(id, kpi);            // marqueur daté (évite la résurrection via la fusion)
-  favorites = favorites.filter(f => f !== id);
-  saveFavoritesLocalOnly();
-  saveDeletedIds(false);
-  saveManualEntries(false);
-  logActivity("delete", kpi.title, kpi.freq ? `temporalité ${kpi.freq}` : "");
-  rebuildData(true);
-  showToast("🗑 KPI supprimé");
-}
+
 
 // Boutons d'ouverture / actions de la modale
 document.getElementById("addKpiBtn")?.addEventListener("click", () => openKpiModal());
@@ -1757,6 +1783,27 @@ function applyRemoteData(payload, fromSync) {
     Store.writeRaw(Store.KEYS.LOCAL_AT, String(localUpdatedAt));
   }
   if (!fromSync) showToast("✅ Données récupérées depuis le cloud", 2500);
+}
+
+// Récupère et fusionne les données du cloud (bouton « Récupérer »).
+// Utilise le même moteur de fusion : rien n'est écrasé sans arbitrage.
+async function pullFromCloud(manual) {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb) return;
+  setSyncStatusUI("syncing");
+  try {
+    const snap = await syncDocRef(cfg.code).get();
+    if (!snap.exists) {
+      setSyncStatusUI("connected");
+      if (manual) showToast("Aucune donnée cloud pour ce code", 2800);
+      return;
+    }
+    applyRemoteData(snap.data(), false);
+    setSyncStatusUI("connected");
+  } catch (err) {
+    setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
+    if (manual) showToast("❌ Erreur de synchronisation", 3000);
+  }
 }
 
 function listenForRemoteChanges(code) {
