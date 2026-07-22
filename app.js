@@ -2616,6 +2616,51 @@ function exportBackup() {
   showToast("💾 Sauvegarde exportée", 2500);
 }
 
+// Exporte toutes les fiches partagées visibles dans un fichier Excel (.xlsx)
+// RÉ-IMPORTABLE : mêmes colonnes que l'import, et les liens de chaque site
+// sont posés comme hyperliens cliquables (c'est ce que l'import relit).
+function exportExcel() {
+  const rows = data.slice(); // fiches partagées visibles
+  if (!rows.length) { showToast("Aucune fiche à exporter", 2600); return; }
+
+  const siteList = activeSites();
+  // En-têtes : colonnes fixes + une colonne par site (avec son nom lisible)
+  const headers = ["Intitulé", "Type KPI", "Processus", "Fréquence", "Rituel", "Description / Mode de calcul",
+                   ...siteList.map(s => s.name)];
+
+  // Ordre lisible : regroupé par intitulé, puis Mensuelle → Hebdo → Quotidienne
+  const freqRank = f => { const i = STD_FREQS.findIndex(s => s.toLowerCase() === (f || "").toLowerCase()); return i < 0 ? 99 : i; };
+  rows.sort((a, b) => titleKey(a.title).localeCompare(titleKey(b.title)) || freqRank(a.freq) - freqRank(b.freq));
+
+  // Construit la feuille cellule par cellule pour pouvoir poser les hyperliens
+  const aoa = [headers, ...rows.map(k => [
+    k.title || "", k.type || "", k.process || "", k.freq || "", k.ritual || "", k.desc || "",
+    ...siteList.map(s => k[s.key] || "")   // texte = l'URL (et on ajoute l'hyperlien juste après)
+  ])];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Pose les hyperliens sur les colonnes de sites (l'import les relit via cell.l.Target)
+  const firstSiteCol = 6; // 0-based : après les 6 colonnes fixes
+  rows.forEach((k, ri) => {
+    siteList.forEach((s, si) => {
+      const url = k[s.key];
+      if (!url) return;
+      const addr = XLSX.utils.encode_cell({ r: ri + 1, c: firstSiteCol + si }); // +1 pour l'en-tête
+      if (ws[addr]) { ws[addr].l = { Target: url, Tooltip: s.name }; ws[addr].v = url; }
+    });
+  });
+
+  // Largeurs de colonnes agréables
+  ws["!cols"] = [{ wch: 32 }, { wch: 14 }, { wch: 16 }, { wch: 13 }, { wch: 18 }, { wch: 40 },
+                 ...siteList.map(() => ({ wch: 30 }))];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "KPIs");
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `annuaire-kpi-export-${stamp}.xlsx`);
+  showToast(`📊 Export Excel : ${rows.length} ligne(s)`, 2800);
+}
+
 // Restaure une sauvegarde JSON (remplace les données de cet appareil)
 function importBackup(file) {
   const reader = new FileReader();
@@ -2841,6 +2886,7 @@ document.getElementById("variantAnomalies")?.addEventListener("click", e => {
   }
 });
 document.getElementById("exportBackupBtn")?.addEventListener("click", exportBackup);
+document.getElementById("exportExcelBtn")?.addEventListener("click", exportExcel);
 document.getElementById("importBackupBtn")?.addEventListener("click", () => {
   document.getElementById("backupFileInput").click();
 });

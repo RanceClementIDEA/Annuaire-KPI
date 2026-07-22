@@ -525,16 +525,22 @@
     </div>
     <input type="file" id="backupFileInput" accept=".json" style="display:none">
 
-    <div class="modal-links-title">Dernier recours</div>
+    <div class="modal-links-title">Import / Export Excel</div>
     <p class="modal-hint">
-      Ré-importer le fichier Excel remplace toutes les fiches issues d'Excel.
-      Vos fiches créées dans l'application, vos modifications et vos favoris sont conservés.
-      N'utilisez ceci que si les autres méthodes n'ont pas suffi.
+      Exportez toutes vos fiches dans un fichier Excel (sauvegarde lisible et ré-importable),
+      ou importez un fichier Excel pour créer / compléter vos fiches. Les liens de chaque site
+      sont conservés comme liens cliquables.
     </p>
-    <label class="btn-danger last-resort" for="fileInput">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      Importer un fichier Excel
-    </label>
+    <div class="modal-actions">
+      <button id="exportExcelBtn" class="btn-secondary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Exporter en Excel
+      </button>
+      <label class="btn-secondary" for="fileInput" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        Importer un Excel
+      </label>
+    </div>
   </div>
 </div>
 
