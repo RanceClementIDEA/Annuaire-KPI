@@ -197,6 +197,7 @@ logoutBtn.addEventListener("click", () => {
   excelData = [];
   manualEntries = [];
   personalEntries = [];
+  personalTrash = [];
   overrides = {};
   deletedIds = [];
   purgedIds = [];
@@ -457,10 +458,23 @@ function loadPersonalEntries() {
   try {
     personalEntries = JSON.parse(localStorage.getItem("kpiPersonal_" + currentUser)) || [];
   } catch { personalEntries = []; }
+  loadPersonalTrash();
 }
 
 function savePersonalEntries() {
   localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+}
+
+// Corbeille personnelle : propre à chaque utilisateur, stockée en local,
+// JAMAIS synchronisée (comme les fiches personnelles elles-mêmes).
+let personalTrash = [];
+function loadPersonalTrash() {
+  try {
+    personalTrash = JSON.parse(localStorage.getItem("kpiPersonalTrash_" + currentUser)) || [];
+  } catch { personalTrash = []; }
+}
+function savePersonalTrash() {
+  localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
 }
 
 
@@ -528,10 +542,13 @@ function deleteKPI(id) {
   if (!confirm(`Supprimer la fiche « ${ref.title} » ?${detail}${suffix}`)) return;
 
   let touchedShared = false, touchedPerso = false;
+  const deletedAt = now();
   group.forEach(v => {
     const kind = classifyId(v.id);
     if (kind === "perso") {
+      // On déplace la fiche dans la corbeille personnelle (au lieu de l'effacer)
       personalEntries = personalEntries.filter(k => k.id !== v.id);
+      personalTrash.push({ ...v, _deletedAt: deletedAt });
       touchedPerso = true;
     } else if (kind === "excel") {
       markDeleted(v.id, v);
@@ -545,7 +562,7 @@ function deleteKPI(id) {
   });
 
   saveFavoritesLocalOnly();
-  if (touchedPerso) savePersonalEntries();
+  if (touchedPerso) { savePersonalEntries(); savePersonalTrash(); }
   if (touchedShared) { saveOverrides(false); saveDeletedIds(false); saveManualEntries(false); }
   logActivity("delete", ref.title, nbTemp > 1 ? `fiche entière (${nbTemp} temporalités : ${freqs.join(", ")})` : "");
   rebuildData(true);
@@ -557,7 +574,9 @@ function updateRestoreDeletedBtn() {
   const label = document.getElementById("restoreDeletedLabel");
   if (!btn) return;
   const active = deletedIds.filter(d => d.state !== "restored");
-  const nbFiches = new Set(active.map(d => titleKey(d.title))).size;
+  const sharedFiches = new Set(active.map(d => titleKey(d.title))).size;
+  const persoFiches  = new Set(personalTrash.map(v => titleKey(v.title))).size;
+  const nbFiches = sharedFiches + persoFiches;
   btn.style.display = nbFiches ? "" : "none";
   if (label) label.textContent = `Corbeille (${nbFiches})`;
 }
@@ -575,21 +594,33 @@ function renderTrashList() {
   const el = document.getElementById("trashList");
   if (!el) return;
   const active = deletedIds.filter(d => d.state !== "restored");
-  if (!active.length) {
+  if (!active.length && !personalTrash.length) {
     el.innerHTML = `<p class="modal-hint" style="margin:0">La corbeille est vide.</p>`;
     return;
   }
   // Regroupe les temporalités supprimées par intitulé : une seule ligne par fiche
   const groups = new Map();
+
+  // Fiches partagées (annuaire)
   active.forEach(d => {
     const orig = excelData.find(k => k.id === d.id) || manualEntries.find(k => k.id === d.id);
     const title = d.title || (orig ? orig.title : d.id);
-    const key = titleKey(title);
-    if (!groups.has(key)) groups.set(key, { title, ids: [], freqs: [], at: 0, by: "" });
+    const key = "shared:" + titleKey(title);
+    if (!groups.has(key)) groups.set(key, { title, ids: [], freqs: [], at: 0, by: "", perso: false });
     const g = groups.get(key);
     g.ids.push(d.id);
     if (d.freq || (orig && orig.freq)) g.freqs.push(d.freq || orig.freq);
-    if ((d.at || 0) >= g.at) { g.at = d.at || 0; g.by = d.by || ""; } // date/auteur du geste le plus récent
+    if ((d.at || 0) >= g.at) { g.at = d.at || 0; g.by = d.by || ""; }
+  });
+
+  // Fiches personnelles (visibles seulement par l'utilisateur courant)
+  personalTrash.forEach(v => {
+    const key = "perso:" + titleKey(v.title);
+    if (!groups.has(key)) groups.set(key, { title: v.title, ids: [], freqs: [], at: 0, by: "", perso: true });
+    const g = groups.get(key);
+    g.ids.push(v.id);
+    if (v.freq) g.freqs.push(v.freq);
+    if ((v._deletedAt || 0) >= g.at) g.at = v._deletedAt || 0;
   });
 
   const rows = [...groups.values()].sort((a, b) => (b.at || 0) - (a.at || 0));
@@ -599,14 +630,14 @@ function renderTrashList() {
     const tempTxt = nb > 1
       ? `${nb} temporalités (${g.freqs.join(", ")}) · `
       : (g.freqs[0] ? esc(g.freqs[0]) + " · " : "");
+    const auteur = g.perso ? "" : (g.by ? " par " + esc(g.by) : "");
     const row = document.createElement("label");
     row.className = "trash-row";
-    // data-ids regroupe TOUS les identifiants de la fiche
     row.innerHTML = `
-      <input type="checkbox" class="trash-check" data-ids="${esc(g.ids.join(","))}">
+      <input type="checkbox" class="trash-check" data-ids="${esc(g.ids.join(","))}" data-perso="${g.perso ? "1" : "0"}">
       <div class="trash-info">
-        <b>${esc(g.title)}</b>
-        <span>${tempTxt}supprimée le ${fmtDate(g.at)}${g.by ? " par " + esc(g.by) : ""}</span>
+        <b>${g.perso ? "🔒 " : ""}${esc(g.title)}</b>
+        <span>${tempTxt}supprimée le ${fmtDate(g.at)}${auteur}</span>
       </div>`;
     el.appendChild(row);
   });
@@ -619,22 +650,45 @@ function openTrashModal() {
 function closeTrashModal() { document.getElementById("trashModal").classList.add("hidden"); }
 
 function restoreSelectedTrash() {
-  const ids = getTrashSelection();
-  if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
-  const restored = deletedIds.filter(d => ids.includes(d.id));
-  const nbFiches = new Set(restored.map(d => titleKey(d.title))).size;
-  // On marque « restauré » et daté : un autre poste ne pourra pas re-masquer la fiche
-  deletedIds = deletedIds.map(d => ids.includes(d.id)
-    ? { ...d, state: "restored", at: now(), by: currentUser || "?" }
-    : d);
-  saveDeletedIds(false);
-  // Journalise une fois par fiche
-  [...new Set(restored.map(d => d.title))].forEach(t =>
-    logActivity("restore", t, "fiche réaffichée"));
+  const sel = getTrashSelection();
+  if (!sel.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
+
+  // Sépare les identifiants partagés des identifiants personnels
+  const personalIds = personalTrash.filter(v => sel.includes(v.id)).map(v => v.id);
+  const sharedIds   = sel.filter(id => !personalIds.includes(id));
+
+  const titres = new Set();
+
+  // Fiches partagées : marqueur « restauré » daté (converge en synchro)
+  const restoredShared = deletedIds.filter(d => sharedIds.includes(d.id));
+  restoredShared.forEach(d => titres.add(d.title));
+  if (sharedIds.length) {
+    deletedIds = deletedIds.map(d => sharedIds.includes(d.id)
+      ? { ...d, state: "restored", at: now(), by: currentUser || "?" }
+      : d);
+    saveDeletedIds(false);
+  }
+
+  // Fiches personnelles : on les ressort de la corbeille locale
+  if (personalIds.length) {
+    const back = personalTrash.filter(v => personalIds.includes(v.id));
+    back.forEach(v => {
+      titres.add(v.title);
+      const { _deletedAt, ...clean } = v;
+      personalEntries.push(clean);
+    });
+    personalTrash = personalTrash.filter(v => !personalIds.includes(v.id));
+    savePersonalEntries();
+    savePersonalTrash();
+  }
+
+  const nbFiches = new Set([...titres].map(t => titleKey(t))).size;
+  [...titres].forEach(t => logActivity("restore", t, "fiche réaffichée"));
   rebuildData(true);
   renderTrashList();
   showToast(`✅ ${nbFiches} fiche${nbFiches > 1 ? "s" : ""} réaffichée${nbFiches > 1 ? "s" : ""}`);
-  if (!deletedIds.some(d => d.state !== "restored")) closeTrashModal();
+  const stillShared = deletedIds.some(d => d.state !== "restored");
+  if (!stillShared && !personalTrash.length) closeTrashModal();
 }
 
 function getTrashSelection() {
@@ -649,31 +703,46 @@ function getTrashSelection() {
 // Suppression définitive : la fiche disparaît de la corbeille et ne reviendra plus,
 // même après un ré-import du fichier Excel.
 function purgeSelectedTrash() {
-  const ids = getTrashSelection();
-  if (!ids.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
-  const targets = deletedIds.filter(d => ids.includes(d.id));
-  const noms = targets.slice(0, 5).map(d => "• " + (d.title || d.id)).join("\n");
+  const sel = getTrashSelection();
+  if (!sel.length) { showToast("Sélectionnez au moins une fiche", 2400); return; }
+
+  const personalIds = personalTrash.filter(v => sel.includes(v.id)).map(v => v.id);
+  const sharedIds   = sel.filter(id => !personalIds.includes(id));
+
+  const targetsShared = deletedIds.filter(d => sharedIds.includes(d.id));
+  const targetsPerso  = personalTrash.filter(v => personalIds.includes(v.id));
+  const allTargets = [...targetsShared, ...targetsPerso];
+  const noms = allTargets.slice(0, 5).map(d => "• " + (d.title || d.id)).join("\n");
   if (!confirm(
-    `Supprimer DÉFINITIVEMENT ${ids.length} fiche${ids.length > 1 ? "s" : ""} ?\n\n` +
-    noms + (targets.length > 5 ? `\n… et ${targets.length - 5} autre(s)` : "") +
-    "\n\nElles quitteront la corbeille et ne réapparaîtront plus, même après un ré-import Excel. " +
+    `Supprimer DÉFINITIVEMENT ${allTargets.length} élément${allTargets.length > 1 ? "s" : ""} ?\n\n` +
+    noms + (allTargets.length > 5 ? `\n… et ${allTargets.length - 5} autre(s)` : "") +
+    "\n\nIls quitteront la corbeille et ne réapparaîtront plus, même après un ré-import Excel. " +
     "Cette action est irréversible."
   )) return;
 
-  ids.forEach(id => { if (!purgedIds.includes(id)) purgedIds.push(id); });
-  deletedIds = deletedIds.filter(d => !ids.includes(d.id));
-  excelData  = excelData.filter(k => !ids.includes(k.id));
-  ids.forEach(id => delete overrides[id]);
-  favorites = favorites.filter(f => !ids.includes(f));
+  // Partagées : marquées purgées + retirées des données
+  if (sharedIds.length) {
+    sharedIds.forEach(id => { if (!purgedIds.includes(id)) purgedIds.push(id); });
+    deletedIds = deletedIds.filter(d => !sharedIds.includes(d.id));
+    excelData  = excelData.filter(k => !sharedIds.includes(k.id));
+    sharedIds.forEach(id => delete overrides[id]);
+    favorites = favorites.filter(f => !sharedIds.includes(f));
+    savePurged(false);
+    saveDeletedIds(false);
+    saveOverrides(false);
+  }
+  // Personnelles : simplement effacées de la corbeille locale
+  if (personalIds.length) {
+    personalTrash = personalTrash.filter(v => !personalIds.includes(v.id));
+    savePersonalTrash();
+  }
+
   saveFavoritesLocalOnly();
-  savePurged(false);
-  saveDeletedIds(false);
-  saveOverrides(false);
-  targets.forEach(d => logActivity("purge", d.title || d.id, "suppression définitive"));
+  allTargets.forEach(d => logActivity("purge", d.title || d.id, "suppression définitive"));
   rebuildData(true);
   renderTrashList();
-  showToast(`🔥 ${ids.length} fiche${ids.length > 1 ? "s" : ""} définitivement supprimée${ids.length > 1 ? "s" : ""}`, 3000);
-  if (!deletedIds.length) closeTrashModal();
+  showToast(`🔥 ${allTargets.length} élément${allTargets.length > 1 ? "s" : ""} définitivement supprimé${allTargets.length > 1 ? "s" : ""}`, 3000);
+  if (!deletedIds.some(d => d.state !== "restored") && !personalTrash.length) closeTrashModal();
 }
 
 document.getElementById("restoreDeletedBtn")?.addEventListener("click", openTrashModal);
@@ -1308,11 +1377,22 @@ function filterData() {
 /* ============================================
    COMPTEURS
 ============================================ */
+// Nombre de fiches distinctes (regroupées par intitulé), pas de temporalités
+function countFiches(list) {
+  return new Set(list.map(k => titleKey(k.title))).size;
+}
+
 function updateCounts() {
-  countAll.textContent = data.length;
-  countFav.textContent = favorites.length;
+  countAll.textContent = countFiches(data);
+  // Favoris : compter les FICHES ayant au moins une temporalité en favori,
+  // toutes sources confondues (annuaire + personnel)
+  const favTitles = new Set();
+  [...data, ...personalEntries].forEach(k => {
+    if (favorites.includes(k.id)) favTitles.add(titleKey(k.title));
+  });
+  countFav.textContent = favTitles.size;
   const cp = document.getElementById("countPerso");
-  if (cp) cp.textContent = personalEntries.length;
+  if (cp) cp.textContent = countFiches(personalEntries);
 }
 
 /* ============================================
