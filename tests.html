@@ -2645,6 +2645,46 @@ test("envoi : le journal d'activité ne fait pas gonfler l'envoi sans limite", (
   assert.ok(A.get("activityLog.length") <= 400, "le journal est plafonné avant l'envoi");
 });
 
+/* ═══ Nettoyage des fiches déjà supprimées définitivement ═══ */
+
+test("nettoyage : les fiches purgées encore stockées sont libérées", () => {
+  const f = fiches(["Fantôme A", "Mensuelle"], ["Fantôme B", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id, f[1].id] });
+  const retirees = A.run("nettoyerPurgees()");
+  assert.equal(retirees, 2);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Vivante");
+});
+
+test("nettoyage : sans suppression définitive, rien n'est touché", () => {
+  A.reset({ manualEntries: fiches(["A", "Mensuelle"], ["B", "Mensuelle"]) });
+  assert.equal(A.run("nettoyerPurgees()"), 0);
+  assert.equal(A.get("manualEntries.length"), 2);
+});
+
+test("nettoyage : il s'exécute au chargement de l'application", () => {
+  const f = fiches(["Fantôme", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id] });
+  A.run("saveManualEntries(false); savePurged(false); loadSavedFile();");
+  assert.equal(A.get("manualEntries.length"), 1, "la fiche fantôme est libérée dès l'ouverture");
+});
+
+test("nettoyage : le contenu envoyé au cloud est allégé d'autant", () => {
+  const f = fiches(["Fantôme", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id] });
+  A.run("nettoyerPurgees()");
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1);
+  assert.ok(!JSON.stringify(envoi.kpiManual).includes("Fantôme"));
+});
+
+test("nettoyage : une fiche seulement en corbeille n'est PAS libérée", () => {
+  const f = fiches(["En corbeille", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "En corbeille", at: 5, state: "deleted" }] });
+  A.run("nettoyerPurgees()");
+  assert.equal(A.get("manualEntries.length"), 1, "elle doit rester récupérable");
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
@@ -3873,7 +3913,7 @@ const CLE = {
   MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurgedIds",
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
-  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_"
+  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

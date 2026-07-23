@@ -316,7 +316,26 @@ fileInput.addEventListener("change", e => {
 
 function loadSavedFile() {
   migrateExcelToManual();
+  nettoyerPurgees();
   rebuildData(false);
+}
+
+/**
+ * Libère la mémoire des fiches supprimées définitivement.
+ * Une purge ancienne (ou faite avant la correction) pouvait laisser la fiche
+ * stockée : elle restait invisible mais repartait vers le cloud à chaque envoi.
+ * @returns {number} nombre de fiches retirées
+ */
+function nettoyerPurgees() {
+  if (!purgedIds.length || !manualEntries.length) return 0;
+  const avant = manualEntries.length;
+  manualEntries = manualEntries.filter(k => !purgedIds.includes(k.id));
+  const retirees = avant - manualEntries.length;
+  if (retirees) {
+    saveManualEntries(false);
+    console.info(`[Nettoyage] ${retirees} fiche(s) supprimée(s) définitivement libérée(s) de la mémoire.`);
+  }
+  return retirees;
 }
 
 // Migration unique : convertit les anciennes données Excel + surcharges en
