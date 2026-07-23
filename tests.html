@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tests — Annuaire KPI</title>
+<style>
+  :root { --bg:#06202E; --card:#0B2C3D; --line:#164055; --txt:#E6F1F6; --dim:#8FA9B8;
+          --ok:#22C55E; --ko:#EF4444; --acc:#00C4CC; --gold:#FFB020; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--txt);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
+  #resume { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }
+  .carte { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:12px 18px; min-width:110px; }
+  .carte .n { font-size:26px; font-weight:700; }
+  .carte .l { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+  .n.ok { color:var(--ok); } .n.ko { color:var(--ko); } .n.acc { color:var(--acc); }
+  .groupe { background:var(--card); border:1px solid var(--line); border-radius:10px;
+            margin-bottom:14px; overflow:hidden; }
+  .groupe h2 { font-size:14px; margin:0; padding:12px 16px; background:rgba(0,196,204,.08);
+               border-bottom:1px solid var(--line); }
+  .ligne { display:flex; gap:10px; padding:6px 16px; font-size:12.5px;
+           border-bottom:1px solid rgba(255,255,255,.04); align-items:flex-start; }
+  .ligne:last-child { border-bottom:none; }
+  .puce { flex:0 0 auto; font-weight:700; }
+  .puce.ok { color:var(--ok); } .puce.ko { color:var(--ko); }
+  .msg { color:var(--ko); font-size:11.5px; margin-top:3px;
+         font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .etat { padding:14px 18px; border-radius:10px; margin-bottom:20px; font-size:14px; font-weight:600; }
+  .etat.ok { background:rgba(34,197,94,.12); border:1px solid var(--ok); color:var(--ok); }
+  .etat.ko { background:rgba(239,68,68,.12); border:1px solid var(--ko); color:var(--ko); }
+  .etat.att { background:rgba(255,176,32,.12); border:1px solid var(--gold); color:var(--gold); }
+  .note { color:var(--dim); font-size:12px; margin-top:22px; line-height:1.6;
+          border-top:1px solid var(--line); padding-top:14px; }
+  button { background:var(--acc); color:#04141d; border:0; border-radius:8px; padding:9px 16px;
+           font-weight:700; cursor:pointer; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>Tests automatiques — Annuaire KPI</h1>
+<div class="sub">Vérifie le moteur de fusion, la synchronisation et les fonctions de l'application.
+Aucune donnée réelle n'est lue ni modifiée : le stockage et le cloud sont simulés.</div>
+
+<div id="etat" class="etat att">Chargement en cours…</div>
+<div id="resume"></div>
+<div id="sortie"></div>
+<div class="note">
+  Cette page charge <code>app.js</code> et le dossier <code>js/</code> dans un bac à sable :
+  la mémoire du navigateur, Firebase et Excel sont remplacés par des simulations.
+  Vos KPIs et votre synchronisation ne sont jamais touchés.
+  <br><br>
+  <button onclick="location.reload()">↻ Relancer les tests</button>
+</div>
+
+<script>
+/* ══ Mini cadre de test (remplace node:test et node:assert) ══ */
+const __groupes = [];
+let __courant = null;
+function __ouvrirGroupe(nom) { __courant = { nom, tests: [] }; __groupes.push(__courant); }
+function test(nom, fn) { __courant.tests.push({ nom, fn }); }
+
+const assert = {
+  equal(a, b, m) { if (a != b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  strictEqual(a, b, m) { if (a !== b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  notEqual(a, b, m) { if (a == b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
+  ok(v, m) { if (!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
+  match(s, re, m) { if (!re.test(s)) throw new Error(m || `"${s}" ne correspond pas à ${re}`); },
+  deepEqual(a, b, m) {
+    if (JSON.stringify(a) !== JSON.stringify(b))
+      throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`);
+  }
+};
+
+/* ══ Bac à sable : charge le vrai app.js sans effets de bord ══ */
+function __elementFactice() {
+  return new Proxy({}, {
+    get(o, p) {
+      if (p === "style") return {};
+      if (p === "classList") return { add(){}, remove(){}, toggle(){}, contains(){ return false; } };
+      if (p === "dataset") return {};
+      if (p === "children" || p === "childNodes") return [];
+      if (p === "querySelectorAll") return () => [];
+      if (p === "querySelector") return () => null;
+      if (typeof p === "string" && ["addEventListener","appendChild","removeChild","focus","click",
+        "insertBefore","remove","setAttribute","getAttribute","scrollTo","blur"].includes(p)) return () => {};
+      return o[p] === undefined ? "" : o[p];
+    },
+    set(o, p, v) { o[p] = v; return true; }
+  });
+}
+
+async function loadApp() {
+  const fichiers = ["js/storage.js", "js/merge.js", "js/carousel.js", "app.js"];
+  const sources = [];
+  for (const f of fichiers) {
+    const r = await fetch(f + "?anticache=" + Date.now());
+    if (!r.ok) throw new Error("Fichier introuvable : " + f + " (" + r.status + ")");
+    sources.push(await r.text());
+  }
+  // Mémoire simulée : on ne touche JAMAIS au vrai localStorage
+  const memoire = {};
+  const stockageFactice = {
+    getItem: k => (memoire[k] === undefined ? null : memoire[k]),
+    setItem: (k, v) => { memoire[k] = String(v); },
+    removeItem: k => { delete memoire[k]; },
+    key: i => Object.keys(memoire)[i],
+    get length() { return Object.keys(memoire).length; }
+  };
+  const documentFactice = {
+    getElementById: () => __elementFactice(), querySelector: () => __elementFactice(),
+    querySelectorAll: () => [], createElement: () => __elementFactice(),
+    addEventListener() {}, body: __elementFactice(), documentElement: __elementFactice()
+  };
+
+  const corps = sources.join("\n;\n") + "\n; return { run: (c) => eval(c) };";
+  const fabrique = new Function(
+    "document", "localStorage", "navigator", "location", "firebase", "XLSX",
+    "confirm", "alert", "prompt", "FileReader", "Blob", "URL", "fetch",
+    "addEventListener", "removeEventListener", "matchMedia",
+    "setTimeout", "setInterval", "clearTimeout", "console",
+    corps
+  );
+  const noyau = fabrique(
+    documentFactice, stockageFactice,
+    { onLine: true, serviceWorker: { register: () => Promise.resolve() } },
+    { protocol: "https:", origin: "https://test", href: "https://test/" },
+    undefined, { utils: {} },
+    () => false, () => {}, () => null,
+    function () {}, function () {},
+    { createObjectURL: () => "blob:x", revokeObjectURL() {} },
+    () => Promise.resolve({ ok: true, json: () => ({}) }),
+    () => {}, () => {}, () => ({ matches: false, addListener() {}, addEventListener() {} }),
+    () => 0, () => 0, () => {},
+    { log() {}, warn() {}, error() {}, info() {} }
+  );
+
+  const run = c => noyau.run(c);
+  const outils = {
+    run,
+    get: expr => run("JSON.parse(JSON.stringify(" + expr + "))"),
+    reset(opts) {
+      opts = opts || {};
+      const j = v => JSON.stringify(v === undefined ? null : v);
+      run(`
+        manualEntries   = ${j(opts.manualEntries || [])};
+        personalEntries = ${j(opts.personalEntries || [])};
+        personalTrash   = ${j(opts.personalTrash || [])};
+        deletedIds      = ${j(opts.deletedIds || [])};
+        purgedIds       = ${j(opts.purgedIds || [])};
+        activityLog     = ${j(opts.activityLog || [])};
+        favorites       = ${j(opts.favorites || [])};
+        sites           = ${j(opts.sites || [
+          { key: "logistiport", name: "Logistiport", badge: "LOG", _mtime: 1 },
+          { key: "armement", name: "MG + Débords", badge: "MG+D", _mtime: 1 }
+        ])};
+        currentUser = ${j(opts.currentUser || "marie")};
+        data = [];
+        applyingRemoteSync = true;
+        isBooting = true;
+      `);
+      return this;
+    }
+  };
+  // Accès direct aux fonctions : A.titleKey("x") appelle titleKey dans le bac à sable
+  return new Proxy(outils, {
+    get(o, p) {
+      if (p in o) return o[p];
+      if (typeof p !== "string") return undefined;
+      // Ne jamais répondre à then/catch/finally : sinon l'objet serait pris
+      // pour une promesse par « await » et appelé avec des fonctions en argument.
+      if (p === "then" || p === "catch" || p === "finally") return undefined;
+      return (...args) => run(p + "(" + args.map(a => JSON.stringify(a === undefined ? null : a)).join(",") + ")");
+    }
+  });
+}
+
+/* ══ Simulateur d'appareils (synchronisation) ══ */
+/* Banc d'essai : simule des appareils réels avec le VRAI moteur de fusion.
+   Reproduit fidèlement la logique de app.js (buildSyncPayload, mergeRemote*,
+   initialSync, replaceLocalWithRemote, rebuildData). */
+const M = window;
+const STD_FREQS = ["Mensuelle", "Hebdomadaire", "Quotidienne"];
+const titleKey = t => (t || "").toLowerCase().replace(/\s+/g, " ").trim();
+const slugifyId = t => (t || "").toLowerCase().normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "vide";
+const MAX_ACTIVITY = 400;
+
+/* Horloge murale commune : dans la réalité tous les appareils lisent le même
+   temps qui avance. Chaque action obtient donc un instant strictement distinct. */
+let horlogeGlobale = 1000000;
+
+/* --- Le "cloud" : un document unique, comme Firestore --- */
+class Cloud {
+  constructor() { this.doc = null; this.writes = 0; }
+  get() { return this.doc ? JSON.parse(JSON.stringify(this.doc)) : null; }
+  set(payload) { this.doc = JSON.parse(JSON.stringify(payload)); this.writes++; }
+}
+
+/* --- Un appareil --- */
+class Device {
+  constructor(name, cloud, opts = {}) {
+    this.name = name;
+    this.cloud = cloud;
+    this.user = opts.user || "marie";
+    this.clockSkew = opts.clockSkew || 0;   // décalage d'horloge en ms
+    this.online = opts.online !== false;
+    this.manualEntries = [];
+    this.personalEntries = [];
+    this.deletedIds = [];
+    this.purgedIds = [];
+    this.sites = opts.sites ? JSON.parse(JSON.stringify(opts.sites)) : [
+      { key: "logistiport", name: "Logistiport", _mtime: 1 },
+      { key: "armement", name: "MG + Débords", _mtime: 1 }
+    ];
+    this.activityLog = [];
+    this.favorites = [];
+    this.favByUser = {};
+    this.favMeta = {};
+    this.data = [];
+    this.initialSyncDone = false;
+    this.syncBusy = false;
+    this.lastAppliedSyncAt = 0;
+  }
+  now() { horlogeGlobale += 10; return horlogeGlobale + this.clockSkew; }
+  stamp(e) { e._mtime = this.now(); e._by = this.user; return e; }
+
+  isDeleted(id) { return M.isDeletedIn(this.deletedIds, id); }
+  isPurged(id) { return this.purgedIds.includes(id); }
+  rebuildData() {
+    this.data = this.manualEntries.filter(d => !this.isDeleted(d.id) && !this.isPurged(d.id));
+  }
+
+  /* --- Actions utilisateur --- */
+  createKpi(title, freq, links = {}) {
+    const e = { id: "kpi_" + slugifyId(title) + "_" + slugifyId(freq), manual: true, title, freq, ...links };
+    this.stamp(e);
+    this.manualEntries = this.manualEntries.filter(k => k.id !== e.id);
+    this.manualEntries.push(e);
+    this.rebuildData();
+    return e;
+  }
+  editKpi(id, changes) {
+    const e = this.manualEntries.find(k => k.id === id);
+    if (!e) return null;
+    Object.assign(e, changes);
+    this.stamp(e);
+    this.rebuildData();
+    return e;
+  }
+  deleteFiche(title) {
+    const key = titleKey(title);
+    const group = this.data.filter(k => titleKey(k.title) === key);
+    group.forEach(v => {
+      this.deletedIds = this.deletedIds.filter(d => d.id !== v.id);
+      this.deletedIds.push({ id: v.id, title: v.title, freq: v.freq, at: this.now(), by: this.user, state: "deleted" });
+    });
+    this.rebuildData();
+    return group.length;
+  }
+  restoreFiche(title) {
+    const key = titleKey(title);
+    const ids = this.deletedIds.filter(d => titleKey(d.title) === key).map(d => d.id);
+    this.deletedIds = this.deletedIds.map(d => ids.includes(d.id)
+      ? { ...d, state: "restored", at: this.now(), by: this.user } : d);
+    this.rebuildData();
+  }
+  addSite(key, name) {
+    this.sites = this.sites.filter(s => s.key !== key);
+    this.sites.push({ key, name, _mtime: this.now(), _deleted: false });
+  }
+  removeSite(key) {
+    const s = this.sites.find(x => x.key === key);
+    if (s) { s._deleted = true; s._mtime = this.now(); }
+  }
+  activeSites() { return this.sites.filter(s => s && !s._deleted); }
+  toggleFavorite(id) {
+    if (this.favorites.includes(id)) this.favorites = this.favorites.filter(f => f !== id);
+    else this.favorites.push(id);
+    this.favMeta[this.user] = this.now();
+  }
+  logActivity(action, title) {
+    this.activityLog.unshift({ at: this.now(), by: this.user, action, title, detail: "" });
+    this.activityLog = this.activityLog.slice(0, MAX_ACTIVITY);
+  }
+
+  /* --- Synchronisation (copie fidèle de app.js) --- */
+  buildSyncPayload() {
+    this.favByUser[this.user] = this.favorites;
+    this.favMeta[this.user] = this.favMeta[this.user] || this.now();
+    return {
+      kpiManual: JSON.parse(JSON.stringify(this.manualEntries)),
+      kpiDeleted: JSON.parse(JSON.stringify(this.deletedIds)),
+      kpiSites: JSON.parse(JSON.stringify(this.sites)),
+      kpiPurged: [...this.purgedIds],
+      kpiActivity: JSON.parse(JSON.stringify(this.activityLog)),
+      favoritesByUser: JSON.parse(JSON.stringify(this.favByUser)),
+      favoritesMeta: JSON.parse(JSON.stringify(this.favMeta)),
+      updatedAt: this.now()
+    };
+  }
+  mergeRemoteContent(payload) {
+    let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual] : [];
+    const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel : [];
+    if (oldExcel.length) {
+      const overr = payload.kpiOverrides || {};
+      oldExcel.forEach(d => {
+        const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+        const id = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+        if (!remoteManual.some(m => m.id === id)) {
+          remoteManual.push({ ...merged, id, manual: true, _mtime: merged._mtime || 0 });
+        }
+      });
+    }
+    if (remoteManual.length || Array.isArray(payload.kpiManual)) {
+      this.manualEntries = M.mergeEntries(this.manualEntries, remoteManual);
+    }
+    if (Array.isArray(payload.kpiDeleted)) {
+      this.deletedIds = M.mergeDeleted(this.deletedIds, M.normalizeDeleted(payload.kpiDeleted));
+    }
+    if (Array.isArray(payload.kpiPurged)) {
+      this.purgedIds = [...new Set([...this.purgedIds, ...payload.kpiPurged])];
+    }
+    if (Array.isArray(payload.kpiActivity)) {
+      this.activityLog = M.mergeActivity(this.activityLog, payload.kpiActivity, MAX_ACTIVITY);
+    }
+  }
+  mergeRemoteSites(payload) {
+    if (!Array.isArray(payload.kpiSites) || !payload.kpiSites.length) return;
+    const map = new Map();
+    payload.kpiSites.forEach(s => { if (s && s.key) map.set(s.key, s); });
+    this.sites.forEach(s => {
+      if (!s || !s.key) return;
+      const other = map.get(s.key);
+      if (!other || (s._mtime || 0) >= (other._mtime || 0)) map.set(s.key, s);
+    });
+    this.sites = [...map.values()];
+  }
+  mergeRemoteFavorites(payload) {
+    if (!payload.favoritesByUser) return;
+    const r = M.mergeFavorites(this.favByUser, this.favMeta, payload.favoritesByUser, payload.favoritesMeta);
+    this.favByUser = r.map; this.favMeta = r.meta;
+    if (this.favByUser[this.user]) this.favorites = this.favByUser[this.user];
+  }
+  applyRemoteData(payload) {
+    this.mergeRemoteContent(payload);
+    this.mergeRemoteSites(payload);
+    this.mergeRemoteFavorites(payload);
+    this.rebuildData();
+    if (payload.updatedAt) this.lastAppliedSyncAt = payload.updatedAt;
+  }
+  hasLocalDataNewerThan(remote) {
+    const plusRecent = (locaux, distants, cle, date) => {
+      const map = new Map((distants || []).map(x => [x[cle], x[date] || 0]));
+      return (locaux || []).some(x => {
+        const t = map.get(x[cle]);
+        return t === undefined || (x[date] || 0) > t;
+      });
+    };
+    if (plusRecent(this.manualEntries, remote.kpiManual, "id", "_mtime")) return true;
+    if (plusRecent(this.deletedIds, remote.kpiDeleted, "id", "at")) return true;
+    if (plusRecent(this.sites, remote.kpiSites, "key", "_mtime")) return true;
+    const dp = new Set(remote.kpiPurged || []);
+    if ((this.purgedIds || []).some(id => !dp.has(id))) return true;
+    return false;
+  }
+  pushToCloud() {
+    if (!this.online) return false;
+    this.cloud.set(this.buildSyncPayload());
+    return true;
+  }
+  /* Séquence exacte de démarrage */
+  initialSync() {
+    if (!this.online || this.syncBusy) return;
+    this.syncBusy = true;
+    const remote = this.cloud.get();
+    if (!remote) { this.pushToCloud(); }
+    else {
+      this.lastAppliedSyncAt = remote.updatedAt || 0;
+      this.applyRemoteData(remote);
+      if (this.hasLocalDataNewerThan(remote)) this.pushToCloud();
+    }
+    this.initialSyncDone = true;
+    this.syncBusy = false;
+  }
+  /* Bouton "Récupérer" = remplacement réel */
+  pullReplace() {
+    const payload = this.cloud.get();
+    if (!payload) return false;
+    this.manualEntries = payload.kpiManual || [];
+    this.deletedIds = M.normalizeDeleted(payload.kpiDeleted || []);
+    this.purgedIds = payload.kpiPurged || [];
+    if (payload.kpiSites?.length) this.sites = payload.kpiSites;
+    if (payload.kpiActivity) this.activityLog = payload.kpiActivity;
+    if (payload.favoritesByUser) {
+      this.favByUser = payload.favoritesByUser;
+      if (this.favByUser[this.user]) this.favorites = this.favByUser[this.user];
+    }
+    this.rebuildData();
+    this.lastAppliedSyncAt = payload.updatedAt || 0;
+    return true;
+  }
+  /* Bouton "Cet appareil fait référence" */
+  forceMaster() {
+    const t = this.now();
+    this.manualEntries.forEach(k => { k._mtime = t; });
+    this.sites.forEach(s => { s._mtime = t; });
+    this.pushToCloud();
+  }
+  /* Écoute temps réel (onSnapshot) */
+  onRemoteChange() {
+    if (!this.initialSyncDone || this.syncBusy || !this.online) return;
+    const payload = this.cloud.get();
+    if (!payload || payload.updatedAt === this.lastAppliedSyncAt) return;
+    this.syncBusy = true;
+    this.lastAppliedSyncAt = payload.updatedAt;
+    this.applyRemoteData(payload);
+    this.syncBusy = false;
+  }
+
+  /* --- Observation --- */
+  kpiCount() { return new Set(this.data.map(k => titleKey(k.title))).size; }
+  variantCount() { return this.data.length; }
+  signature() {
+    return this.data.map(k => k.id + "=" + JSON.stringify(
+      Object.keys(k).filter(x => !x.startsWith("_")).sort().map(x => x + ":" + k[x])
+    )).sort().join("|");
+  }
+  siteSignature() { return this.activeSites().map(s => s.key).sort().join(","); }
+}
+
+function avancerHorloge(ms) { horlogeGlobale += ms; }
+
+
+/* ══ Les tests ══ */
+let A = null;
+__ouvrirGroupe("Moteur de fusion");
+/* ============================================================
+   Tests du moteur de fusion — lanceur natif de Node
+   Exécution :  node --test
+   Aucune dépendance à installer.
+   ============================================================ */
+
+
+
+/* ─── mergeEntries ─────────────────────────────────────────── */
+
+test("deux modifications concurrentes sur des KPIs différents sont toutes conservées", () => {
+  const local  = [{ id: "k1", title: "modifié par Marie", _mtime: 200 },
+                  { id: "k2", title: "origine",           _mtime: 100 }];
+  const remote = [{ id: "k1", title: "origine",           _mtime: 100 },
+                  { id: "k2", title: "modifié par Jean",  _mtime: 210 }];
+  const r = mergeEntries(local, remote);
+  assert.equal(r.length, 2);
+  assert.equal(r.find(e => e.id === "k1").title, "modifié par Marie");
+  assert.equal(r.find(e => e.id === "k2").title, "modifié par Jean");
+});
+
+test("sur un même KPI, la version la plus récente l'emporte", () => {
+  const r = mergeEntries(
+    [{ id: "k1", title: "récent", _mtime: 300 }],
+    [{ id: "k1", title: "ancien", _mtime: 250 }]
+  );
+  assert.equal(r[0].title, "récent");
+});
+
+test("à égalité de date, la version locale est conservée (évite les allers-retours)", () => {
+  const r = mergeEntries(
+    [{ id: "k1", title: "local",  _mtime: 100 }],
+    [{ id: "k1", title: "distant", _mtime: 100 }]
+  );
+  assert.equal(r[0].title, "local");
+});
+
+test("une fiche sans date est traitée comme la plus ancienne", () => {
+  const r = mergeEntries(
+    [{ id: "k1", title: "sans date" }],
+    [{ id: "k1", title: "datée", _mtime: 50 }]
+  );
+  assert.equal(r[0].title, "datée");
+});
+
+test("la fusion converge : après échange, les deux postes ont le même état", () => {
+  const a = [{ id: "x", _mtime: 1 }, { id: "z", _mtime: 5 }];
+  const b = [{ id: "y", _mtime: 2 }, { id: "z", _mtime: 9 }];
+  const cloud = mergeEntries(a, b);
+  const key = l => l.map(e => e.id + ":" + e._mtime).sort().join(",");
+  assert.equal(key(mergeEntries(a, cloud)), key(mergeEntries(b, cloud)));
+});
+
+test("les entrées invalides sont ignorées sans planter", () => {
+  const r = mergeEntries([null, { titre: "sans id" }, { id: "ok" }], undefined);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].id, "ok");
+});
+
+/* ─── mergeDeleted : suppressions et restaurations ──────────── */
+
+test("une fiche supprimée ne ressuscite pas via la fusion", () => {
+  const r = mergeDeleted([{ id: "k9", at: 500, state: "deleted" }], []);
+  assert.equal(isDeletedIn(r, "k9"), true);
+});
+
+test("une restauration plus récente annule une suppression antérieure", () => {
+  const r = mergeDeleted(
+    [{ id: "k9", at: 800, state: "restored" }],
+    [{ id: "k9", at: 400, state: "deleted" }]
+  );
+  assert.equal(isDeletedIn(r, "k9"), false);
+});
+
+test("une suppression plus récente l'emporte sur une restauration antérieure", () => {
+  const r = mergeDeleted(
+    [{ id: "k9", at: 400, state: "restored" }],
+    [{ id: "k9", at: 600, state: "deleted" }]
+  );
+  assert.equal(isDeletedIn(r, "k9"), true);
+});
+
+test("les marqueurs de restauration sont conservés (sinon la fiche redisparaîtrait)", () => {
+  const r = mergeDeleted([{ id: "k9", at: 800, state: "restored" }], []);
+  assert.equal(r.length, 1, "le marqueur doit survivre à la fusion");
+});
+
+/* ─── normalizeDeleted : compatibilité ascendante ───────────── */
+
+test("l'ancien format (tableau de chaînes) est migré sans perte", () => {
+  const r = normalizeDeleted(["a", "b"]);
+  assert.equal(r.length, 2);
+  assert.equal(r[0].id, "a");
+  assert.equal(r[0].state, "deleted");
+});
+
+test("un état existant n'est pas écrasé par la normalisation", () => {
+  const r = normalizeDeleted([{ id: "a", state: "restored", at: 10 }]);
+  assert.equal(r[0].state, "restored");
+});
+
+test("une valeur non tableau renvoie une liste vide", () => {
+  assert.deepEqual(normalizeDeleted(null), []);
+  assert.deepEqual(normalizeDeleted("nimportequoi"), []);
+});
+
+/* ─── mergeOverrides ───────────────────────────────────────── */
+
+test("les surcharges fusionnent clé par clé", () => {
+  const r = mergeOverrides(
+    { k1: { title: "local", _mtime: 200 } },
+    { k2: { title: "distant", _mtime: 100 } }
+  );
+  assert.equal(Object.keys(r).length, 2);
+  assert.equal(r.k1.title, "local");
+  assert.equal(r.k2.title, "distant");
+});
+
+/* ─── mergeFavorites ───────────────────────────────────────── */
+
+test("les favoris d'un collègue ne sont pas effacés par notre envoi", () => {
+  const { map } = mergeFavorites(
+    { marie: ["a", "b"] }, { marie: 900 },
+    { jean: ["c"], marie: ["a"] }, { jean: 800, marie: 700 }
+  );
+  assert.deepEqual(map.marie, ["a", "b"], "Marie garde ses favoris récents");
+  assert.deepEqual(map.jean, ["c"], "Jean garde les siens");
+});
+
+test("des favoris distants plus récents remplacent les nôtres", () => {
+  const { map } = mergeFavorites(
+    { marie: ["ancien"] }, { marie: 100 },
+    { marie: ["recent"] }, { marie: 900 }
+  );
+  assert.deepEqual(map.marie, ["recent"]);
+});
+
+/* ─── mergeActivity ────────────────────────────────────────── */
+
+test("les journaux fusionnent sans doublon, plus récent d'abord", () => {
+  const a = [{ at: 2, by: "marie", action: "create", title: "A" }];
+  const b = [{ at: 2, by: "marie", action: "create", title: "A" },
+             { at: 3, by: "luc",   action: "delete", title: "C" }];
+  const r = mergeActivity(a, b, 400);
+  assert.equal(r.length, 2, "le doublon exact est éliminé");
+  assert.equal(r[0].title, "C", "le plus récent est en tête");
+});
+
+test("le journal est plafonné au maximum demandé", () => {
+  const big = Array.from({ length: 50 }, (_, i) => ({ at: i, by: "u", action: "update", title: "T" + i }));
+  assert.equal(mergeActivity(big, [], 10).length, 10);
+});
+
+__ouvrirGroupe("Synchronisation multi-appareils");
+/* Tests de synchronisation multi-appareils.
+   Exécution : node --test sync.test.js  */
+
+
+
+/* ═══ 1. Démarrage et premier échange ═══ */
+
+test("cloud vide : le premier appareil y dépose ses données", () => {
+  const c = new Cloud(); const a = new Device("A", c);
+  a.createKpi("KPI 1", "Mensuelle", { logistiport: "u1" });
+  a.initialSync();
+  assert.ok(c.get(), "le cloud doit contenir un document");
+  assert.equal(c.get().kpiManual.length, 1);
+});
+
+test("nouvel appareil vierge : reçoit tout du cloud, n'écrase rien", () => {
+  const c = new Cloud();
+  const a = new Device("A", c);
+  a.createKpi("KPI 1", "Mensuelle", { logistiport: "u1" });
+  a.initialSync();
+  const writesAvant = c.writes;
+
+  const b = new Device("B", c);
+  b.initialSync();
+  assert.equal(b.variantCount(), 1, "B doit recevoir la fiche");
+  assert.equal(c.writes, writesAvant, "B ne doit PAS réécrire le cloud (rien de plus récent)");
+});
+
+test("un appareil ne réécrit pas le cloud à chaque ouverture", () => {
+  const c = new Cloud(); const a = new Device("A", c);
+  a.createKpi("KPI 1", "Mensuelle"); a.initialSync();
+  const w = c.writes;
+  a.initialSync(); a.initialSync(); a.initialSync();
+  assert.equal(c.writes, w, "aucune écriture supplémentaire sans modification");
+});
+
+/* ═══ 2. Modifications concurrentes ═══ */
+
+test("deux appareils modifient des KPIs différents : les deux sont conservés", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("KPI A", "Mensuelle"); a.initialSync();
+  b.initialSync();
+  a.createKpi("KPI B", "Mensuelle"); a.pushToCloud();
+  b.createKpi("KPI C", "Mensuelle"); b.onRemoteChange(); b.pushToCloud();
+  a.onRemoteChange();
+  assert.equal(a.kpiCount(), 3, "A voit les 3 KPIs");
+  assert.equal(b.kpiCount(), 3, "B voit les 3 KPIs");
+});
+
+test("deux appareils modifient LE MÊME KPI : le plus récent gagne, pas de doublon", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("KPI X", "Mensuelle", { logistiport: "v1" });
+  a.initialSync(); b.initialSync();
+  b.editKpi(k.id, { logistiport: "depuis-B" });   // B modifie en premier
+  a.editKpi(k.id, { logistiport: "depuis-A" });   // A modifie ensuite (plus récent)
+  b.pushToCloud(); a.onRemoteChange(); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(a.variantCount(), 1, "pas de doublon chez A");
+  assert.equal(b.variantCount(), 1, "pas de doublon chez B");
+  assert.equal(a.data[0].logistiport, b.data[0].logistiport, "les deux convergent");
+});
+
+test("un lien ajouté sur un appareil arrive sur l'autre", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("Volumétrie distribution", "Mensuelle", { logistiport: "u-log" });
+  a.initialSync(); b.initialSync();
+  a.editKpi(k.id, { armement: "u-MG" });
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.data[0].armement, "u-MG", "le lien MG doit arriver sur B");
+});
+
+/* ═══ 3. Suppressions et restaurations ═══ */
+
+test("une fiche supprimée sur A disparaît sur B", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("KPI A", "Mensuelle"); a.createKpi("KPI B", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  assert.equal(b.kpiCount(), 2);
+  a.deleteFiche("KPI A"); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1, "B ne doit plus voir KPI A");
+});
+
+test("une fiche supprimée ne ressuscite pas au cycle suivant", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("KPI A", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("KPI A"); a.pushToCloud();
+  b.onRemoteChange(); b.pushToCloud();   // B renvoie
+  a.onRemoteChange();                     // A reçoit son propre écho
+  assert.equal(a.kpiCount(), 0, "toujours supprimée chez A");
+  assert.equal(b.kpiCount(), 0, "toujours supprimée chez B");
+});
+
+test("restauration depuis la corbeille : la fiche revient partout", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("KPI A", "Mensuelle", { logistiport: "u1" });
+  a.initialSync(); b.initialSync();
+  a.deleteFiche("KPI A"); a.pushToCloud(); b.onRemoteChange();
+  a.restoreFiche("KPI A"); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1, "la fiche est réaffichée sur B");
+  assert.equal(b.data[0].logistiport, "u1", "avec ses données intactes");
+});
+
+test("suppression sur A pendant modification sur B : le geste le plus récent gagne", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("KPI X", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  b.editKpi(k.id, { logistiport: "modifié" });  // B modifie
+  a.deleteFiche("KPI X");                        // A supprime APRÈS
+  b.pushToCloud(); a.onRemoteChange(); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(a.kpiCount(), 0, "la suppression (plus récente) l'emporte chez A");
+  assert.equal(b.kpiCount(), 0, "et chez B");
+});
+
+test("suppression d'une fiche entière retire toutes ses temporalités", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  ["Mensuelle", "Hebdomadaire", "Quotidienne"].forEach(f => a.createKpi("KPI A", f));
+  a.createKpi("KPI B", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  assert.equal(b.variantCount(), 4);
+  a.deleteFiche("KPI A"); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.variantCount(), 1, "seules les 3 variantes de KPI A partent");
+  assert.equal(b.kpiCount(), 1);
+});
+
+/* ═══ 4. Sites (périmètres) ═══ */
+
+test("deux appareils ajoutent chacun un site : les deux coexistent", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.addSite("qualite", "Qualité");
+  b.addSite("securite", "Sécurité");
+  a.pushToCloud(); b.onRemoteChange(); b.pushToCloud(); a.onRemoteChange();
+  assert.ok(a.siteSignature().includes("qualite") && a.siteSignature().includes("securite"), "A voit les deux");
+  assert.equal(a.siteSignature(), b.siteSignature(), "A et B ont la même liste");
+});
+
+test("un site supprimé ne ressuscite pas depuis l'autre appareil", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.addSite("qualite", "Qualité"); a.createKpi("K", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  assert.ok(b.siteSignature().includes("qualite"));
+  a.removeSite("qualite"); a.pushToCloud(); b.onRemoteChange();
+  assert.ok(!b.siteSignature().includes("qualite"), "le site reste supprimé sur B");
+  b.pushToCloud(); a.onRemoteChange();
+  assert.ok(!a.siteSignature().includes("qualite"), "et ne revient pas sur A");
+});
+
+/* ═══ 5. Favoris ═══ */
+
+test("les favoris d'un utilisateur n'effacent pas ceux d'un autre", () => {
+  const c = new Cloud();
+  const a = new Device("A", c, { user: "marie" });
+  const b = new Device("B", c, { user: "jean" });
+  const k1 = a.createKpi("K1", "Mensuelle"); const k2 = a.createKpi("K2", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  a.toggleFavorite(k1.id); a.pushToCloud();
+  b.onRemoteChange(); b.toggleFavorite(k2.id); b.pushToCloud();
+  a.onRemoteChange();
+  assert.deepEqual(a.favorites, [k1.id], "Marie garde son favori");
+  assert.deepEqual(b.favByUser["marie"], [k1.id], "et Jean voit celui de Marie");
+  assert.deepEqual(b.favorites, [k2.id], "Jean garde le sien");
+});
+
+/* ═══ 6. Hors-ligne et reprise ═══ */
+
+test("un appareil hors-ligne rattrape tout à la reconnexion", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync(); b.initialSync();
+  b.online = false;                       // B part hors-ligne
+  a.createKpi("K2", "Mensuelle"); a.createKpi("K3", "Mensuelle"); a.pushToCloud();
+  b.onRemoteChange();                     // ne reçoit rien
+  assert.equal(b.kpiCount(), 1, "B est resté en arrière");
+  b.online = true; b.onRemoteChange();
+  assert.equal(b.kpiCount(), 3, "B rattrape tout");
+});
+
+test("modifications hors-ligne des deux côtés : rien n'est perdu à la reconnexion", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync(); b.initialSync();
+  b.online = false;
+  a.createKpi("KPI-de-A", "Mensuelle"); a.pushToCloud();
+  b.createKpi("KPI-de-B", "Mensuelle");     // créé hors-ligne
+  b.online = true; b.initialSyncDone = false; b.initialSync();  // reconnexion
+  a.onRemoteChange();
+  assert.equal(b.kpiCount(), 3, "B a les trois");
+  assert.equal(a.kpiCount(), 3, "A aussi");
+});
+
+/* ═══ 7. Décalage d'horloge ═══ */
+
+test("un appareil à l'horloge en avance n'écrase pas tout", () => {
+  const c = new Cloud();
+  const a = new Device("A", c);
+  const b = new Device("B", c, { clockSkew: 3600000 }); // B a 1h d'avance
+  const k = a.createKpi("K", "Mensuelle", { logistiport: "correct" });
+  a.initialSync(); b.initialSync();
+  // A fait la bonne modification, B ne touche à rien
+  a.editKpi(k.id, { logistiport: "nouvelle-valeur" }); a.pushToCloud();
+  b.onRemoteChange();
+  assert.equal(b.data[0].logistiport, "nouvelle-valeur",
+    "B accepte la modif de A même si son horloge est en avance");
+});
+
+/* ═══ 8. Convergence et idempotence ═══ */
+
+test("convergence : après échanges croisés, les deux appareils sont identiques", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle", { logistiport: "a1" });
+  a.createKpi("K2", "Hebdomadaire", { armement: "a2" });
+  a.initialSync(); b.initialSync();
+  b.createKpi("K3", "Quotidienne", { logistiport: "b3" });
+  b.pushToCloud(); a.onRemoteChange();
+  a.editKpi("kpi_k1_mensuelle", { armement: "ajouté-par-A" });
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(a.signature(), b.signature(), "états strictement identiques");
+});
+
+test("idempotence : resynchroniser plusieurs fois ne change plus rien", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync(); b.initialSync();
+  b.createKpi("K2", "Mensuelle"); b.pushToCloud(); a.onRemoteChange(); a.pushToCloud();
+  const sigA = a.signature(), sigB = b.signature();
+  for (let i = 0; i < 5; i++) { a.onRemoteChange(); b.onRemoteChange(); a.pushToCloud(); b.pushToCloud(); }
+  assert.equal(a.signature(), sigA, "A est stable");
+  assert.equal(b.signature(), sigB, "B est stable");
+  assert.equal(a.signature(), b.signature(), "et identiques");
+});
+
+test("trois appareils convergent", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c), d = new Device("C", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync();
+  b.initialSync(); d.initialSync();
+  a.createKpi("KA", "Mensuelle"); a.pushToCloud();
+  b.onRemoteChange(); b.createKpi("KB", "Mensuelle"); b.pushToCloud();
+  d.onRemoteChange(); d.createKpi("KD", "Mensuelle"); d.pushToCloud();
+  a.onRemoteChange(); b.onRemoteChange();
+  assert.equal(a.kpiCount(), 4); assert.equal(b.kpiCount(), 4); assert.equal(d.kpiCount(), 4);
+  assert.equal(a.signature(), b.signature());
+  assert.equal(b.signature(), d.signature());
+});
+
+/* ═══ 9. Boutons de dépannage ═══ */
+
+test("« Récupérer » remplace vraiment les mauvaises données locales", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Bon KPI", "Mensuelle", { armement: "bon-lien" });
+  a.initialSync();
+  // B a de mauvaises données très récentes (qui gagneraient une fusion)
+  b.createKpi("Mauvais KPI", "Mensuelle");
+  avancerHorloge(500000);
+  b.createKpi("Bon KPI", "Mensuelle", { armement: "" });
+  b.pullReplace();
+  assert.equal(b.kpiCount(), 1, "seul le KPI du cloud subsiste");
+  assert.equal(b.data[0].title, "Bon KPI");
+  assert.equal(b.data[0].armement, "bon-lien", "avec le bon lien");
+});
+
+test("« Cet appareil fait référence » impose ses données au cloud", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  b.clock = 999999;                       // B a des dates très en avance
+  b.createKpi("Données de B", "Mensuelle"); b.initialSync();
+  a.createKpi("Données de A", "Mensuelle");
+  a.forceMaster();                        // A s'impose
+  b.initialSyncDone = true; b.pullReplace();
+  assert.equal(b.data[0].title, "Données de A", "B reçoit les données de A");
+});
+
+test("après « fait référence », l'autre appareil ne réimpose pas ses vieilles données", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  avancerHorloge(500000);
+  b.createKpi("Vieux KPI de B", "Mensuelle"); b.initialSync();
+  a.createKpi("Bon KPI", "Mensuelle"); a.forceMaster();
+  b.pullReplace();                        // B se remet à niveau
+  b.initialSyncDone = false; b.initialSync();  // puis redémarre
+  a.onRemoteChange();
+  assert.equal(a.kpiCount(), 1, "A garde son unique KPI");
+  assert.equal(a.data[0].title, "Bon KPI", "et pas celui de B");
+});
+
+/* ═══ 10. Compatibilité et cas limites ═══ */
+
+test("un ancien payload (format Excel) est converti sans doublon", () => {
+  const c = new Cloud();
+  c.set({
+    kpiExcel: [{ id: "ancien_3", title: "Volumétrie", freq: "Mensuelle", logistiport: "u1", _mtime: 100 }],
+    kpiOverrides: { "ancien_3": { armement: "u-MG", _mtime: 200 } },
+    kpiManual: [], kpiDeleted: [], updatedAt: 200
+  });
+  const a = new Device("A", c);
+  a.initialSync();
+  assert.equal(a.variantCount(), 1, "une seule fiche, pas de doublon");
+  assert.equal(a.data[0].armement, "u-MG", "la modification est bien appliquée");
+});
+
+test("le journal d'activité fusionne sans doublon", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle"); a.logActivity("create", "K"); a.initialSync();
+  b.initialSync(); b.logActivity("update", "K"); b.pushToCloud();
+  a.onRemoteChange(); a.pushToCloud(); b.onRemoteChange();
+  const cles = a.activityLog.map(e => e.at + e.action + e.title);
+  assert.equal(new Set(cles).size, cles.length, "aucune entrée en double");
+  assert.equal(a.activityLog.length, b.activityLog.length, "même journal des deux côtés");
+});
+
+test("les fiches personnelles ne partent jamais dans le cloud", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Partagé", "Mensuelle");
+  a.personalEntries.push({ id: "perso_1", title: "Mon KPI privé", freq: "Mensuelle", personal: true });
+  a.initialSync();
+  const payload = c.get();
+  const tout = JSON.stringify(payload);
+  assert.ok(!tout.includes("Mon KPI privé"), "aucune fiche perso dans le cloud");
+  b.initialSync();
+  assert.equal(b.personalEntries.length, 0, "B ne reçoit aucune fiche perso");
+});
+
+test("50 modifications alternées : aucun doublon ni perte", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Base", "Mensuelle"); a.initialSync(); b.initialSync();
+  for (let i = 0; i < 25; i++) {
+    a.createKpi("KPI-A-" + i, "Mensuelle"); a.pushToCloud(); b.onRemoteChange();
+    b.createKpi("KPI-B-" + i, "Mensuelle"); b.pushToCloud(); a.onRemoteChange();
+  }
+  assert.equal(a.kpiCount(), 51, "A a bien 1 + 25 + 25 KPIs");
+  assert.equal(b.kpiCount(), 51, "B aussi");
+  const ids = a.data.map(k => k.id);
+  assert.equal(new Set(ids).size, ids.length, "aucun identifiant en double");
+  assert.equal(a.signature(), b.signature(), "états identiques");
+});
+
+/* ═══ 11. Cas voisins du bug corrigé (apports non renvoyés) ═══ */
+
+test("un site ajouté hors-ligne est bien renvoyé à la reconnexion", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle"); a.initialSync(); b.initialSync();
+  b.online = false;
+  a.createKpi("Autre", "Mensuelle"); a.pushToCloud();  // le cloud devient "plus récent"
+  b.addSite("qualite", "Qualité");                      // B ne change QU'UN SITE
+  b.online = true; b.initialSyncDone = false; b.initialSync();
+  a.onRemoteChange();
+  assert.ok(a.siteSignature().includes("qualite"), "A doit recevoir le site ajouté par B");
+});
+
+test("une suppression faite hors-ligne est bien renvoyée", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("À supprimer", "Mensuelle"); a.createKpi("K2", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  b.online = false;
+  a.createKpi("K3", "Mensuelle"); a.pushToCloud();     // cloud plus récent
+  b.deleteFiche("À supprimer");                         // B ne fait QU'UNE suppression
+  b.online = true; b.initialSyncDone = false; b.initialSync();
+  a.onRemoteChange();
+  assert.ok(!a.data.some(k => k.title === "À supprimer"), "la suppression de B doit arriver sur A");
+});
+
+test("un appareil en retard qui modifie une fiche ancienne renvoie bien sa modification", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("Volumétrie", "Mensuelle", { logistiport: "u1" });
+  a.initialSync(); b.initialSync();
+  a.createKpi("Récent", "Mensuelle"); a.pushToCloud();  // A crée du très récent
+  b.editKpi(k.id, { armement: "MG-par-B" });            // B modifie une fiche ANCIENNE
+  b.initialSyncDone = false; b.initialSync();            // B redémarre et fusionne
+  a.onRemoteChange();
+  const vol = a.data.find(x => x.title === "Volumétrie");
+  assert.equal(vol.armement, "MG-par-B", "la modification de B doit remonter");
+});
+
+test("aucune écriture inutile : appareil strictement à jour", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle"); a.addSite("qualite", "Qualité"); a.deleteFiche("K");
+  a.initialSync();
+  b.initialSync();
+  const w = c.writes;
+  b.initialSyncDone = false; b.initialSync();
+  b.initialSyncDone = false; b.initialSync();
+  assert.equal(c.writes, w, "un appareil déjà à jour ne réécrit jamais le cloud");
+});
+
+/* ═══ 12. Scénarios de stress ═══ */
+
+test("va-et-vient hors-ligne répété sur trois appareils", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c), d = new Device("C", c);
+  a.createKpi("Base", "Mensuelle"); a.initialSync(); b.initialSync(); d.initialSync();
+  for (let i = 0; i < 10; i++) {
+    b.online = false; d.online = false;
+    a.createKpi("A" + i, "Mensuelle"); a.pushToCloud();
+    b.createKpi("B" + i, "Mensuelle");
+    d.createKpi("C" + i, "Mensuelle");
+    b.online = true; b.initialSyncDone = false; b.initialSync();
+    d.online = true; d.initialSyncDone = false; d.initialSync();
+    a.onRemoteChange(); b.onRemoteChange(); d.onRemoteChange();
+  }
+  // stabilisation
+  for (let i = 0; i < 4; i++) { a.onRemoteChange(); b.onRemoteChange(); d.onRemoteChange(); }
+  assert.equal(a.kpiCount(), 31, "A : 1 + 3×10 KPIs");
+  assert.equal(a.signature(), b.signature(), "A et B identiques");
+  assert.equal(b.signature(), d.signature(), "B et C identiques");
+});
+
+test("suppression et recréation du même intitulé", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Cycle", "Mensuelle", { logistiport: "v1" });
+  a.initialSync(); b.initialSync();
+  a.deleteFiche("Cycle"); a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 0);
+  a.createKpi("Cycle", "Mensuelle", { logistiport: "v2" });  // même id (stable)
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 0, "⚠️ le marqueur de suppression masque la recréation");
+});
+
+test("l'écoute temps réel n'agit pas avant la fusion initiale", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle"); a.initialSync();
+  b.createKpi("Local-B", "Mensuelle");
+  b.onRemoteChange();   // écoute déclenchée AVANT initialSync
+  assert.equal(b.kpiCount(), 1, "B garde ses données locales, aucune fusion prématurée");
+  b.initialSync();
+  assert.equal(b.kpiCount(), 2, "la fusion a lieu au bon moment");
+});
+
+__ouvrirGroupe("Fonctions de l'application");
+/* Tests portant sur les fonctions RÉELLES d'app.js (chargé via le harnais).
+   Exécution : node --test  */
+
+
+
+
+
+/* ═══ Normalisation des intitulés (titleKey) ═══ */
+
+test("titleKey : la casse n'influe pas sur le regroupement", () => {
+  assert.equal(A.titleKey("Taux Service"), A.titleKey("taux service"));
+});
+
+test("titleKey : les espaces de début et de fin sont ignorés", () => {
+  assert.equal(A.titleKey("  Taux service  "), "taux service");
+});
+
+test("titleKey : les espaces multiples internes sont normalisés", () => {
+  assert.equal(A.titleKey("Volumétrie   distribution"), A.titleKey("Volumétrie distribution"));
+});
+
+test("titleKey : une tabulation compte comme un espace", () => {
+  assert.equal(A.titleKey("Taux\tservice"), "taux service");
+});
+
+test("titleKey : une valeur absente ne provoque pas d'erreur", () => {
+  assert.equal(A.titleKey(null), "");
+  assert.equal(A.titleKey(undefined), "");
+});
+
+test("titleKey : les accents restent significatifs (intitulés distincts)", () => {
+  assert.notEqual(A.titleKey("Volumetrie"), A.titleKey("Volumétrie"));
+});
+
+/* ═══ Identifiants stables (slugifyId) ═══ */
+
+test("slugifyId : accents et majuscules sont neutralisés", () => {
+  assert.equal(A.slugifyId("Volumétrie Distribution"), "volumetrie_distribution");
+});
+
+test("slugifyId : la ponctuation devient un séparateur unique", () => {
+  assert.equal(A.slugifyId("Taux (service) — 2026"), "taux_service_2026");
+});
+
+test("slugifyId : deux écritures d'un même intitulé donnent le même identifiant", () => {
+  assert.equal(A.slugifyId("  Taux  Service "), A.slugifyId("taux service"));
+});
+
+test("slugifyId : une chaîne vide reste exploitable", () => {
+  assert.equal(A.slugifyId(""), "vide");
+  assert.equal(A.slugifyId(null), "vide");
+});
+
+test("slugifyId : les identifiants ne contiennent que des caractères sûrs", () => {
+  assert.match(A.slugifyId("Coût & Délai / Qualité"), /^[a-z0-9_]+$/);
+});
+
+/* ═══ Comptage KPIs vs variantes ═══ */
+
+test("countFiches : trois temporalités d'un même KPI comptent pour 1", () => {
+  const l = ["Mensuelle", "Hebdomadaire", "Quotidienne"].map(f => ({ id: "k_" + f, title: "KPI A", freq: f }));
+  assert.equal(A.run(`countFiches(${JSON.stringify(l)})`), 1);
+});
+
+test("countFiches : des KPIs distincts sont comptés séparément", () => {
+  const l = [{ title: "KPI A" }, { title: "KPI B" }, { title: "KPI C" }];
+  assert.equal(A.run(`countFiches(${JSON.stringify(l)})`), 3);
+});
+
+test("countFiches : les écritures différentes d'un même intitulé ne gonflent pas le total", () => {
+  const l = [{ title: "Taux service" }, { title: "taux  service" }, { title: " TAUX SERVICE " }];
+  assert.equal(A.run(`countFiches(${JSON.stringify(l)})`), 1);
+});
+
+test("countFiches : une liste vide donne zéro", () => {
+  assert.equal(A.run("countFiches([])"), 0);
+});
+
+/* ═══ Échappement HTML (sécurité) ═══ */
+
+test("esc : les chevrons sont neutralisés", () => {
+  assert.equal(A.esc("<script>"), "&lt;script&gt;");
+});
+
+test("esc : les guillemets d'attribut sont neutralisés", () => {
+  assert.ok(!A.esc('" onerror="alert(1)').includes('"'));
+});
+
+test("esc : une tentative d'injection reste inerte", () => {
+  const out = A.esc('<img src=x onerror="alert(1)">');
+  assert.ok(!out.includes("<img"), "aucune balise ne subsiste");
+});
+
+test("esc : les esperluettes sont échappées en premier (pas de double échappement)", () => {
+  assert.equal(A.esc("a & b"), "a &amp; b");
+});
+
+test("esc : une valeur nulle ne casse pas l'affichage", () => {
+  assert.equal(A.esc(null), "");
+  assert.equal(A.esc(undefined), "");
+});
+
+/* ═══ Normalisation des liens ═══ */
+
+test("normalizeUrl : une adresse sans schéma reçoit https", () => {
+  assert.match(A.normalizeUrl("app.powerbi.com/report"), /^https:\/\//);
+});
+
+test("normalizeUrl : une adresse https est laissée intacte", () => {
+  assert.equal(A.normalizeUrl("https://app.powerbi.com/x"), "https://app.powerbi.com/x");
+});
+
+test("normalizeUrl : une chaîne vide reste vide (pas de faux lien)", () => {
+  assert.equal(A.normalizeUrl(""), "");
+});
+
+test("normalizeUrl : un pseudo-lien javascript ne reste pas exécutable", () => {
+  const out = A.normalizeUrl("javascript:alert(1)");
+  assert.ok(!/^javascript:/i.test(out), "ne doit pas produire un lien javascript: actif");
+});
+
+/* ═══ Suppressions : marqueurs et masquage ═══ */
+
+test("markDeleted pose un marqueur daté et attribué", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`markDeleted("k1", { title: "KPI A", freq: "Mensuelle" })`);
+  const d = A.get("deletedIds")[0];
+  assert.equal(d.id, "k1");
+  assert.equal(d.title, "KPI A");
+  assert.equal(d.by, "marie");
+  assert.equal(d.state, "deleted");
+  assert.ok(d.at > 0, "la date doit être renseignée");
+});
+
+test("markDeleted deux fois ne crée pas deux marqueurs", () => {
+  A.reset();
+  A.run(`markDeleted("k1", { title: "A" }); markDeleted("k1", { title: "A" });`);
+  assert.equal(A.get("deletedIds").length, 1);
+});
+
+test("isDeleted reconnaît une fiche supprimée", () => {
+  A.reset({ deletedIds: [{ id: "k1", at: 5, state: "deleted" }] });
+  assert.equal(A.run(`isDeleted("k1")`), true);
+});
+
+test("isDeleted ignore un marqueur de restauration", () => {
+  A.reset({ deletedIds: [{ id: "k1", at: 9, state: "restored" }] });
+  assert.equal(A.run(`isDeleted("k1")`), false);
+});
+
+test("isDeleted renvoie faux pour un identifiant inconnu", () => {
+  A.reset();
+  assert.equal(A.run(`isDeleted("inexistant")`), false);
+});
+
+/* ═══ Construction de l'affichage (rebuildData) ═══ */
+
+test("rebuildData n'affiche que les fiches partagées visibles", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A" }, { id: "b", title: "B" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 2);
+});
+
+test("rebuildData masque les fiches en corbeille", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "A" }, { id: "b", title: "B" }],
+    deletedIds: [{ id: "a", at: 5, state: "deleted" }]
+  });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+  assert.equal(A.get("data")[0].id, "b");
+});
+
+test("rebuildData masque les fiches purgées", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A" }], purgedIds: ["a"] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0);
+});
+
+test("rebuildData conserve les fiches supprimées en mémoire (pour la corbeille)", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A" }], deletedIds: [{ id: "a", at: 5, state: "deleted" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("manualEntries.length"), 1, "la fiche reste stockée");
+  assert.equal(A.get("data.length"), 0, "mais n'est plus affichée");
+});
+
+test("rebuildData n'inclut jamais les fiches personnelles dans l'annuaire partagé", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A" }], personalEntries: [{ id: "p", title: "Privé" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+});
+
+/* ═══ Détection d'anomalies ═══ */
+
+test("anomalies : une fiche saine à trois temporalités n'est pas signalée", () => {
+  const l = ["Mensuelle", "Hebdomadaire", "Quotidienne"].map(f => ({ id: "k" + f, title: "KPI A", freq: f }));
+  assert.equal(A.run(`findVariantAnomalies(${JSON.stringify(l)}).length`), 0);
+});
+
+test("anomalies : une temporalité en double est détectée", () => {
+  const l = [{ title: "A", freq: "Mensuelle" }, { title: "A", freq: "Mensuelle" }, { title: "A", freq: "Hebdomadaire" }];
+  const r = A.run(`findVariantAnomalies(${JSON.stringify(l)})`);
+  assert.equal(r.length, 1);
+  assert.match(r[0].reason, /double/);
+});
+
+test("anomalies : une temporalité non standard est signalée", () => {
+  const l = [{ title: "A", freq: "Trimestrielle" }];
+  const r = A.run(`findVariantAnomalies(${JSON.stringify(l)})`);
+  assert.match(r[0].reason, /non standard/);
+});
+
+test("anomalies : une temporalité vide est signalée", () => {
+  const l = [{ title: "A", freq: "" }];
+  assert.equal(A.run(`findVariantAnomalies(${JSON.stringify(l)}).length`), 1);
+});
+
+test("anomalies : deux orthographes d'un même intitulé sont signalées", () => {
+  const l = [{ title: "Volumétrie distribution", freq: "Mensuelle" },
+             { title: "Volumétrie  distribution", freq: "Hebdomadaire" }];
+  const r = A.run(`findVariantAnomalies(${JSON.stringify(l)})`);
+  assert.equal(r.length, 1);
+  assert.match(r[0].reason, /diffèrent/);
+});
+
+test("anomalies : plus de trois temporalités est signalé", () => {
+  const l = ["Mensuelle", "Hebdomadaire", "Quotidienne"].map(f => ({ title: "A", freq: f }));
+  l.push({ title: "A", freq: "Annuelle" });
+  assert.ok(A.run(`findVariantAnomalies(${JSON.stringify(l)}).length`) >= 1);
+});
+
+test("anomalies : une liste vide ne signale rien", () => {
+  assert.equal(A.run("findVariantAnomalies([]).length"), 0);
+});
+
+test("anomalies : plusieurs fiches défectueuses sont toutes remontées", () => {
+  const l = [
+    { title: "A", freq: "Mensuelle" }, { title: "A", freq: "Mensuelle" },
+    { title: "B", freq: "Trimestrielle" }
+  ];
+  assert.equal(A.run(`findVariantAnomalies(${JSON.stringify(l)}).length`), 2);
+});
+
+/* ═══ Nettoyage des doublons ═══ */
+
+test("nettoyage : le doublon le plus ancien est retiré", () => {
+  A.reset({ manualEntries: [
+    { id: "vieux", title: "A", freq: "Mensuelle", logistiport: "ancien", _mtime: 100 },
+    { id: "recent", title: "A", freq: "Mensuelle", logistiport: "recent", _mtime: 300 }
+  ] });
+  A.run("rebuildData(false)");
+  const n = A.run("cleanDuplicateVariants()");
+  assert.equal(n, 1, "un doublon retiré");
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+  assert.equal(A.get("data")[0].logistiport, "recent", "la version récente est conservée");
+});
+
+test("nettoyage : les doublons partent en corbeille (récupérables)", () => {
+  A.reset({ manualEntries: [
+    { id: "v1", title: "A", freq: "Mensuelle", _mtime: 100 },
+    { id: "v2", title: "A", freq: "Mensuelle", _mtime: 200 }
+  ] });
+  A.run("rebuildData(false); cleanDuplicateVariants();");
+  assert.equal(A.get("deletedIds").length, 1, "un marqueur de suppression est posé");
+});
+
+test("nettoyage : une fiche saine n'est pas touchée", () => {
+  A.reset({ manualEntries: ["Mensuelle", "Hebdomadaire", "Quotidienne"]
+    .map((f, i) => ({ id: "k" + i, title: "A", freq: f, _mtime: 100 })) });
+  A.run("rebuildData(false)");
+  assert.equal(A.run("cleanDuplicateVariants()"), 0);
+});
+
+test("nettoyage : plusieurs fiches sont traitées en une passe", () => {
+  A.reset({ manualEntries: [
+    { id: "a1", title: "A", freq: "Mensuelle", _mtime: 100 },
+    { id: "a2", title: "A", freq: "Mensuelle", _mtime: 200 },
+    { id: "b1", title: "B", freq: "Hebdomadaire", _mtime: 100 },
+    { id: "b2", title: "B", freq: "Hebdomadaire", _mtime: 200 }
+  ] });
+  A.run("rebuildData(false)");
+  assert.equal(A.run("cleanDuplicateVariants()"), 2);
+});
+
+/* ═══ Étiquette de l'historique des versions ═══ */
+
+test("historique : le nouveau format affiche KPIs et variantes", () => {
+  const s = A.run(`snapCountLabel(${JSON.stringify({ kpis: 13, variantes: 39, perso: 2 })})`);
+  assert.match(s, /13 KPIs/);
+  assert.match(s, /39 variantes/);
+});
+
+test("historique : l'ancien format « partagees » reste lisible", () => {
+  const s = A.run(`snapCountLabel(${JSON.stringify({ partagees: 39, perso: 2 })})`);
+  assert.match(s, /39/);
+});
+
+test("historique : le très ancien format excel+manuel est additionné", () => {
+  const s = A.run(`snapCountLabel(${JSON.stringify({ excel: 20, manual: 19 })})`);
+  assert.match(s, /39/);
+});
+
+test("historique : un instantané sans détail ne provoque pas d'erreur", () => {
+  assert.equal(typeof A.run("snapCountLabel(null)"), "string");
+});
+
+test("historique : sans fiche personnelle, la mention perso est omise", () => {
+  const s = A.run(`snapCountLabel(${JSON.stringify({ kpis: 5, variantes: 10, perso: 0 })})`);
+  assert.ok(!s.includes("perso"));
+});
+
+/* ═══ Décision d'envoi au cloud (le bug corrigé) ═══ */
+
+test("envoi : une fiche locale absente du cloud déclenche l'envoi", () => {
+  A.reset({ manualEntries: [{ id: "local", _mtime: 100 }] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({ kpiManual: [] })})`), true);
+});
+
+test("envoi : un état strictement identique au cloud n'envoie rien", () => {
+  const entries = [{ id: "a", _mtime: 100 }, { id: "b", _mtime: 200 }];
+  A.reset({ manualEntries: entries });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: entries, kpiDeleted: [], kpiSites: [
+      { key: "logistiport", _mtime: 1 }, { key: "armement", _mtime: 1 }], kpiPurged: []
+  })})`), false);
+});
+
+test("envoi : une fiche locale plus récente déclenche l'envoi", () => {
+  A.reset({ manualEntries: [{ id: "a", _mtime: 500 }] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({ kpiManual: [{ id: "a", _mtime: 100 }] })})`), true);
+});
+
+test("envoi : après fusion, un apport local n'est pas masqué par une fiche distante récente", () => {
+  // Reproduit le bug corrigé : le local contient la fiche distante (très récente)
+  // ET une fiche créée hors-ligne (plus ancienne) absente du cloud.
+  A.reset({ manualEntries: [{ id: "distante", _mtime: 9999 }, { id: "hors-ligne", _mtime: 100 }] });
+  const remote = { kpiManual: [{ id: "distante", _mtime: 9999 }], kpiDeleted: [], kpiSites: [], kpiPurged: [] };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(remote)})`), true,
+    "l'apport hors-ligne doit être détecté malgré une date locale maximale identique");
+});
+
+test("envoi : une suppression locale inconnue du cloud déclenche l'envoi", () => {
+  A.reset({ deletedIds: [{ id: "x", at: 500, state: "deleted" }] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({ kpiManual: [], kpiDeleted: [] })})`), true);
+});
+
+test("envoi : un site ajouté localement déclenche l'envoi", () => {
+  A.reset({ sites: [{ key: "nouveau", name: "Nouveau", _mtime: 500 }] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: [], kpiDeleted: [], kpiSites: [], kpiPurged: []
+  })})`), true);
+});
+
+test("envoi : une purge locale inconnue du cloud déclenche l'envoi", () => {
+  A.reset({ purgedIds: ["ancien"], sites: [] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: [], kpiDeleted: [], kpiSites: [], kpiPurged: []
+  })})`), true);
+});
+
+/* ═══ Sites actifs ═══ */
+
+test("activeSites exclut les sites supprimés", () => {
+  A.reset({ sites: [{ key: "a", name: "A" }, { key: "b", name: "B", _deleted: true }] });
+  assert.equal(A.run("activeSites().length"), 1);
+});
+
+test("activeSites conserve les sites anciens sans métadonnées", () => {
+  A.reset({ sites: [{ key: "a", name: "A" }, { key: "b", name: "B" }] });
+  assert.equal(A.run("activeSites().length"), 2);
+});
+
+test("activeSites tolère une liste contenant des valeurs vides", () => {
+  A.reset();
+  A.run("sites = [{key:'a',name:'A'}, null, undefined]");
+  assert.equal(A.run("activeSites().length"), 1);
+});
+
+/* ═══ Robustesse face à des données abîmées ═══ */
+
+test("robustesse : une fiche sans intitulé ne fait pas planter le comptage", () => {
+  A.reset({ manualEntries: [{ id: "a" }, { id: "b", title: "B" }] });
+  A.run("rebuildData(false)");
+  assert.equal(typeof A.run("countFiches(data)"), "number");
+});
+
+test("robustesse : des marqueurs de suppression au format ancien sont acceptés", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A" }] });
+  A.run(`deletedIds = normalizeDeleted(["a"]); rebuildData(false);`);
+  assert.equal(A.get("data.length"), 0, "l'ancien format masque bien la fiche");
+});
+
+test("robustesse : une fiche sans temporalité reste affichable", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Sans temporalité" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+});
+
+test("robustesse : un très grand nombre de fiches reste traité", () => {
+  const many = Array.from({ length: 2000 }, (_, i) => ({ id: "k" + i, title: "KPI " + (i % 500), freq: "Mensuelle" }));
+  A.reset({ manualEntries: many });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 2000);
+  assert.equal(A.run("countFiches(data)"), 500);
+});
+
+
+/* ══ Exécution ══ */
+(async function () {
+  const etat = document.getElementById("etat");
+  const sortie = document.getElementById("sortie");
+  const resume = document.getElementById("resume");
+  try {
+    A = await loadApp();
+  } catch (e) {
+    etat.className = "etat ko";
+    etat.textContent = "❌ Impossible de charger l'application : " + e.message;
+    sortie.innerHTML = '<div class="note">Placez cette page dans le MÊME dossier que <code>app.js</code> ' +
+      'et le dossier <code>js/</code>, puis ouvrez-la via son adresse https (pas par double-clic).</div>';
+    return;
+  }
+
+  let total = 0, reussis = 0, echoues = 0;
+  for (const g of __groupes) {
+    const bloc = document.createElement("div");
+    bloc.className = "groupe";
+    const titre = document.createElement("h2");
+    bloc.appendChild(titre);
+    let okG = 0, koG = 0;
+    for (const t of g.tests) {
+      total++;
+      const ligne = document.createElement("div");
+      ligne.className = "ligne";
+      let erreur = null;
+      try { t.fn(); } catch (e) { erreur = e; }
+      if (erreur) { echoues++; koG++; } else { reussis++; okG++; }
+      ligne.innerHTML =
+        '<span class="puce ' + (erreur ? "ko" : "ok") + '">' + (erreur ? "✗" : "✓") + '</span>' +
+        '<span>' + t.nom.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])) +
+        (erreur ? '<div class="msg">' + String(erreur.message).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])) + '</div>' : '') +
+        '</span>';
+      bloc.appendChild(ligne);
+    }
+    titre.textContent = g.nom + " — " + okG + "/" + g.tests.length;
+    sortie.appendChild(bloc);
+  }
+
+  resume.innerHTML =
+    '<div class="carte"><div class="n acc">' + total + '</div><div class="l">Tests</div></div>' +
+    '<div class="carte"><div class="n ok">' + reussis + '</div><div class="l">Réussis</div></div>' +
+    '<div class="carte"><div class="n ' + (echoues ? "ko" : "ok") + '">' + echoues + '</div><div class="l">Échoués</div></div>';
+
+  if (echoues === 0) {
+    etat.className = "etat ok";
+    etat.textContent = "✅ Tout va bien — les " + total + " tests passent.";
+  } else {
+    etat.className = "etat ko";
+    etat.textContent = "❌ " + echoues + " test(s) en échec sur " + total + " — voir le détail en rouge ci-dessous.";
+  }
+})();
+</script>
+</body>
+</html>
