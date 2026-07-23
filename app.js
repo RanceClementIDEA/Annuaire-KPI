@@ -3,7 +3,7 @@
 ============================================ */
 // Version de l'application. À comparer entre appareils via le diagnostic :
 // si deux appareils affichent des versions différentes, l'un a un cache périmé.
-const APP_VERSION = "2026.07.22";
+const APP_VERSION = "2026.07.23";
 let data = [];          // Liste affichée = fiches partagées visibles (manualEntries)
 let excelData = [];     // Vestige (toujours vide) : l'Excel n'est plus une source de données
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
@@ -448,19 +448,46 @@ function transformData(sheet, rawData) {
     "• Annuler = COMPLÉTER : on ajoute seulement ce qui n'existe pas encore"
   );
 
+  let creees = 0, majs = 0, inchangees = 0;
+  const masquees = [];   // importées mais masquées par la corbeille / une purge
   imported.forEach(imp => {
     const existing = manualEntries.find(k => k.id === imp.id);
-    if (!existing) {
-      manualEntries.push(imp);
-    } else if (replace) {
-      Object.assign(existing, imp, { _mtime: now() });
-    }
-    // si !replace et existe déjà : on ne touche pas
+    if (!existing)        { manualEntries.push(imp); creees++; }
+    else if (replace)     { Object.assign(existing, imp, { _mtime: now() }); majs++; }
+    else                  { inchangees++; }
+    if (isDeleted(imp.id) || isPurged(imp.id)) masquees.push(imp);
   });
 
   saveManualEntries(true);
   rebuildData(true);
-  showToast(`✅ Import terminé : ${imported.length} ligne(s) traitée(s)`, 3000);
+
+  const bilan = [];
+  if (creees)      bilan.push(`${creees} créée(s)`);
+  if (majs)        bilan.push(`${majs} mise(s) à jour`);
+  if (inchangees)  bilan.push(`${inchangees} déjà présente(s)`);
+  showToast(`✅ Import : ${bilan.join(", ") || "aucun changement"}`, 3500);
+
+  // Transparence : une fiche supprimée reste masquée même si elle est ré-importée.
+  // Sans ce message, l'utilisateur croirait que l'import n'a pas fonctionné.
+  if (masquees.length) {
+    const aRestaurer = masquees.filter(m => isDeleted(m.id) && !isPurged(m.id));
+    const noms = [...new Set(masquees.map(m => m.title))].slice(0, 6).join("\n• ");
+    const msg =
+      `${masquees.length} ligne(s) importée(s) sont actuellement dans la corbeille et restent donc masquées :\n\n• ${noms}\n\n` +
+      (aRestaurer.length
+        ? `Voulez-vous les réafficher maintenant ?\n(OK = réafficher · Annuler = les laisser dans la corbeille)`
+        : `Elles ont été supprimées définitivement et ne peuvent pas être réaffichées.`);
+    if (aRestaurer.length && confirm(msg)) {
+      const ids = aRestaurer.map(m => m.id);
+      deletedIds = deletedIds.map(d => ids.includes(d.id)
+        ? { ...d, state: "restored", at: now(), by: currentUser || "?" } : d);
+      saveDeletedIds(false);
+      rebuildData(true);
+      showToast(`↩ ${ids.length} fiche(s) réaffichée(s)`, 3000);
+    } else if (!aRestaurer.length) {
+      alert(msg);
+    }
+  }
 }
 
 // Transforme un texte en identifiant stable (minuscules, sans accents ni espaces)
@@ -2087,15 +2114,24 @@ async function initialSync(code, manual) {
 // Notre état local contient-il une fiche plus récente que ce que le cloud connaît ?
 // Sert à ne renvoyer au cloud que si l'on a réellement des apports.
 function hasLocalDataNewerThan(remote) {
-  const remoteMax = Math.max(
-    ...(remote.kpiManual || []).map(k => k._mtime || 0),
-    0
-  );
-  const localMax = Math.max(
-    ...manualEntries.map(k => k._mtime || 0),
-    0
-  );
-  return localMax > remoteMax;
+  // Comparaison ÉLÉMENT PAR ÉLÉMENT avec ce que le cloud contient réellement.
+  // On ne peut pas comparer des dates maximales globales : cette fonction est
+  // appelée APRÈS la fusion, donc nos données contiennent déjà celles du cloud
+  // — le maximum local serait faussé et un apport local (créé hors-ligne,
+  // par exemple) ne serait jamais renvoyé.
+  const plusRecent = (locaux, distants, cle, date) => {
+    const map = new Map((distants || []).map(x => [x[cle], x[date] || 0]));
+    return (locaux || []).some(x => {
+      const t = map.get(x[cle]);
+      return t === undefined || (x[date] || 0) > t;   // absent du cloud, ou plus récent ici
+    });
+  };
+  if (plusRecent(manualEntries, remote.kpiManual, "id", "_mtime")) return true;
+  if (plusRecent(deletedIds,    remote.kpiDeleted, "id", "at"))    return true;
+  if (plusRecent(sites,         remote.kpiSites,  "key", "_mtime")) return true;
+  const distantsPurges = new Set(remote.kpiPurged || []);
+  if ((purgedIds || []).some(id => !distantsPurges.has(id))) return true;
+  return false;
 }
 
 // Reprise automatique : retour du réseau + retour sur l'onglet
