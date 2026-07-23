@@ -700,7 +700,7 @@ test("configuration : une désactivation ancienne ne bloque plus la reconnexion"
 test("recherche : un intitulé partiel retrouve la fiche", () => {
   A.reset({ manualEntries: fiches(["Volumétrie distribution", "Mensuelle"], ["Taux service", "Mensuelle"]) });
   A.run("rebuildData(false)");
-  A.saisir("searchInput", "volum");
+  A.saisir("search", "volum");
   A.run("filterData()");
   assert.ok(A.get("data.length") >= 1);
 });
@@ -708,7 +708,7 @@ test("recherche : un intitulé partiel retrouve la fiche", () => {
 test("recherche : la casse n'a pas d'importance", () => {
   A.reset({ manualEntries: fiches(["Volumétrie", "Mensuelle"]) });
   A.run("rebuildData(false)");
-  A.saisir("searchInput", "VOLUM");
+  A.saisir("search", "VOLUM");
   A.run("filterData()");
   assert.equal(A.el("container").innerHTML !== undefined, true);
 });
@@ -716,7 +716,7 @@ test("recherche : la casse n'a pas d'importance", () => {
 test("recherche : une recherche sans résultat n'efface pas les données", () => {
   A.reset({ manualEntries: fiches(["Volumétrie", "Mensuelle"]) });
   A.run("rebuildData(false)");
-  A.saisir("searchInput", "zzzzz");
+  A.saisir("search", "zzzzz");
   A.run("filterData()");
   assert.equal(A.get("data.length"), 1, "les données restent intactes, seul l'affichage change");
 });

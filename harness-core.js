@@ -150,6 +150,10 @@
           ])};
           currentUser = ${j(opts.currentUser || "marie")};
           data = []; groupSel = {}; groupReport = {};
+          currentView = "all";                       // on repart toujours de la vue « Tous »
+          if (typeof searchInput === "object" && searchInput) searchInput.value = "";
+          if (typeof processFilter === "object" && processFilter) processFilter.selectedIndex = 0;
+          if (typeof ritualFilter === "object" && ritualFilter) ritualFilter.selectedIndex = 0;
           applyingRemoteSync = ${opts.autoriserSync ? "false" : "true"};
           isBooting = ${opts.autoriserSync ? "false" : "true"};
           globalThis.__msg = [];
@@ -167,6 +171,60 @@
       saisir(id, valeur) { elementPourId(id).value = valeur; return this; },
       cocher(id, v) { elementPourId(id).checked = !!v; return this; },
       requete(selecteur, elements) { requetes.set(selecteur, elements); return this; },
+
+      /* --- Firebase simulé : permet d'éprouver les VRAIS flux de synchro --- */
+      firebaseSimule() {
+        run(`
+          globalThis.__cloud = {};          // documents du faux Firestore
+          globalThis.__ecoutes = [];        // abonnements temps réel actifs
+          globalThis.__erreurCloud = null;  // panne à simuler
+          globalThis.__ecritures = 0;
+          firebase = {
+            apps: [],
+            initializeApp(cfg) { firebase.apps = [{ cfg }]; return firebase.apps[0]; },
+            firestore: Object.assign(function () {
+              return {
+                collection: (col) => ({
+                  doc: (id) => {
+                    const cle = col + "/" + id;
+                    return {
+                      async get() {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        const d = globalThis.__cloud[cle];
+                        return { exists: d !== undefined, data: () => d };
+                      },
+                      async set(payload) {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        globalThis.__cloud[cle] = JSON.parse(JSON.stringify(payload));
+                        // La mesure d'horloge écrit dans un document annexe : on ne la compte pas
+                        if (cle.indexOf("__clock") < 0) globalThis.__ecritures++;
+                        globalThis.__ecoutes
+                          .filter(e => e.cle === cle)
+                          .forEach(e => e.cb({ exists: true, data: () => globalThis.__cloud[cle] }));
+                      },
+                      onSnapshot(cb, errCb) {
+                        const abo = { cle, cb, errCb };
+                        globalThis.__ecoutes.push(abo);
+                        return function () {
+                          globalThis.__ecoutes = globalThis.__ecoutes.filter(x => x !== abo);
+                        };
+                      }
+                    };
+                  }
+                })
+              };
+            }, { FieldValue: { serverTimestamp: () => ({ toMillis: () => Date.now() }) } })
+          };
+          fbApp = null; fbDb = null; fbUnsub = null; connectedSyncCode = null;
+          initialSyncDone = false; syncBusy = false;
+        `);
+        return this;
+      },
+      cloud: (cle) => run(`globalThis.__cloud[${JSON.stringify(cle)}] || null`),
+      cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
+      ecrituresCloud: () => run("globalThis.__ecritures"),
+      ecoutesActives: () => run("globalThis.__ecoutes.length"),
+      panneCloud(message) { run(`globalThis.__erreurCloud = ${message ? `Object.assign(new Error(${JSON.stringify(message)}), { code: ${JSON.stringify(message)} })` : "null"}`); return this; },
 
       /* --- interactions simulées --- */
       confirmer(v) { reponseConfirm = !!v; return this; },

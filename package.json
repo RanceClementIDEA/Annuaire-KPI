@@ -8,7 +8,11 @@
     "test:merge": "node --test merge.test.js",
     "test:sync": "node --test sync.test.js",
     "test:app": "node --test app.test.js",
-    "test:watch": "node --test --watch",
+    "test:ui": "node --test app-ui.test.js",
+    "test:flows": "node --test app-flows.test.js",
+    "coverage": "node coverage.js",
+    "build:page": "node build-tests-html.js",
+    "verify:page": "node verify-tests-html.js",
     "lint": "npx --yes eslint js/ app.js"
   },
   "license": "UNLICENSED"
