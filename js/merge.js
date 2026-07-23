@@ -13,6 +13,26 @@
   "use strict";
 
   /**
+   * Départage deux versions d'un même élément.
+   * La date la plus récente gagne. En cas d'ÉGALITÉ PARFAITE de date
+   * (deux appareils modifiant dans la même milliseconde), on tranche de
+   * façon déterministe : sans cela chaque appareil garderait sa propre
+   * version et ils resteraient divergents pour toujours.
+   * @param {Object} candidat
+   * @param {Object} enPlace
+   * @param {string} champDate  "_mtime" ou "at"
+   * @returns {boolean} true si le candidat doit remplacer celui en place
+   */
+  function emporte(candidat, enPlace, champDate) {
+    const tc = candidat[champDate] || 0, te = enPlace[champDate] || 0;
+    if (tc !== te) return tc > te;
+    // Égalité : arbitrage identique sur tous les appareils
+    const ac = String(candidat._by || ""), ae = String(enPlace._by || "");
+    if (ac !== ae) return ac > ae;
+    return JSON.stringify(candidat) > JSON.stringify(enPlace);
+  }
+
+  /**
    * Fusionne deux listes de fiches par identifiant.
    * En cas de conflit sur une même fiche, la version portant la
    * date de modification la plus récente est retenue.
@@ -28,7 +48,7 @@
     (localArr || []).forEach(e => {
       if (!e || !e.id) return;
       const other = map.get(e.id);
-      if (!other || (e._mtime || 0) >= (other._mtime || 0)) map.set(e.id, e);
+      if (!other || emporte(e, other, "_mtime")) map.set(e.id, e);
     });
     return [...map.values()];
   }
@@ -45,7 +65,7 @@
     const out = { ...(remoteObj || {}) };
     Object.entries(localObj || {}).forEach(([id, v]) => {
       const other = out[id];
-      if (!other || (v._mtime || 0) >= (other._mtime || 0)) out[id] = v;
+      if (!other || emporte(v, other, "_mtime")) out[id] = v;
     });
     return out;
   }
@@ -68,7 +88,7 @@
     [...(remoteArr || []), ...(localArr || [])].forEach(d => {
       if (!d || !d.id) return;
       const prev = map.get(d.id);
-      if (!prev || (d.at || 0) >= (prev.at || 0)) map.set(d.id, d);
+      if (!prev || emporte(d, prev, "at")) map.set(d.id, d);
     });
     return [...map.values()];
   }
@@ -146,7 +166,7 @@
 
   const API = {
     mergeEntries, mergeOverrides, mergeDeleted, mergeFavorites,
-    mergeActivity, normalizeDeleted, isDeletedIn
+    mergeActivity, normalizeDeleted, isDeletedIn, emporte
   };
 
   // Node (tests) : export CommonJS — Navigateur : fonctions globales
