@@ -1,5 +1,5 @@
-/* Vérifie que tests.html fonctionne : extrait son script et l'exécute
-   avec un DOM et un fetch simulés, puis lit le résultat affiché. */
+/* Vérifie tests.html hors navigateur : extrait son script et l'exécute
+   avec un DOM, un fetch et une horloge simulés, puis lit le résultat affiché. */
 const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
@@ -7,34 +7,46 @@ const path = require("path");
 const html = fs.readFileSync("tests.html", "utf8");
 const m = html.match(/<script>([\s\S]*)<\/script>/);
 if (!m) { console.log("✗ aucun script trouvé dans tests.html"); process.exit(1); }
-let script = m[1];
-// DEBUG_STACK : expose la pile complète en cas d'échec de chargement
-script = script.replace(
-  'etat.textContent = "❌ Impossible de charger l\'application : " + e.message;',
-  'etat.textContent = "❌ " + e.message; console.log("PILE:", e && e.stack);');
+const script = m[1];
 
-/* --- DOM simulé, suffisant pour la page --- */
-function elem(tag) {
-  return {
-    tagName: tag, className: "", textContent: "", innerHTML: "",
-    children: [], style: {},
-    appendChild(c) { this.children.push(c); return c; },
-    addEventListener() {}, setAttribute() {}, classList: { add() {}, remove() {} }
+/* --- DOM simulé, avec registre persistant par identifiant --- */
+const registre = new Map();
+function elem(tag, id) {
+  const el = {
+    tagName: (tag || "div").toUpperCase(), id: id || "",
+    textContent: "", innerHTML: "", value: "", children: [], style: {}, dataset: {},
+    _cls: new Set(),
+    classList: {
+      add: c => el._cls.add(c), remove: c => el._cls.delete(c),
+      contains: c => el._cls.has(c),
+      toggle: (c, f) => (f === undefined ? (el._cls.has(c) ? el._cls.delete(c) : el._cls.add(c))
+                                         : (f ? el._cls.add(c) : el._cls.delete(c)))
+    },
+    get className() { return [...el._cls].join(" "); },
+    set className(v) { el._cls = new Set(String(v).split(/\s+/).filter(Boolean)); },
+    appendChild(c) { el.children.push(c); return c; },
+    addEventListener() {}, setAttribute() {}, querySelectorAll() { return []; },
+    querySelector() { return null; }, focus() {}, remove() {}
   };
+  return el;
 }
-const noeuds = { etat: elem("div"), resume: elem("div"), sortie: elem("div") };
 const documentSim = {
-  getElementById: id => noeuds[id] || elem("div"),
+  getElementById(id) { if (!registre.has(id)) registre.set(id, elem("div", id)); return registre.get(id); },
   createElement: tag => elem(tag),
+  querySelectorAll: () => [],
   addEventListener() {}
 };
 
 const sandbox = {
   console,
   document: documentSim,
-  location: { reload() {} },
-  setTimeout, clearTimeout, setInterval,   // les minuteries viennent de l'hôte
-  /* fetch simulé : lit les fichiers sur le disque */
+  location: { href: "https://test/tests.html", reload() {} },
+  performance: { now: () => Date.now() },
+  navigator: { userAgent: "Vérificateur Node", onLine: true, clipboard: { writeText: async () => {} },
+               serviceWorker: { register: async () => {} } },
+  setTimeout, clearTimeout, setInterval,
+  addEventListener() {}, removeEventListener() {},
+  matchMedia: () => ({ matches: false, addListener() {}, addEventListener() {} }),
   fetch: async (url) => {
     const f = String(url).split("?")[0];
     const p = path.join(__dirname, f);
@@ -42,32 +54,36 @@ const sandbox = {
     return { ok: true, status: 200, text: async () => fs.readFileSync(p, "utf8") };
   }
 };
-// Dans un vrai navigateur ces membres existent nativement ; on les simule ici
-sandbox.addEventListener = () => {};
-sandbox.removeEventListener = () => {};
-sandbox.matchMedia = () => ({ matches: false, addListener() {}, addEventListener() {} });
-sandbox.navigator = { onLine: true, serviceWorker: { register: () => Promise.resolve() } };
 sandbox.window = sandbox; sandbox.globalThis = sandbox; sandbox.self = sandbox;
 vm.createContext(sandbox);
 
-try {
-  vm.runInContext(script, sandbox, { filename: "tests.html" });
-} catch (e) {
-  console.log("✗ erreur à l'exécution du script :", e.message);
-  process.exit(1);
-}
+try { vm.runInContext(script, sandbox, { filename: "tests.html" }); }
+catch (e) { console.log("✗ erreur à l'exécution du script :", e.message); process.exit(1); }
 
-/* Laisse les promesses se résoudre, puis lit l'état affiché */
+/* Attend la fin, puis lit ce que la page affiche */
 setTimeout(() => {
-  const etat = noeuds.etat.textContent;
-  const resume = noeuds.resume.innerHTML;
-  const nombres = [...resume.matchAll(/>(\d+)<\/div>/g)].map(x => +x[1]);
-  console.log("État affiché :", etat);
-  if (nombres.length >= 3) {
-    console.log(`Tests : ${nombres[0]} · Réussis : ${nombres[1]} · Échoués : ${nombres[2]}`);
-    process.exit(nombres[2] === 0 && nombres[0] > 0 ? 0 : 1);
-  } else {
-    console.log("✗ résumé illisible");
-    process.exit(1);
-  }
-}, 2000);
+  const etat = registre.get("etatTxt");
+  const cartes = registre.get("cartes");
+  const texteEtat = etat ? etat.textContent : "(aucun état)";
+  console.log("État affiché :", texteEtat);
+
+  const nombres = cartes ? [...cartes.innerHTML.matchAll(/class="n [^"]*">([^<]+)</g)].map(x => x[1]) : [];
+  if (nombres.length >= 3) console.log(`Tests : ${nombres[0]} · Réussis : ${nombres[1]} · Échoués : ${nombres[2]} · Durée : ${nombres[4] || "?"}`);
+
+  /* Détail des échecs */
+  const echecs = [];
+  (function parcourir(n) {
+    (n.children || []).forEach(c => {
+      if (c.innerHTML && c.innerHTML.indexOf('puce ko') >= 0) {
+        const nom = (c.innerHTML.match(/class="nom">([^<]+)/) || [])[1] || "?";
+        const msg = (c.innerHTML.match(/class="msg">([^<]*)/) || [])[1] || "";
+        echecs.push(nom.trim() + "  →  " + msg);
+      }
+      parcourir(c);
+    });
+  })(registre.get("sortie") || { children: [] });
+  if (echecs.length) { console.log("\nTests en échec :"); echecs.slice(0, 25).forEach(e => console.log("  ✗ " + e)); }
+
+  const ko = nombres.length >= 3 ? parseInt(nombres[2], 10) : 1;
+  process.exit(ko === 0 && parseInt(nombres[0], 10) > 0 ? 0 : 1);
+}, 12000);

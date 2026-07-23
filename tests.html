@@ -5,76 +5,204 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tests — Annuaire KPI</title>
 <style>
-  :root { --bg:#06202E; --card:#0B2C3D; --line:#164055; --txt:#E6F1F6; --dim:#8FA9B8;
-          --ok:#22C55E; --ko:#EF4444; --acc:#00C4CC; --gold:#FFB020; }
-  * { box-sizing:border-box; }
-  body { margin:0; padding:24px; background:var(--bg); color:var(--txt);
-         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-  h1 { font-size:20px; margin:0 0 4px; }
-  .sub { color:var(--dim); font-size:13px; margin-bottom:20px; }
-  #resume { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }
-  .carte { background:var(--card); border:1px solid var(--line); border-radius:10px;
-           padding:12px 18px; min-width:110px; }
-  .carte .n { font-size:26px; font-weight:700; }
-  .carte .l { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
-  .n.ok { color:var(--ok); } .n.ko { color:var(--ko); } .n.acc { color:var(--acc); }
-  .groupe { background:var(--card); border:1px solid var(--line); border-radius:10px;
-            margin-bottom:14px; overflow:hidden; }
-  .groupe h2 { font-size:14px; margin:0; padding:12px 16px; background:rgba(0,196,204,.08);
-               border-bottom:1px solid var(--line); }
-  .ligne { display:flex; gap:10px; padding:6px 16px; font-size:12.5px;
-           border-bottom:1px solid rgba(255,255,255,.04); align-items:flex-start; }
-  .ligne:last-child { border-bottom:none; }
-  .puce { flex:0 0 auto; font-weight:700; }
-  .puce.ok { color:var(--ok); } .puce.ko { color:var(--ko); }
-  .msg { color:var(--ko); font-size:11.5px; margin-top:3px;
-         font-family:ui-monospace,Menlo,Consolas,monospace; }
-  .etat { padding:14px 18px; border-radius:10px; margin-bottom:20px; font-size:14px; font-weight:600; }
-  .etat.ok { background:rgba(34,197,94,.12); border:1px solid var(--ok); color:var(--ok); }
-  .etat.ko { background:rgba(239,68,68,.12); border:1px solid var(--ko); color:var(--ko); }
-  .etat.att { background:rgba(255,176,32,.12); border:1px solid var(--gold); color:var(--gold); }
-  .note { color:var(--dim); font-size:12px; margin-top:22px; line-height:1.6;
-          border-top:1px solid var(--line); padding-top:14px; }
-  button { background:var(--acc); color:#04141d; border:0; border-radius:8px; padding:9px 16px;
-           font-weight:700; cursor:pointer; font-size:13px; }
+  :root{
+    --bg:#06202E; --bg2:#08283A; --card:#0B2C3D; --card2:#0E3549; --line:#164055;
+    --txt:#E6F1F6; --dim:#8FA9B8; --dim2:#5D7C8E;
+    --ok:#22C55E; --ko:#EF4444; --acc:#00C4CC; --gold:#FFB020;
+    --r:10px;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:0; background:linear-gradient(180deg,var(--bg) 0%,var(--bg2) 100%);
+    min-height:100vh; color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px; line-height:1.5;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:28px 20px 60px;}
+
+  /* ── En-tête ── */
+  header{display:flex; align-items:center; gap:14px; margin-bottom:6px; flex-wrap:wrap;}
+  .logo{
+    width:38px; height:38px; border-radius:9px; flex:0 0 auto;
+    background:linear-gradient(135deg,var(--acc),#0891B2);
+    display:flex; align-items:center; justify-content:center; font-size:19px;
+  }
+  h1{font-size:19px; margin:0; font-weight:650; letter-spacing:-.2px;}
+  .sub{color:var(--dim); font-size:12.5px; margin:2px 0 0;}
+  .badges{margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;}
+  .badge{
+    font-size:11px; padding:4px 10px; border-radius:20px; font-weight:600;
+    background:rgba(0,196,204,.12); color:var(--acc); border:1px solid rgba(0,196,204,.3);
+    white-space:nowrap;
+  }
+  .badge.warn{background:rgba(255,176,32,.12); color:var(--gold); border-color:rgba(255,176,32,.3);}
+
+  /* ── Bandeau d'état ── */
+  .etat{
+    margin:22px 0 16px; padding:16px 18px; border-radius:var(--r);
+    display:flex; align-items:center; gap:14px; font-weight:600; font-size:14.5px;
+    border:1px solid var(--line); background:var(--card);
+  }
+  .etat.att{border-color:rgba(255,176,32,.45); background:rgba(255,176,32,.08); color:var(--gold);}
+  .etat.ok{border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.08); color:var(--ok);}
+  .etat.ko{border-color:rgba(239,68,68,.45); background:rgba(239,68,68,.08); color:var(--ko);}
+  .spin{
+    width:17px; height:17px; flex:0 0 auto; border-radius:50%;
+    border:2.5px solid rgba(255,255,255,.18); border-top-color:currentColor;
+    animation:tourne .7s linear infinite;
+  }
+  @keyframes tourne{to{transform:rotate(360deg);}}
+
+  /* ── Barres de progression ── */
+  .prog{margin-bottom:8px;}
+  .prog-tete{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; font-size:12px;}
+  .prog-tete .lib{color:var(--dim);}
+  .prog-tete .val{color:var(--txt); font-weight:600; font-variant-numeric:tabular-nums;}
+  .barre{height:8px; border-radius:6px; background:rgba(255,255,255,.07); overflow:hidden;}
+  .barre > i{
+    display:block; height:100%; width:0%; border-radius:6px;
+    background:linear-gradient(90deg,var(--acc),#4FD1C5);
+    transition:width .18s ease;
+  }
+  .barre.ko > i{background:linear-gradient(90deg,var(--ko),#F87171);}
+  .barre.mini{height:5px;}
+  .encours{font-size:11.5px; color:var(--dim2); margin-top:6px; height:16px;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+
+  /* ── Cartes de synthèse ── */
+  .cartes{display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px; margin:18px 0;}
+  .carte{background:var(--card); border:1px solid var(--line); border-radius:var(--r); padding:13px 15px;}
+  .carte .n{font-size:25px; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums;}
+  .carte .l{font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; margin-top:2px;}
+  .n.ok{color:var(--ok);} .n.ko{color:var(--ko);} .n.acc{color:var(--acc);} .n.gold{color:var(--gold);}
+
+  /* ── Barre d'outils ── */
+  .outils{display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; align-items:center;}
+  input[type=search]{
+    flex:1; min-width:180px; background:var(--card); border:1px solid var(--line);
+    border-radius:8px; padding:8px 12px; color:var(--txt); font-size:13px; font-family:inherit;
+  }
+  input[type=search]:focus{outline:none; border-color:var(--acc);}
+  .btn{
+    background:var(--card); color:var(--txt); border:1px solid var(--line); border-radius:8px;
+    padding:8px 13px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;
+    white-space:nowrap; transition:.15s;
+  }
+  .btn:hover{border-color:var(--acc); color:var(--acc);}
+  .btn.actif{background:rgba(0,196,204,.15); border-color:var(--acc); color:var(--acc);}
+  .btn.plein{background:var(--acc); color:#04141d; border-color:var(--acc);}
+  .btn.plein:hover{filter:brightness(1.1); color:#04141d;}
+
+  /* ── Groupes de tests ── */
+  .groupe{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+          margin-bottom:10px; overflow:hidden;}
+  .groupe > h2{
+    font-size:13.5px; margin:0; padding:12px 15px; background:var(--card2);
+    border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px;
+    cursor:pointer; user-select:none; font-weight:600;
+  }
+  .groupe > h2 .chev{color:var(--dim2); font-size:11px; transition:transform .15s; flex:0 0 auto;}
+  .groupe.replie > h2 .chev{transform:rotate(-90deg);}
+  .groupe.replie .corps{display:none;}
+  .gstat{margin-left:auto; display:flex; gap:8px; align-items:center; font-weight:600; font-size:11.5px;}
+  .pill{padding:2px 9px; border-radius:20px; font-variant-numeric:tabular-nums;}
+  .pill.ok{background:rgba(34,197,94,.14); color:var(--ok);}
+  .pill.ko{background:rgba(239,68,68,.14); color:var(--ko);}
+  .pill.tps{background:rgba(255,255,255,.06); color:var(--dim);}
+
+  .ligne{display:flex; gap:11px; padding:7px 15px; font-size:12.5px; align-items:flex-start;
+         border-bottom:1px solid rgba(255,255,255,.035);}
+  .ligne:last-child{border-bottom:none;}
+  .ligne.echec{background:rgba(239,68,68,.06);}
+  .puce{flex:0 0 auto; font-weight:700; width:13px;}
+  .puce.ok{color:var(--ok);} .puce.ko{color:var(--ko);}
+  .nom{flex:1;}
+  .ms{flex:0 0 auto; color:var(--dim2); font-size:10.5px; font-variant-numeric:tabular-nums;
+      padding-top:1px;}
+  .ms.lent{color:var(--gold);}
+  .msg{color:#FCA5A5; font-size:11.5px; margin-top:4px; padding:7px 10px;
+       background:rgba(239,68,68,.09); border-left:2px solid var(--ko); border-radius:0 5px 5px 0;
+       font-family:ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; word-break:break-word;}
+
+  /* ── Panneau d'informations ── */
+  .infos{background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+         padding:15px 17px; margin-top:16px;}
+  .infos h3{font-size:12px; margin:0 0 11px; color:var(--dim); text-transform:uppercase;
+            letter-spacing:.6px; font-weight:600;}
+  .rang{display:flex; justify-content:space-between; gap:14px; padding:5px 0; font-size:12.5px;
+        border-bottom:1px solid rgba(255,255,255,.04);}
+  .rang:last-child{border-bottom:none;}
+  .rang span{color:var(--dim);}
+  .rang b{font-weight:600; text-align:right; word-break:break-word; font-variant-numeric:tabular-nums;}
+  .note{color:var(--dim2); font-size:11.5px; line-height:1.65; margin-top:14px;}
+  code{background:rgba(255,255,255,.07); padding:1px 5px; border-radius:4px; font-size:11px;}
+  .cache{display:none !important;}
 </style>
 </head>
 <body>
-<h1>Tests automatiques — Annuaire KPI</h1>
-<div class="sub">Vérifie le moteur de fusion, la synchronisation et les fonctions de l'application.
-Aucune donnée réelle n'est lue ni modifiée : le stockage et le cloud sont simulés.</div>
+<div class="wrap">
 
-<div id="etat" class="etat att">Chargement en cours…</div>
-<div id="resume"></div>
-<div id="sortie"></div>
-<div class="note">
-  Cette page charge <code>app.js</code> et le dossier <code>js/</code> dans un bac à sable :
-  la mémoire du navigateur, Firebase et Excel sont remplacés par des simulations.
-  Vos KPIs et votre synchronisation ne sont jamais touchés.
-  <br><br>
-  <button onclick="location.reload()">↻ Relancer les tests</button>
+  <header>
+    <div class="logo">✓</div>
+    <div>
+      <h1>Tests automatiques — Annuaire KPI</h1>
+      <p class="sub">Moteur de fusion, synchronisation, affichage, import/export et persistance</p>
+    </div>
+    <div class="badges">
+      <span class="badge" id="bVersion">app.js …</span>
+      <span class="badge warn" id="bSandbox">Bac à sable — données réelles intactes</span>
+    </div>
+  </header>
+
+  <div class="etat att" id="etat"><span class="spin"></span><span id="etatTxt">Préparation…</span></div>
+
+  <div class="prog" id="zoneProg">
+    <div class="prog-tete"><span class="lib" id="progLib">Chargement des fichiers</span><span class="val" id="progVal">0 %</span></div>
+    <div class="barre" id="barre"><i id="barreJauge"></i></div>
+    <div class="encours" id="encours"></div>
+  </div>
+
+  <div class="cartes" id="cartes"></div>
+
+  <div class="outils cache" id="outils">
+    <input type="search" id="recherche" placeholder="Filtrer les tests…" autocomplete="off">
+    <button class="btn" id="btnEchecs">Échecs seulement</button>
+    <button class="btn" id="btnPlier">Tout replier</button>
+    <button class="btn" id="btnCopier">Copier le rapport</button>
+    <button class="btn plein" id="btnRelancer">↻ Relancer</button>
+  </div>
+
+  <div id="sortie"></div>
+
+  <div class="infos cache" id="infos">
+    <h3>Informations d'exécution</h3>
+    <div id="infosCorps"></div>
+    <div class="note">
+      Cette page charge <code>app.js</code> et le dossier <code>js/</code> dans un bac à sable :
+      la mémoire du navigateur, Firebase et Excel sont remplacés par des simulations.
+      Vos KPIs, votre corbeille et votre synchronisation ne sont jamais lus ni modifiés.
+    </div>
+  </div>
+
 </div>
 
 <script>
-/* ══ Mini cadre de test (remplace node:test et node:assert) ══ */
+/* ══════════════ Cadre de test minimal (remplace node:test / node:assert) ══════════════ */
 const __groupes = [];
 let __courant = null;
-function __ouvrirGroupe(nom) { __courant = { nom, tests: [] }; __groupes.push(__courant); }
-function test(nom, fn) { __courant.tests.push({ nom, fn }); }
+function __ouvrirGroupe(nom){ __courant = { nom, tests: [] }; __groupes.push(__courant); }
+function test(nom, fn){ __courant.tests.push({ nom, fn }); }
 
 const assert = {
-  equal(a, b, m) { if (a != b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
-  strictEqual(a, b, m) { if (a !== b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
-  notEqual(a, b, m) { if (a == b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
-  ok(v, m) { if (!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
-  match(s, re, m) { if (!re.test(s)) throw new Error(m || `"${s}" ne correspond pas à ${re}`); },
-  deepEqual(a, b, m) {
-    if (JSON.stringify(a) !== JSON.stringify(b))
-      throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`);
-  }
+  equal(a,b,m){ if(a!=b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  strictEqual(a,b,m){ if(a!==b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  notEqual(a,b,m){ if(a==b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
+  ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
+  match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
+  deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); }
 };
 
-/* ══ Bac à sable : cœur de harnais partagé avec les tests locaux ══ */
+/* ══════════════ Bac à sable partagé avec les tests locaux ══════════════ */
 /* Cœur du harnais de test — utilisable à l'identique sous Node et dans le navigateur.
    Charge le VRAI app.js dans un bac à sable dont on peut OBSERVER les effets :
    ce qui est écrit dans la page, les messages affichés, les fichiers exportés… */
@@ -331,29 +459,31 @@ const assert = {
 })(typeof globalThis !== "undefined" ? globalThis : this);
 
 
-async function loadApp() {
-  const fichiers = ["js/storage.js", "js/merge.js", "js/carousel.js", "app.js"];
+const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js", "app.js"];
+const journalFichiers = [];
+
+async function loadApp(surProgression){
   const sources = [];
-  window.__journal = [];
-  for (const f of fichiers) {
+  for (let i = 0; i < FICHIERS.length; i++){
+    const f = FICHIERS[i];
+    if (surProgression) surProgression(i / FICHIERS.length, f);
     let r;
     try { r = await fetch(f + "?anticache=" + Date.now()); }
-    catch (e) { window.__journal.push("✗ " + f + " — " + e.message); throw new Error("Impossible de télécharger " + f + " (" + e.message + ")"); }
-    if (!r.ok) { window.__journal.push("✗ " + f + " — HTTP " + r.status); throw new Error("Fichier introuvable : " + f + " (HTTP " + r.status + ")"); }
+    catch(e){ journalFichiers.push({ f, ok:false, info:e.message }); throw new Error("Impossible de télécharger " + f + " — " + e.message); }
+    if (!r.ok){ journalFichiers.push({ f, ok:false, info:"HTTP " + r.status }); throw new Error("Fichier introuvable : " + f + " (HTTP " + r.status + ")"); }
     const t = await r.text();
-    window.__journal.push("✓ " + f + " — " + Math.round(t.length / 1024) + " Ko");
+    journalFichiers.push({ f, ok:true, info:(t.length/1024).toFixed(1) + " Ko" });
     sources.push(t);
   }
-  const h = creerHarnais(sources);
-  window.__version = h.version;
-  return h;
+  if (surProgression) surProgression(1, "initialisation du bac à sable");
+  return creerHarnais(sources);
 }
 
-/* ══ Simulateur d'appareils (synchronisation) ══ */
+/* ══════════════ Simulateur d'appareils (tests de synchronisation) ══════════════ */
 /* Banc d'essai : simule des appareils réels avec le VRAI moteur de fusion.
    Reproduit fidèlement la logique de app.js (buildSyncPayload, mergeRemote*,
    initialSync, replaceLocalWithRemote, rebuildData). */
-const M = window;
+const M = window;   // les fonctions de fusion sont exposées globalement
 const STD_FREQS = ["Mensuelle", "Hebdomadaire", "Quotidienne"];
 const titleKey = t => (t || "").toLowerCase().replace(/\s+/g, " ").trim();
 const slugifyId = t => (t || "").toLowerCase().normalize("NFD")
@@ -606,7 +736,7 @@ class Device {
 function avancerHorloge(ms) { horlogeGlobale += ms; }
 
 
-/* ══ Les tests ══ */
+/* ══════════════ Les tests ══════════════ */
 let A = null;
 __ouvrirGroupe("Moteur de fusion");
 /* ============================================================
@@ -3383,88 +3513,212 @@ test("surcharges : le système obsolète est bien neutralisé", () => {
 });
 
 
-/* ══ Exécution ══ */
-function __diagnostic(titre, detail) {
-  const etat = document.getElementById("etat");
-  etat.className = "etat ko";
-  etat.textContent = "❌ " + titre;
-  const j = (window.__journal || []).map(l => "<div>" + l + "</div>").join("") || "<div>aucun fichier chargé</div>";
-  document.getElementById("sortie").innerHTML =
-    '<div class="groupe"><h2>Diagnostic</h2>' +
-    '<div class="ligne"><span>' + String(detail || "").replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])) + '</span></div>' +
-    '<div class="ligne"><span><b>Fichiers :</b>' + j + '</span></div>' +
-    '<div class="ligne"><span><b>Adresse :</b> ' + location.href + '</span></div>' +
-    '<div class="ligne"><span><b>Version de app.js détectée :</b> ' + (window.__version || "non chargée") + '</span></div>' +
-    '<div class="ligne"><span><b>Navigateur :</b> ' + navigator.userAgent + '</span></div>' +
-    '</div>' +
-    '<div class="note">Si l’adresse commence par <code>file://</code>, ouvrez plutôt la page ' +
-    'par son adresse <code>https://…</code>. Sinon, envoyez cette capture pour analyse.</div>';
+/* ══════════════ Exécution et affichage ══════════════ */
+const $ = id => document.getElementById(id);
+const echapper = s => String(s).replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c]));
+
+function majEtat(classe, texte, avecRoue){
+  const e = $("etat");
+  e.className = "etat " + classe;
+  e.innerHTML = (avecRoue ? '<span class="spin"></span>' : '') + '<span id="etatTxt"></span>';
+  $("etatTxt").textContent = texte;
+}
+function majBarre(ratio, libelle, valeur, enEchec){
+  $("barreJauge").style.width = Math.round(ratio * 100) + "%";
+  $("barre").className = "barre" + (enEchec ? " ko" : "");
+  if (libelle !== undefined) $("progLib").textContent = libelle;
+  $("progVal").textContent = valeur !== undefined ? valeur : Math.round(ratio * 100) + " %";
+}
+const respirer = () => new Promise(r => setTimeout(r, 0));
+
+function afficherCartes(total, ok, ko, ms, groupes){
+  $("cartes").innerHTML =
+    carte(total, "Tests", "acc") +
+    carte(ok, "Réussis", "ok") +
+    carte(ko, "Échoués", ko ? "ko" : "ok") +
+    carte(groupes, "Domaines", "acc") +
+    carte((ms/1000).toFixed(2) + " s", "Durée", "gold");
+}
+const carte = (n, l, c) => '<div class="carte"><div class="n ' + c + '">' + n + '</div><div class="l">' + l + '</div></div>';
+
+function panneauInfos(resultats, msTotal){
+  const lents = resultats.slice().sort((a,b) => b.ms - a.ms).slice(0, 5);
+  const rang = (l, v) => '<div class="rang"><span>' + l + '</span><b>' + v + '</b></div>';
+  let h = "";
+  h += rang("Version de app.js", A ? A.version : "—");
+  h += rang("Adresse", echapper(location.href.split("?")[0]));
+  h += rang("Date d'exécution", new Date().toLocaleString("fr-FR"));
+  h += rang("Durée totale", (msTotal/1000).toFixed(2) + " s");
+  h += rang("Navigateur", echapper(navigator.userAgent.slice(0, 90)));
+  h += '<div class="rang"><span>Fichiers chargés</span><b>' +
+       journalFichiers.map(x => (x.ok ? "✓ " : "✗ ") + x.f + " (" + x.info + ")").join("<br>") + '</b></div>';
+  h += '<div class="rang"><span>Tests les plus lents</span><b>' +
+       lents.map(t => echapper(t.nom.slice(0, 52)) + " — " + t.ms.toFixed(1) + " ms").join("<br>") + '</b></div>';
+  $("infosCorps").innerHTML = h;
+  $("infos").classList.remove("cache");
 }
 
-/* Toute erreur imprévue devient visible au lieu de laisser la page muette */
-window.addEventListener("error", e => __diagnostic("Erreur inattendue", e.message + " (" + e.filename + " ligne " + e.lineno + ")"));
-window.addEventListener("unhandledrejection", e => __diagnostic("Erreur inattendue", String(e.reason && e.reason.message || e.reason)));
+function diagnostic(titre, detail){
+  majEtat("ko", titre, false);
+  $("zoneProg").style.display = "none";
+  const j = journalFichiers.length
+    ? journalFichiers.map(x => (x.ok ? "✓ " : "✗ ") + x.f + " (" + x.info + ")").join("<br>")
+    : "aucun fichier chargé";
+  $("sortie").innerHTML =
+    '<div class="groupe"><h2>Diagnostic</h2><div class="corps">' +
+    '<div class="ligne"><span class="nom">' + echapper(detail || "") + '</span></div>' +
+    '<div class="ligne"><span class="nom"><b>Fichiers</b><div class="msg" style="color:var(--dim)">' + j + '</div></span></div>' +
+    '<div class="ligne"><span class="nom"><b>Adresse</b> ' + echapper(location.href) + '</span></div>' +
+    '<div class="ligne"><span class="nom"><b>Navigateur</b> ' + echapper(navigator.userAgent) + '</span></div>' +
+    '</div></div>' +
+    '<div class="note">Si l\u2019adresse commence par <code>file://</code>, ouvrez la page par son adresse ' +
+    '<code>https://…</code>. Sinon, transmettez cette capture pour analyse.</div>';
+}
 
-/* Chien de garde : si rien ne s'affiche au bout de 15 s, on explique pourquoi */
-const __veille = setTimeout(() => {
-  const etat = document.getElementById("etat");
-  if (etat && etat.className.includes("att")) __diagnostic("Le chargement n'aboutit pas", "Aucune réponse au bout de 15 secondes.");
-}, 15000);
+window.addEventListener("error", e => diagnostic("Erreur inattendue", e.message + " — " + e.filename + " ligne " + e.lineno));
+window.addEventListener("unhandledrejection", e => diagnostic("Erreur inattendue", String((e.reason && e.reason.message) || e.reason)));
 
-(async function () {
-  const etat = document.getElementById("etat");
-  const sortie = document.getElementById("sortie");
-  const resume = document.getElementById("resume");
+const veille = setTimeout(() => {
+  if ($("etat").className.indexOf("att") >= 0) diagnostic("Le chargement n'aboutit pas", "Aucune réponse au bout de 30 secondes.");
+}, 30000);
+
+(async function(){
+  /* — Phase 1 : chargement — */
+  majEtat("att", "Chargement de l'application…", true);
   try {
-    A = await loadApp();
-  } catch (e) {
-    clearTimeout(__veille);
-    __diagnostic("Impossible de charger l'application", e.message);
+    A = await loadApp((ratio, fichier) => {
+      majBarre(ratio, "Chargement des fichiers", Math.round(ratio * 100) + " %");
+      $("encours").textContent = fichier;
+    });
+  } catch(e){
+    clearTimeout(veille);
+    diagnostic("Impossible de charger l'application", e.message);
     return;
   }
-  clearTimeout(__veille);
-  try {
+  clearTimeout(veille);
+  $("bVersion").textContent = "app.js " + A.version;
 
-  let total = 0, reussis = 0, echoues = 0;
-  for (const g of __groupes) {
+  /* — Phase 2 : exécution — */
+  const total = __groupes.reduce((n, g) => n + g.tests.length, 0);
+  majEtat("att", "Exécution des tests…", true);
+  majBarre(0, "Tests exécutés", "0 / " + total);
+  await respirer();
+
+  const resultats = [];
+  let faits = 0, reussis = 0, echoues = 0;
+  const debut = performance.now();
+
+  for (const g of __groupes){
     const bloc = document.createElement("div");
     bloc.className = "groupe";
     const titre = document.createElement("h2");
-    bloc.appendChild(titre);
+    const corps = document.createElement("div");
+    corps.className = "corps";
+    bloc.appendChild(titre); bloc.appendChild(corps);
+    $("sortie").appendChild(bloc);
+
     let okG = 0, koG = 0;
-    for (const t of g.tests) {
-      total++;
-      const ligne = document.createElement("div");
-      ligne.className = "ligne";
+    const debutG = performance.now();
+    titre.innerHTML = '<span class="chev">▼</span><span>' + echapper(g.nom) + '</span>' +
+                      '<span class="gstat"><span class="pill tps">en cours…</span></span>';
+
+    for (const t of g.tests){
+      const t0 = performance.now();
       let erreur = null;
-      try { await t.fn(); } catch (e) { erreur = e; }   // certains tests sont asynchrones
-      if (erreur) { echoues++; koG++; } else { reussis++; okG++; }
+      try { await t.fn(); } catch(e){ erreur = e; }
+      const ms = performance.now() - t0;
+      faits++;
+      if (erreur){ echoues++; koG++; } else { reussis++; okG++; }
+      resultats.push({ groupe: g.nom, nom: t.nom, ms, erreur: erreur ? String(erreur.message) : null });
+
+      const ligne = document.createElement("div");
+      ligne.className = "ligne" + (erreur ? " echec" : "");
+      ligne.dataset.echec = erreur ? "1" : "0";
+      ligne.dataset.nom = t.nom.toLowerCase();
       ligne.innerHTML =
         '<span class="puce ' + (erreur ? "ko" : "ok") + '">' + (erreur ? "✗" : "✓") + '</span>' +
-        '<span>' + t.nom.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])) +
-        (erreur ? '<div class="msg">' + String(erreur.message).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])) + '</div>' : '') +
-        '</span>';
-      bloc.appendChild(ligne);
+        '<span class="nom">' + echapper(t.nom) +
+          (erreur ? '<div class="msg">' + echapper(erreur.message) + '</div>' : '') +
+        '</span>' +
+        '<span class="ms' + (ms > 40 ? " lent" : "") + '">' + ms.toFixed(1) + ' ms</span>';
+      corps.appendChild(ligne);
+
+      /* Progression fluide : on rend la main au navigateur régulièrement */
+      if (faits % 8 === 0 || faits === total){
+        majBarre(faits / total, "Tests exécutés", faits + " / " + total, echoues > 0);
+        $("encours").textContent = g.nom + " — " + t.nom;
+        afficherCartes(total, reussis, echoues, performance.now() - debut, __groupes.length);
+        await respirer();
+      }
     }
-    titre.textContent = g.nom + " — " + okG + "/" + g.tests.length;
-    sortie.appendChild(bloc);
+
+    const msG = performance.now() - debutG;
+    titre.innerHTML = '<span class="chev">▼</span><span>' + echapper(g.nom) + '</span>' +
+      '<span class="gstat">' +
+        (koG ? '<span class="pill ko">' + koG + ' échec' + (koG > 1 ? 's' : '') + '</span>' : '') +
+        '<span class="pill ok">' + okG + '/' + g.tests.length + '</span>' +
+        '<span class="pill tps">' + msG.toFixed(0) + ' ms</span>' +
+      '</span>';
+    titre.addEventListener("click", () => bloc.classList.toggle("replie"));
+    if (!koG) bloc.classList.add("replie");   // on ne déplie que ce qui pose problème
   }
 
-  resume.innerHTML =
-    '<div class="carte"><div class="n acc">' + total + '</div><div class="l">Tests</div></div>' +
-    '<div class="carte"><div class="n ok">' + reussis + '</div><div class="l">Réussis</div></div>' +
-    '<div class="carte"><div class="n ' + (echoues ? "ko" : "ok") + '">' + echoues + '</div><div class="l">Échoués</div></div>';
+  const msTotal = performance.now() - debut;
 
-  if (echoues === 0) {
-    etat.className = "etat ok";
-    etat.textContent = "✅ Tout va bien — les " + total + " tests passent. (app.js " + (window.__version || "?") + ")";
-  } else {
-    etat.className = "etat ko";
-    etat.textContent = "❌ " + echoues + " test(s) en échec sur " + total + " — voir le détail en rouge ci-dessous. (app.js " + (window.__version || "?") + ")";
-  }
-  } catch (e) {
-    __diagnostic("Erreur pendant l'exécution des tests", e && e.stack ? e.stack : String(e));
-  }
+  /* — Phase 3 : synthèse — */
+  afficherCartes(total, reussis, echoues, msTotal, __groupes.length);
+  majBarre(1, "Terminé", faits + " / " + total, echoues > 0);
+  $("encours").textContent = "";
+  $("outils").classList.remove("cache");
+  panneauInfos(resultats, msTotal);
+
+  if (echoues === 0) majEtat("ok", "Tout va bien — les " + total + " tests passent (" + (msTotal/1000).toFixed(2) + " s)", false);
+  else majEtat("ko", echoues + " test(s) en échec sur " + total + " — les domaines concernés sont dépliés ci-dessous", false);
+
+  /* — Commandes — */
+  const appliquerFiltre = () => {
+    const q = $("recherche").value.trim().toLowerCase();
+    const seulEchecs = $("btnEchecs").classList.contains("actif");
+    document.querySelectorAll(".ligne").forEach(l => {
+      const okNom = !q || (l.dataset.nom || "").indexOf(q) >= 0;
+      const okEtat = !seulEchecs || l.dataset.echec === "1";
+      l.classList.toggle("cache", !(okNom && okEtat));
+    });
+    document.querySelectorAll(".groupe").forEach(g => {
+      const visibles = g.querySelectorAll(".ligne:not(.cache)").length;
+      g.classList.toggle("cache", visibles === 0);
+      if (visibles > 0 && (q || seulEchecs)) g.classList.remove("replie");
+    });
+  };
+  $("recherche").addEventListener("input", appliquerFiltre);
+  $("btnEchecs").addEventListener("click", function(){ this.classList.toggle("actif"); appliquerFiltre(); });
+  $("btnPlier").addEventListener("click", function(){
+    const toutReplie = this.dataset.etat !== "replie";
+    document.querySelectorAll(".groupe").forEach(g => g.classList.toggle("replie", toutReplie));
+    this.dataset.etat = toutReplie ? "replie" : "deplie";
+    this.textContent = toutReplie ? "Tout déplier" : "Tout replier";
+  });
+  $("btnRelancer").addEventListener("click", () => location.reload());
+  $("btnCopier").addEventListener("click", async function(){
+    const lignes = [
+      "Rapport de tests — Annuaire KPI",
+      "Version de app.js : " + A.version,
+      "Date : " + new Date().toLocaleString("fr-FR"),
+      "Résultat : " + reussis + " réussis, " + echoues + " échoués sur " + total +
+        " (" + (msTotal/1000).toFixed(2) + " s)",
+      ""
+    ];
+    if (echoues){
+      lignes.push("Tests en échec :");
+      resultats.filter(r => r.erreur).forEach(r => lignes.push("  ✗ [" + r.groupe + "] " + r.nom + " → " + r.erreur));
+    } else {
+      lignes.push("Aucun échec.");
+    }
+    const txt = lignes.join("\n");
+    try { await navigator.clipboard.writeText(txt); this.textContent = "✓ Copié"; }
+    catch { this.textContent = "Copie impossible"; }
+    setTimeout(() => { this.textContent = "Copier le rapport"; }, 2200);
+  });
 })();
 </script>
 </body>
