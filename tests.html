@@ -4300,6 +4300,23 @@ async function analyseReelle(avecEcriture){
           echapper(String(location.href || "").split("?")[0].replace(/[^/]*$/, "") + "js/storage.js") +
           "</b> et cherchez la ligne PURGED.</i>" });
 
+  const arbitrage = (function(){
+    // Deux fiches de même date, auteurs différents : la fusion doit désigner
+    // le MÊME gagnant quel que soit le sens, sinon les appareils divergent.
+    const x = [{ id:"t", _mtime:100, _by:"A", v:"a" }], y = [{ id:"t", _mtime:100, _by:"B", v:"b" }];
+    try {
+      const g1 = A.run("mergeEntries(" + JSON.stringify(x) + "," + JSON.stringify(y) + ")")[0].v;
+      const g2 = A.run("mergeEntries(" + JSON.stringify(y) + "," + JSON.stringify(x) + ")")[0].v;
+      return g1 === g2;
+    } catch { return false; }
+  })();
+  ajouterControle("Fichiers déployés", "js/merge.js à jour",
+    arbitrage ? { etat:"ok", detail:"l'arbitrage en cas d'égalité de date est déterministe" }
+      : { etat:"ko", detail:
+          "Le fichier <b>js/merge.js</b> en ligne est <b>ancien</b> : quand deux appareils modifient une fiche " +
+          "à la même milliseconde, chacun garde sa propre version et ils <b>restent divergents</b>.<br>" +
+          "Déposez la nouvelle version dans le dossier <code>js/</code>, puis rafraîchissez." });
+
   const appRecent = A.run("typeof nettoyerPurgees === 'function'");
   ajouterControle("Fichiers déployés", "app.js à jour",
     appRecent ? { etat:"ok", detail:"version <b>" + echapper(A.version) + "</b>, nettoyage automatique présent" }
