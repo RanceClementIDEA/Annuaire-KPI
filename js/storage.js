@@ -18,7 +18,7 @@
     PERSONAL:    "kpiPersonal_",      // suffixé par l'identifiant utilisateur
     OVERRIDES:   "kpiOverrides",
     DELETED:     "kpiDeletedIds",
-    PURGED:      "kpiPurged",
+    PURGED:      "kpiPurgedIds",   // doit rester identique à app.js (savePurged/loadPurged)
     SITES:       "kpiSites",
     ACTIVITY:    "kpiActivity",
     DATA_CACHE:  "kpiDataCache",
