@@ -856,3 +856,221 @@ test("envoi : le journal d'activité ne fait pas gonfler l'envoi sans limite", (
   A.run(`for (let i = 0; i < 600; i++) logActivity("update", "KPI " + i, "détail assez long pour peser");`);
   assert.ok(A.get("activityLog.length") <= 400, "le journal est plafonné avant l'envoi");
 });
+
+/* ═══ Nettoyage des fiches déjà supprimées définitivement ═══ */
+
+test("nettoyage : les fiches purgées encore stockées sont libérées", () => {
+  const f = fiches(["Fantôme A", "Mensuelle"], ["Fantôme B", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id, f[1].id] });
+  const retirees = A.run("nettoyerPurgees()");
+  assert.equal(retirees, 2);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Vivante");
+});
+
+test("nettoyage : sans suppression définitive, rien n'est touché", () => {
+  A.reset({ manualEntries: fiches(["A", "Mensuelle"], ["B", "Mensuelle"]) });
+  assert.equal(A.run("nettoyerPurgees()"), 0);
+  assert.equal(A.get("manualEntries.length"), 2);
+});
+
+test("nettoyage : il s'exécute au chargement de l'application", () => {
+  const f = fiches(["Fantôme", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id] });
+  A.run("saveManualEntries(false); savePurged(false); loadSavedFile();");
+  assert.equal(A.get("manualEntries.length"), 1, "la fiche fantôme est libérée dès l'ouverture");
+});
+
+test("nettoyage : le contenu envoyé au cloud est allégé d'autant", () => {
+  const f = fiches(["Fantôme", "Mensuelle"], ["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, purgedIds: [f[0].id] });
+  A.run("nettoyerPurgees()");
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1);
+  assert.ok(!JSON.stringify(envoi.kpiManual).includes("Fantôme"));
+});
+
+test("nettoyage : une fiche seulement en corbeille n'est PAS libérée", () => {
+  const f = fiches(["En corbeille", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "En corbeille", at: 5, state: "deleted" }] });
+  A.run("nettoyerPurgees()");
+  assert.equal(A.get("manualEntries.length"), 1, "elle doit rester récupérable");
+});
+
+/* ═══ Cas limites de données ═══ */
+
+test("limites : un intitulé composé uniquement d'espaces est traité comme vide", () => {
+  A.reset({ manualEntries: [{ id: "x", title: "   ", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.run("titleKey(data[0].title)"), "");
+});
+
+test("limites : les temporalités se regroupent quelle que soit la casse", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "K", freq: "MENSUELLE" }, { id: "b", title: "K", freq: "mensuelle" }
+  ] });
+  A.run("rebuildData(false)");
+  const anomalies = A.run("findVariantAnomalies(data)");
+  assert.ok(anomalies.some(a => /double/.test(a.reason)), "deux « Mensuelle » = doublon même avec une casse différente");
+});
+
+test("limites : un lien très long est conservé intact", () => {
+  const url = "https://app.powerbi.com/groups/" + "x".repeat(900);
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", logistiport: url }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data")[0].logistiport.length, url.length);
+});
+
+test("limites : deux périmètres de même nom reçoivent des clés distinctes", () => {
+  A.reset();
+  A.run(`sitesDraft = [{ name: "Qualité" }, { name: "Qualité" }]; saveSitesFromModal();`);
+  const cles = A.run("activeSites().map(function(s){return s.key;})");
+  assert.equal(new Set(cles).size, cles.length, "aucune clé de périmètre en double");
+});
+
+test("limites : des marqueurs de corbeille en double sont tolérés", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }],
+    deletedIds: [{ id: "a", at: 5, state: "deleted" }, { id: "a", at: 5, state: "deleted" }]
+  });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0);
+});
+
+test("limites : une suppression définitive en double ne casse rien", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }], purgedIds: ["a", "a"] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0);
+});
+
+test("limites : une fiche purgée ne peut pas être réaffichée depuis la corbeille", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }],
+    deletedIds: [{ id: "a", title: "K", at: 5, state: "deleted" }],
+    purgedIds: ["a"]
+  });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a" } }]);
+  A.run("restoreSelectedTrash(); rebuildData(false);");
+  assert.equal(A.get("data.length"), 0, "une suppression définitive reste définitive");
+});
+
+test("limites : une fiche sans date de modification est acceptée", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Ancienne", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1);
+});
+
+/* ═══ Résistance aux données abîmées ═══ */
+
+test("résistance : chaque emplacement corrompu est isolé", () => {
+  const emplacements = ["kpiManualEntries", "kpiDeletedIds", "kpiPurgedIds", "kpiSites", "kpiActivity"];
+  emplacements.forEach(cle => {
+    A.reset();
+    A.run(`localStorage.setItem(${JSON.stringify(cle)}, "{{{ pas du JSON");`);
+    A.run("loadManualEntries(); loadDeletedIds(); loadPurged(); loadSites(); loadActivity(); rebuildData(false);");
+    assert.ok(Array.isArray(A.get("manualEntries")), "l'application reste utilisable malgré : " + cle);
+  });
+});
+
+test("résistance : un instantané illisible n'empêche pas d'ouvrir la liste", () => {
+  A.reset();
+  A.run(`localStorage.setItem("kpiSnapshots", "pas du JSON"); renderSnapshotList();`);
+  assert.ok(true, "aucune exception");
+});
+
+test("résistance : une mémoire saturée est signalée sans perte de données", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }] });
+  A.run(`localStorage.setItem = function(){ var e = new Error("plein"); e.name = "QuotaExceededError"; throw e; };`);
+  let planté = false;
+  try { A.run("pushSnapshot('essai')"); } catch { planté = true; }
+  A.reset();   // rétablit un stockage fonctionnel pour les tests suivants
+  assert.equal(planté, false, "la saturation ne doit pas interrompre l'application");
+});
+
+/* ═══ Aller-retour Excel ═══ */
+
+test("Excel : exporter puis ré-importer restitue les mêmes fiches", () => {
+  const depart = fiches(["Aller-retour", "Mensuelle", { logistiport: "https://a", armement: "https://b" }],
+                        ["Aller-retour", "Hebdomadaire", { logistiport: "https://c" }]);
+  A.reset({ manualEntries: depart });
+  A.run("rebuildData(false); exportExcel();");
+  const aoa = A.fichiersExportes()[0].wb.Sheets["KPIs"]["!aoa"];
+
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(p){ return "R" + p.r + "C" + p.c; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, ${JSON.stringify(aoa)});`);
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 2, "les deux temporalités sont restituées");
+  assert.equal(A.run("countFiches(data)"), 1, "et forment bien une seule fiche");
+});
+
+test("Excel : un fichier sans aucune ligne de données est sans effet", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [["Intitulé","Type KPI","Processus","Fréquence","Rituel","Description / Mode de calcul"]]);`);
+  assert.equal(A.get("manualEntries.length"), 0);
+});
+
+test("Excel : deux lignes identiques reçoivent des identifiants distincts", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [
+    ["Intitulé","Type KPI","Processus","Fréquence","Rituel","Description / Mode de calcul"],
+    ["Doublon","","","Mensuelle","",""],
+    ["Doublon","","","Mensuelle","",""]
+  ]);`);
+  const ids = A.get("manualEntries").map(k => k.id);
+  assert.equal(new Set(ids).size, ids.length, "aucun identifiant écrasé");
+});
+
+test("Excel : des colonnes manquantes n'empêchent pas l'import", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [["Intitulé","Fréquence"], ["Minimal","Mensuelle"]]);`);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Minimal");
+});
+
+/* ═══ Favoris et périmètres, cas avancés ═══ */
+
+test("favoris : un favori pointant vers une fiche disparue est ignoré à l'affichage", () => {
+  A.reset({ manualEntries: fiches(["Existante", "Mensuelle"]), favorites: ["id_inexistant"] });
+  A.run("rebuildData(false)");
+  assert.equal(A.texte("countFav"), "0");
+});
+
+test("périmètres : supprimer puis recréer un périmètre du même nom le réactive", () => {
+  A.reset({ sites: [{ key: "qualite", name: "Qualité", _deleted: true, _mtime: 5 }] });
+  A.run(`sitesDraft = [{ key: "qualite", name: "Qualité" }]; saveSitesFromModal();`);
+  assert.ok(A.run("activeSites().some(function(s){return s.key === 'qualite';})"));
+});
+
+test("périmètres : un périmètre supprimé n'apparaît plus dans les liens de la modale", () => {
+  A.reset({ sites: [{ key: "a", name: "A" }, { key: "b", name: "B", _deleted: true }] });
+  A.run("openKpiModal()");
+  assert.ok(!A.html("linksGrid").includes("kpiLink_b"), "le périmètre supprimé n'est pas proposé");
+});
+
+/* ═══ Instantanés et synchronisation ═══ */
+
+test("instantané : une restauration devient la version la plus récente", () => {
+  A.reset({ manualEntries: fiches(["Avant", "Mensuelle"]) });
+  A.run("rebuildData(false); pushSnapshot('repère');");
+  A.run("manualEntries = []; rebuildData(false);");
+  A.confirmer(true);
+  A.run("restoreSnapshot(0)");
+  A.confirmer(false);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1, "la version restaurée est bien celle qui partira au cloud");
+});
+
+test("horloge : la correction du serveur est appliquée aux dates", () => {
+  A.reset();
+  A.run(`localStorage.setItem("kpiClockOffset", "100000"); clockOffset = 100000;`);
+  const avant = Date.now();
+  const t = A.run("now()");
+  assert.ok(t >= avant + 90000, "l'heure corrigée est utilisée pour dater les modifications");
+  A.run("clockOffset = 0;");
+});

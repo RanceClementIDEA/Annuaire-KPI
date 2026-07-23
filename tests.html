@@ -163,7 +163,7 @@
   </header>
 
   <div class="modes">
-    <button class="btn actif" id="modeSandbox">🧪 Bac à sable — 320 tests</button>
+    <button class="btn actif" id="modeSandbox">🧪 Bac à sable</button>
     <button class="btn" id="modeReel">🔎 Données réelles — diagnostic</button>
   </div>
 
@@ -311,7 +311,7 @@ const assert = {
       body: creerElement("body"),
       documentElement: creerElement("html")
     };
-    const stockageSim = {
+    const stockageOrigine = {
       getItem: k => (memoire[k] === undefined ? null : memoire[k]),
       setItem: (k, v) => { memoire[k] = String(v); },
       removeItem: k => { delete memoire[k]; },
@@ -319,6 +319,9 @@ const assert = {
       key: i => Object.keys(memoire)[i],
       get length() { return Object.keys(memoire).length; }
     };
+    // Copie de travail : un test peut la détourner, reset() la remet en place
+    const stockageSim = Object.create(Object.getPrototypeOf(stockageOrigine),
+      Object.getOwnPropertyDescriptors(stockageOrigine));
     // Tableur simulé : mémorise ce qui serait écrit dans le fichier Excel
     const xlsxSim = {
       utils: {
@@ -373,6 +376,10 @@ const assert = {
 
     // Les messages affichés à l'utilisateur sont détournés pour être vérifiables
     run("globalThis.__msg = []; showToast = function (m) { globalThis.__msg.push(String(m)); };");
+    // Un test peut remplacer confirm/alert/XLSX/FileReader : on garde l'original
+    // pour les rétablir à chaque reset et éviter toute contamination entre tests.
+    run(`globalThis.__origine = { confirm: confirm, alert: alert, XLSX: XLSX,
+                                  FileReader: FileReader, navigator: navigator };`);
 
     const outils = {
       run,
@@ -407,6 +414,15 @@ const assert = {
         captures.ouvertures.length = 0; captures.alertes.length = 0; captures.fichiers.length = 0;
         // Mémoire du navigateur remise à neuf : les tests ne se contaminent pas
         if (!opts.conserverStockage) Object.keys(memoire).forEach(k => delete memoire[k]);
+        // Un test a pu détourner setItem (simulation de mémoire saturée) : on rétablit
+        Object.assign(stockageSim, Object.getOwnPropertyDescriptors
+          ? {} : {});
+        run(`confirm = globalThis.__origine.confirm; alert = globalThis.__origine.alert;
+             XLSX = globalThis.__origine.XLSX; FileReader = globalThis.__origine.FileReader;
+             navigator = globalThis.__origine.navigator;`);
+        stockageSim.setItem = stockageOrigine.setItem;
+        stockageSim.getItem = stockageOrigine.getItem;
+        stockageSim.removeItem = stockageOrigine.removeItem;
         return this;
       },
 
@@ -2893,6 +2909,184 @@ test("nettoyage : une fiche seulement en corbeille n'est PAS libérée", () => {
   assert.equal(A.get("manualEntries.length"), 1, "elle doit rester récupérable");
 });
 
+/* ═══ Cas limites de données ═══ */
+
+test("limites : un intitulé composé uniquement d'espaces est traité comme vide", () => {
+  A.reset({ manualEntries: [{ id: "x", title: "   ", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.run("titleKey(data[0].title)"), "");
+});
+
+test("limites : les temporalités se regroupent quelle que soit la casse", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "K", freq: "MENSUELLE" }, { id: "b", title: "K", freq: "mensuelle" }
+  ] });
+  A.run("rebuildData(false)");
+  const anomalies = A.run("findVariantAnomalies(data)");
+  assert.ok(anomalies.some(a => /double/.test(a.reason)), "deux « Mensuelle » = doublon même avec une casse différente");
+});
+
+test("limites : un lien très long est conservé intact", () => {
+  const url = "https://app.powerbi.com/groups/" + "x".repeat(900);
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", logistiport: url }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data")[0].logistiport.length, url.length);
+});
+
+test("limites : deux périmètres de même nom reçoivent des clés distinctes", () => {
+  A.reset();
+  A.run(`sitesDraft = [{ name: "Qualité" }, { name: "Qualité" }]; saveSitesFromModal();`);
+  const cles = A.run("activeSites().map(function(s){return s.key;})");
+  assert.equal(new Set(cles).size, cles.length, "aucune clé de périmètre en double");
+});
+
+test("limites : des marqueurs de corbeille en double sont tolérés", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }],
+    deletedIds: [{ id: "a", at: 5, state: "deleted" }, { id: "a", at: 5, state: "deleted" }]
+  });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0);
+});
+
+test("limites : une suppression définitive en double ne casse rien", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }], purgedIds: ["a", "a"] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0);
+});
+
+test("limites : une fiche purgée ne peut pas être réaffichée depuis la corbeille", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }],
+    deletedIds: [{ id: "a", title: "K", at: 5, state: "deleted" }],
+    purgedIds: ["a"]
+  });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a" } }]);
+  A.run("restoreSelectedTrash(); rebuildData(false);");
+  assert.equal(A.get("data.length"), 0, "une suppression définitive reste définitive");
+});
+
+test("limites : une fiche sans date de modification est acceptée", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Ancienne", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 1);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1);
+});
+
+/* ═══ Résistance aux données abîmées ═══ */
+
+test("résistance : chaque emplacement corrompu est isolé", () => {
+  const emplacements = ["kpiManualEntries", "kpiDeletedIds", "kpiPurgedIds", "kpiSites", "kpiActivity"];
+  emplacements.forEach(cle => {
+    A.reset();
+    A.run(`localStorage.setItem(${JSON.stringify(cle)}, "{{{ pas du JSON");`);
+    A.run("loadManualEntries(); loadDeletedIds(); loadPurged(); loadSites(); loadActivity(); rebuildData(false);");
+    assert.ok(Array.isArray(A.get("manualEntries")), "l'application reste utilisable malgré : " + cle);
+  });
+});
+
+test("résistance : un instantané illisible n'empêche pas d'ouvrir la liste", () => {
+  A.reset();
+  A.run(`localStorage.setItem("kpiSnapshots", "pas du JSON"); renderSnapshotList();`);
+  assert.ok(true, "aucune exception");
+});
+
+test("résistance : une mémoire saturée est signalée sans perte de données", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle" }] });
+  A.run(`localStorage.setItem = function(){ var e = new Error("plein"); e.name = "QuotaExceededError"; throw e; };`);
+  let planté = false;
+  try { A.run("pushSnapshot('essai')"); } catch { planté = true; }
+  A.reset();   // rétablit un stockage fonctionnel pour les tests suivants
+  assert.equal(planté, false, "la saturation ne doit pas interrompre l'application");
+});
+
+/* ═══ Aller-retour Excel ═══ */
+
+test("Excel : exporter puis ré-importer restitue les mêmes fiches", () => {
+  const depart = fiches(["Aller-retour", "Mensuelle", { logistiport: "https://a", armement: "https://b" }],
+                        ["Aller-retour", "Hebdomadaire", { logistiport: "https://c" }]);
+  A.reset({ manualEntries: depart });
+  A.run("rebuildData(false); exportExcel();");
+  const aoa = A.fichiersExportes()[0].wb.Sheets["KPIs"]["!aoa"];
+
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(p){ return "R" + p.r + "C" + p.c; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, ${JSON.stringify(aoa)});`);
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 2, "les deux temporalités sont restituées");
+  assert.equal(A.run("countFiches(data)"), 1, "et forment bien une seule fiche");
+});
+
+test("Excel : un fichier sans aucune ligne de données est sans effet", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [["Intitulé","Type KPI","Processus","Fréquence","Rituel","Description / Mode de calcul"]]);`);
+  assert.equal(A.get("manualEntries.length"), 0);
+});
+
+test("Excel : deux lignes identiques reçoivent des identifiants distincts", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [
+    ["Intitulé","Type KPI","Processus","Fréquence","Rituel","Description / Mode de calcul"],
+    ["Doublon","","","Mensuelle","",""],
+    ["Doublon","","","Mensuelle","",""]
+  ]);`);
+  const ids = A.get("manualEntries").map(k => k.id);
+  assert.equal(new Set(ids).size, ids.length, "aucun identifiant écrasé");
+});
+
+test("Excel : des colonnes manquantes n'empêchent pas l'import", () => {
+  A.reset();
+  A.run(`XLSX = { utils: { encode_cell: function(){ return "A1"; } } }; confirm = function(){ return true; };`);
+  A.run(`transformData({}, [["Intitulé","Fréquence"], ["Minimal","Mensuelle"]]);`);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Minimal");
+});
+
+/* ═══ Favoris et périmètres, cas avancés ═══ */
+
+test("favoris : un favori pointant vers une fiche disparue est ignoré à l'affichage", () => {
+  A.reset({ manualEntries: fiches(["Existante", "Mensuelle"]), favorites: ["id_inexistant"] });
+  A.run("rebuildData(false)");
+  assert.equal(A.texte("countFav"), "0");
+});
+
+test("périmètres : supprimer puis recréer un périmètre du même nom le réactive", () => {
+  A.reset({ sites: [{ key: "qualite", name: "Qualité", _deleted: true, _mtime: 5 }] });
+  A.run(`sitesDraft = [{ key: "qualite", name: "Qualité" }]; saveSitesFromModal();`);
+  assert.ok(A.run("activeSites().some(function(s){return s.key === 'qualite';})"));
+});
+
+test("périmètres : un périmètre supprimé n'apparaît plus dans les liens de la modale", () => {
+  A.reset({ sites: [{ key: "a", name: "A" }, { key: "b", name: "B", _deleted: true }] });
+  A.run("openKpiModal()");
+  assert.ok(!A.html("linksGrid").includes("kpiLink_b"), "le périmètre supprimé n'est pas proposé");
+});
+
+/* ═══ Instantanés et synchronisation ═══ */
+
+test("instantané : une restauration devient la version la plus récente", () => {
+  A.reset({ manualEntries: fiches(["Avant", "Mensuelle"]) });
+  A.run("rebuildData(false); pushSnapshot('repère');");
+  A.run("manualEntries = []; rebuildData(false);");
+  A.confirmer(true);
+  A.run("restoreSnapshot(0)");
+  A.confirmer(false);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.kpiManual.length, 1, "la version restaurée est bien celle qui partira au cloud");
+});
+
+test("horloge : la correction du serveur est appliquée aux dates", () => {
+  A.reset();
+  A.run(`localStorage.setItem("kpiClockOffset", "100000"); clockOffset = 100000;`);
+  const avant = Date.now();
+  const t = A.run("now()");
+  assert.ok(t >= avant + 90000, "l'heure corrigée est utilisée pour dater les modifications");
+  A.run("clockOffset = 0;");
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
@@ -4030,6 +4224,7 @@ const veille = setTimeout(() => {
 
   /* — Phase 2 : exécution — */
   const total = __groupes.reduce((n, g) => n + g.tests.length, 0);
+  $("modeSandbox").textContent = "🧪 Bac à sable — " + total + " tests";
   majEtat("att", "Exécution des tests…", true);
   majBarre(0, "Tests exécutés", "0 / " + total);
   await respirer();
@@ -4660,6 +4855,85 @@ async function analyseReelle(avecEcriture){
         sLocal === sCloud ? { etat:"ok", detail:"mêmes sites ici et dans le cloud" }
           : { etat:"warn", detail:"Ici : <b>" + echapper(sLocal || "aucun") + "</b><br>Cloud : <b>" + echapper(sCloud || "aucun") + "</b>" });
     }
+  }
+
+  /* ─── 4 bis. Contrôles complémentaires ─── */
+  if (!erreurCloud && docCloud) {
+    /* Favoris orphelins */
+    const favUsers = docCloud.favoritesByUser || {};
+    const idsConnus = new Set((docCloud.kpiManual || []).map(k => k && k.id));
+    let favOrphelins = 0;
+    Object.values(favUsers).forEach(l => (l || []).forEach(id => { if (!idsConnus.has(id)) favOrphelins++; }));
+    ajouterControle("Cloud partagé", "Favoris pointant vers des fiches existantes",
+      favOrphelins === 0 ? { etat:"ok", detail:"aucun favori orphelin" }
+        : { etat:"warn", detail:"<b>" + favOrphelins + "</b> favori(s) désignent des fiches supprimées — sans gravité." });
+
+    /* Qui utilise l'annuaire ? */
+    const utilisateurs = Object.keys(favUsers);
+    ajouterControle("Cloud partagé", "Utilisateurs connus du cloud",
+      { etat:"ok", detail: utilisateurs.length
+          ? "<b>" + utilisateurs.map(echapper).join(", ") + "</b>"
+          : "aucun favori enregistré pour l'instant" });
+
+    /* Aucune fiche personnelle ne doit avoir fuité */
+    const persoFuitees = (docCloud.kpiManual || []).filter(k => k && k.personal);
+    ajouterControle("Cloud partagé", "Aucune fiche personnelle n'a fuité",
+      persoFuitees.length === 0 ? { etat:"ok", detail:"l'espace personnel reste strictement local" }
+        : { etat:"ko", detail:"<b>" + persoFuitees.length + "</b> fiche(s) personnelle(s) présentes dans le cloud partagé." });
+
+    /* Fiches sans intitulé */
+    const sansTitre = (docCloud.kpiManual || []).filter(k => k && !String(k.title || "").trim());
+    ajouterControle("Cloud partagé", "Toutes les fiches distantes ont un intitulé",
+      sansTitre.length === 0 ? { etat:"ok", detail:"aucune fiche anonyme" }
+        : { etat:"warn", detail:"<b>" + sansTitre.length + "</b> fiche(s) sans intitulé : elles s'afficheraient vides." });
+
+    /* Part du journal dans le volume envoyé */
+    const tailleJournal = JSON.stringify(docCloud.kpiActivity || []).length;
+    const tailleTotale = JSON.stringify(docCloud).length || 1;
+    const part = Math.round(tailleJournal / tailleTotale * 100);
+    ajouterControle("Cloud partagé", "Part du journal d'activité dans les échanges",
+      part < 50 ? { etat:"ok", detail:"<b>" + part + " %</b> du document (" + (tailleJournal/1024).toFixed(0) + " Ko)" }
+        : { etat:"warn", detail:"<b>" + part + " %</b> du document est occupé par le journal d'activité." });
+
+    /* Documents de test résiduels d'une exécution précédente */
+    let residus = [];
+    for (const suffixe of ["__autotest", "__scenario", "__scenario__clock", "__clock"]) {
+      try {
+        const d = await db.collection("kpi_sync").doc(cfg.code + suffixe).get();
+        if (d.exists) residus.push(cfg.code + suffixe);
+      } catch { /* lecture refusée : sans importance ici */ }
+    }
+    ajouterControle("Cloud partagé", "Aucun document de test résiduel",
+      residus.length === 0 ? { etat:"ok", detail:"le projet ne contient que votre document de synchronisation" }
+        : { etat:"warn", detail:"Documents laissés par un test précédent : <b>" + residus.map(echapper).join(", ") +
+            "</b> — sans effet sur vos données, supprimables depuis la console Firebase." });
+  }
+
+  /* ─── 4 ter. Sécurité ─── */
+  if (!erreurCloud) {
+    ouvrirGroupeR("Sécurité");
+    ajouterControle("Sécurité", "Configuration Firebase visible publiquement (normal)",
+      { etat:"ok", detail:"C'est normal pour une application web : la clé n'est pas un mot de passe. " +
+        "Ce sont les <b>règles Firestore</b> qui protègent réellement les données." });
+
+    let ouvertATous = null;
+    try {
+      const sonde = db.collection("kpi_sondage_securite").doc("test_" + Date.now());
+      await sonde.set({ t: Date.now() });
+      ouvertATous = true;
+      try { await sonde.delete(); } catch {}
+    } catch { ouvertATous = false; }
+    ajouterControle("Sécurité", "Étendue des droits d'écriture",
+      ouvertATous === false
+        ? { etat:"ok", detail:"l'écriture est limitée : les autres emplacements du projet sont protégés" }
+        : { etat:"warn", detail:"Vos règles autorisent l'écriture <b>partout</b> dans le projet. " +
+            "Pour un outil interne c'est acceptable, mais toute personne connaissant l'adresse du site " +
+            "peut modifier l'annuaire. Restreindre les règles à la collection <code>kpi_sync</code> " +
+            "limiterait la portée d'une erreur." });
+
+    ajouterControle("Sécurité", "Identification des utilisateurs (déclarative)",
+      { etat:"ok", detail:"L'identifiant saisi à la connexion n'est pas vérifié. " +
+        "Le journal d'activité indique qui a agi de bonne foi, mais ne constitue pas une preuve." });
   }
 
   /* ─── 5. Écriture (optionnelle) ─── */

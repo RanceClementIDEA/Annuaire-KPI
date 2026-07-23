@@ -65,7 +65,7 @@
       body: creerElement("body"),
       documentElement: creerElement("html")
     };
-    const stockageSim = {
+    const stockageOrigine = {
       getItem: k => (memoire[k] === undefined ? null : memoire[k]),
       setItem: (k, v) => { memoire[k] = String(v); },
       removeItem: k => { delete memoire[k]; },
@@ -73,6 +73,9 @@
       key: i => Object.keys(memoire)[i],
       get length() { return Object.keys(memoire).length; }
     };
+    // Copie de travail : un test peut la détourner, reset() la remet en place
+    const stockageSim = Object.create(Object.getPrototypeOf(stockageOrigine),
+      Object.getOwnPropertyDescriptors(stockageOrigine));
     // Tableur simulé : mémorise ce qui serait écrit dans le fichier Excel
     const xlsxSim = {
       utils: {
@@ -127,6 +130,10 @@
 
     // Les messages affichés à l'utilisateur sont détournés pour être vérifiables
     run("globalThis.__msg = []; showToast = function (m) { globalThis.__msg.push(String(m)); };");
+    // Un test peut remplacer confirm/alert/XLSX/FileReader : on garde l'original
+    // pour les rétablir à chaque reset et éviter toute contamination entre tests.
+    run(`globalThis.__origine = { confirm: confirm, alert: alert, XLSX: XLSX,
+                                  FileReader: FileReader, navigator: navigator };`);
 
     const outils = {
       run,
@@ -161,6 +168,15 @@
         captures.ouvertures.length = 0; captures.alertes.length = 0; captures.fichiers.length = 0;
         // Mémoire du navigateur remise à neuf : les tests ne se contaminent pas
         if (!opts.conserverStockage) Object.keys(memoire).forEach(k => delete memoire[k]);
+        // Un test a pu détourner setItem (simulation de mémoire saturée) : on rétablit
+        Object.assign(stockageSim, Object.getOwnPropertyDescriptors
+          ? {} : {});
+        run(`confirm = globalThis.__origine.confirm; alert = globalThis.__origine.alert;
+             XLSX = globalThis.__origine.XLSX; FileReader = globalThis.__origine.FileReader;
+             navigator = globalThis.__origine.navigator;`);
+        stockageSim.setItem = stockageOrigine.setItem;
+        stockageSim.getItem = stockageOrigine.getItem;
+        stockageSim.removeItem = stockageOrigine.removeItem;
         return this;
       },
 

@@ -1285,7 +1285,15 @@ function saveSitesFromModal() {
   sitesDraft.forEach(s => {
     const name = (s.name || "").trim();
     if (!name) return; // ignore les lignes sans nom
-    const key = s.key || slugifySite(name);
+    // Clé unique : deux périmètres de même nom ne doivent pas se confondre,
+    // sinon leurs liens se mélangeraient sur toutes les fiches.
+    let key = s.key || slugifySite(name);
+    if (!s.key) {
+      let n = 2;
+      while (cleaned.some(c => c.key === key) || sites.some(x => x.key === key && !x._deleted)) {
+        key = slugifySite(name) + "_" + n++;
+      }
+    }
     // Reprend la date existante si le site est inchangé, sinon l'horodate maintenant
     const prev = sites.find(p => p.key === key);
     const changed = !prev || prev.name !== name ||
