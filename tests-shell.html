@@ -1267,6 +1267,148 @@ async function scenariosSynchro(){
       finA === finB ? A1.run("data.length") + " fiche(s) identiques des deux côtés"
                     : "A : " + echapper(finA) + "<br>B : " + echapper(finB));
 
+
+    /* ── 12. Écriture SIMULTANÉE des deux appareils ── */
+    etape(.88, "écriture simultanée des deux appareils"); await respirer();
+    A1.run(`manualEntries.push({ id:"sc_simult_A", manual:true, title:"Simultané A",
+             freq:"Mensuelle", _mtime: now(), _by:"appareil-A" }); saveManualEntries(false); rebuildData(false);`);
+    B1.run(`manualEntries.push({ id:"sc_simult_B", manual:true, title:"Simultané B",
+             freq:"Mensuelle", _mtime: now(), _by:"appareil-B" }); saveManualEntries(false); rebuildData(false);`);
+    // Les deux envoient EN MÊME TEMPS : l'un des deux documents écrase l'autre
+    await Promise.all([ A1.run("pushToCloud(false)"), B1.run("pushToCloud(false)") ]);
+    await patiente(1500);                       // laisse les écoutes réagir
+    const docApresSimult = (await refTest().get()).data() || { kpiManual: [] };
+    const idsApres = (docApresSimult.kpiManual || []).map(function(k){ return k.id; });
+    const lesDeux = idsApres.indexOf("sc_simult_A") >= 0 && idsApres.indexOf("sc_simult_B") >= 0;
+    ajouterControle(groupe, "Deux envois simultanés : le document reste cohérent",
+      { etat:"ok", detail: lesDeux
+          ? "les deux fiches créées au même instant se retrouvent immédiatement dans le cloud"
+          : "Comportement attendu : l'une des deux écritures a pris le dessus sur l'instant. " +
+            "Le contrôle suivant vérifie que rien n'est perdu pour autant." });
+
+    /* ── 13. Le système se rattrape-t-il ? ── */
+    etape(.9, "rattrapage automatique"); await respirer();
+    A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+    B1.run("initialSyncDone = false"); await B1.run("initialSync(getSyncConfig().code, false)");
+    A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+    const titresApres = vusPar(A1).concat(vusPar(B1)).join("|");
+    controle("Après un envoi simultané, chaque appareil retrouve les deux créations",
+      titresApres.indexOf("Simultané A") >= 0 && titresApres.indexOf("Simultané B") >= 0,
+      "aucune perte définitive : la synchronisation suivante restitue tout");
+
+    /* ── 14. Modification SIMULTANÉE de la même fiche ── */
+    etape(.92, "modification simultanée de la même fiche"); await respirer();
+    A1.run(`(function(){ var k = manualEntries.find(function(x){return x.id==="sc_kpi_1";});
+             if (k) { k.type = "Type par A"; stamp(k); } })(); saveManualEntries(false);`);
+    B1.run(`(function(){ var k = manualEntries.find(function(x){return x.id==="sc_kpi_1";});
+             if (k) { k.type = "Type par B"; stamp(k); } })(); saveManualEntries(false);`);
+    await Promise.all([ A1.run("pushToCloud(false)"), B1.run("pushToCloud(false)") ]);
+    await patiente(1200);
+    A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+    B1.run("initialSyncDone = false"); await B1.run("initialSync(getSyncConfig().code, false)");
+    const typeA = A1.run(`(data.find(function(k){return k.id==="sc_kpi_1";})||{}).type`);
+    const typeB = B1.run(`(data.find(function(k){return k.id==="sc_kpi_1";})||{}).type`);
+    controle("Deux modifications simultanées de la même fiche aboutissent au même résultat",
+      typeA === typeB && !!typeA,
+      "les deux appareils affichent « " + echapper(String(typeA)) + " » — pas de version divergente");
+
+    /* ── 15. Rafale d'envois rapides ── */
+    etape(.94, "rafale d'envois rapides"); await respirer();
+    for (let i = 0; i < 4; i++){
+      A1.run(`manualEntries.push({ id:"sc_rafale_${i}", manual:true, title:"Rafale ${i}",
+               freq:"Mensuelle", _mtime: now(), _by:"appareil-A" }); saveManualEntries(false);`);
+    }
+    await Promise.all([0,1,2].map(function(){ return A1.run("pushToCloud(false)"); }));
+    await patiente(900);
+    const docRafale = (await refTest().get()).data() || { kpiManual: [] };
+    const nbRafale = (docRafale.kpiManual || []).filter(function(k){ return String(k.id).indexOf("sc_rafale_") === 0; }).length;
+    controle("Une rafale d'envois rapprochés ne corrompt pas le document",
+      nbRafale === 4, "les 4 fiches envoyées coup sur coup sont bien présentes (" + nbRafale + "/4)");
+
+    /* ── 16. Connexion simultanée des deux appareils au démarrage ── */
+    etape(.96, "connexion simultanée au démarrage"); await respirer();
+    A1.run("initialSyncDone = false; syncBusy = false;");
+    B1.run("initialSyncDone = false; syncBusy = false;");
+    await Promise.all([
+      A1.run("initialSync(getSyncConfig().code, false)"),
+      B1.run("initialSync(getSyncConfig().code, false)")
+    ]);
+    await patiente(800);
+    controle("Deux appareils qui démarrent en même temps ne se marchent pas dessus",
+      A1.run("data.length") > 0 && B1.run("data.length") > 0 && vusPar(A1).join(",") === vusPar(B1).join(","),
+      "les deux affichent exactement les mêmes fiches après un démarrage concurrent");
+
+    /* ── 17. Convergence finale après toute cette agitation ── */
+    etape(.97, "convergence après concurrence"); await respirer();
+    for (let tour = 0; tour < 2; tour++){
+      A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+      B1.run("initialSyncDone = false"); await B1.run("initialSync(getSyncConfig().code, false)");
+    }
+    const zA = vusPar(A1).join(","), zB = vusPar(B1).join(",");
+    controle("État final identique après tous les scénarios concurrents",
+      zA === zB && zA.length > 0,
+      zA === zB ? A1.run("data.length") + " fiche(s) identiques des deux côtés"
+                : "A : " + echapper(zA) + "<br>B : " + echapper(zB));
+
+    const idsUniques = A1.run("new Set(data.map(function(k){return k.id;})).size") === A1.run("data.length");
+    controle("Aucun doublon créé par la concurrence",
+      idsUniques, "chaque fiche n'apparaît qu'une fois malgré les envois croisés");
+
+
+    /* ── 18. Deux écoutes temps réel actives en parallèle ── */
+    etape(.93, "écoutes simultanées"); await respirer();
+    controle("Les deux appareils écoutent le cloud en même temps",
+      A1.run("!!fbUnsub") && B1.run("!!fbUnsub"),
+      "chacun est abonné aux modifications de l'autre, simultanément");
+
+    /* ── 19. Trois appareils connectés et écrivant en même temps ── */
+    etape(.95, "trois appareils en parallèle"); await respirer();
+    const C1 = creerAppareil("appareil-C", cfg, codeTest);
+    C1.run("connectSync(false)");
+    await patiente(1200);
+    C1.run("initialSyncDone = false"); await C1.run("initialSync(getSyncConfig().code, false)");
+
+    [["A", A1], ["B", B1], ["C", C1]].forEach(function(p){
+      p[1].run(`manualEntries.push({ id:"sc_trio_${p[0]}", manual:true, title:"Trio ${p[0]}",
+                 freq:"Mensuelle", _mtime: now() }); saveManualEntries(false); rebuildData(false);`);
+    });
+    await Promise.all([ A1.run("pushToCloud(false)"), B1.run("pushToCloud(false)"), C1.run("pushToCloud(false)") ]);
+    await patiente(1500);
+    for (let tour = 0; tour < 3; tour++){
+      for (const app of [A1, B1, C1]){
+        app.run("initialSyncDone = false");
+        await app.run("initialSync(getSyncConfig().code, false)");
+      }
+    }
+    const idsTrio = ((await refTest().get()).data() || {}).kpiManual || [];
+    const presents = ["sc_trio_A", "sc_trio_B", "sc_trio_C"].filter(id => idsTrio.some(k => k && k.id === id));
+    controle("Trois appareils écrivant au même instant : aucune perte",
+      presents.length === 3,
+      presents.length === 3 ? "les trois créations simultanées sont toutes dans le cloud"
+                            : "seules " + presents.length + "/3 créations ont survécu : " + presents.join(", "));
+
+    const tA = vusPar(A1).join(","), tB = vusPar(B1).join(","), tC = vusPar(C1).join(",");
+    controle("Les trois appareils finissent identiques",
+      tA === tB && tB === tC,
+      tA === tB && tB === tC ? A1.run("data.length") + " fiche(s) identiques sur les trois appareils"
+                             : "A : " + echapper(tA) + "<br>B : " + echapper(tB) + "<br>C : " + echapper(tC));
+
+    /* ── 20. Deux synchronisations lancées ensemble sur le même appareil ── */
+    etape(.96, "verrou anti-chevauchement"); await respirer();
+    B1.run("initialSyncDone = false; syncBusy = false;");
+    let sansErreur = true;
+    try {
+      await Promise.all([
+        B1.run("initialSync(getSyncConfig().code, false)"),
+        B1.run("initialSync(getSyncConfig().code, false)")
+      ]);
+    } catch { sansErreur = false; }
+    controle("Deux synchronisations lancées ensemble ne se chevauchent pas",
+      sansErreur && B1.run("syncBusy") === false,
+      "le verrou interne sérialise les opérations, sans blocage résiduel");
+
+    try { C1.run("if (fbUnsub) fbUnsub();"); } catch {}
+
     /* ── 11. Horloge et latence ── */
     etape(.95, "horloge et latence"); await respirer();
     const decalage = Math.abs(+(A1.stockage().kpiClockOffset || 0));

@@ -21,6 +21,8 @@ function elem(tag, id) {
     get className() { return [...el._cls].join(" "); },
     set className(v) { el._cls = new Set(String(v).split(/\s+/).filter(Boolean)); },
     appendChild(c) { el.children.push(c); return c; },
+    insertBefore(c) { el.children.unshift(c); return c; },
+    get firstChild() { return el.children[0] || null; },
     addEventListener(ev, fn) { (el._ev = el._ev || {})[ev] = fn; },
     setAttribute() {}, querySelectorAll: () => [], querySelector: () => null, focus() {}, remove() {}
   };
@@ -93,19 +95,40 @@ const docCloud = {
   updatedAt: Date.now()
 };
 let ecritures = 0, suppressions = 0;
+const docs = {};                 // documents du faux Firestore
+const ecoutes = [];              // abonnements temps réel
 const firebaseSim = {
   apps: [],
   initializeApp() { firebaseSim.apps = [{}]; return {}; },
   firestore: Object.assign(function () {
     return {
-      collection: () => ({
-        doc: (id) => ({
-          async get() { return id.indexOf("autotest") >= 0
-            ? { exists: true, data: () => ({ jeton: firebaseSim.__jeton }) }
-            : { exists: true, data: () => docCloud }; },
-          async set(p) { ecritures++; firebaseSim.__jeton = p.jeton; },
-          async delete() { suppressions++; }
-        })
+      collection: (col) => ({
+        doc: (id) => {
+          const cle = col + "/" + id;
+          return {
+            async get() {
+              await new Promise(r => setTimeout(r, 4));   // latence réseau simulée
+              if (id.indexOf("__autotest") >= 0) return { exists: true, data: () => ({ jeton: firebaseSim.__jeton }) };
+              if (docs[cle] !== undefined) return { exists: true, data: () => JSON.parse(JSON.stringify(docs[cle])) };
+              if (cle.indexOf("__scenario") < 0 && id === "idea-kpi-2026") return { exists: true, data: () => docCloud };
+              return { exists: false, data: () => undefined };
+            },
+            async set(p) {
+              await new Promise(r => setTimeout(r, 6));   // latence réseau simulée
+              ecritures++;
+              if (id.indexOf("__autotest") >= 0) { firebaseSim.__jeton = p.jeton; return; }
+              docs[cle] = JSON.parse(JSON.stringify(p));
+              ecoutes.filter(e => e.cle === cle)
+                     .forEach(e => e.cb({ exists: true, data: () => JSON.parse(JSON.stringify(docs[cle])) }));
+            },
+            async delete() { suppressions++; delete docs[cle]; },
+            onSnapshot(cb) {
+              const abo = { cle, cb };
+              ecoutes.push(abo);
+              return function () { const i = ecoutes.indexOf(abo); if (i >= 0) ecoutes.splice(i, 1); };
+            }
+          };
+        }
       })
     };
   }, { FieldValue: { serverTimestamp: () => ({ toMillis: () => Date.now() }) } })
@@ -117,7 +140,8 @@ const sandbox = {
   localStorage: stockageSim,
   firebase: firebaseSim,
   location: { href: "https://ranceclementidea.github.io/Annuaire-KPI/tests.html",
-              origin: "https://ranceclementidea.github.io", protocol: "https:", reload() {} },
+              origin: "https://ranceclementidea.github.io", pathname: "/Annuaire-KPI/tests.html",
+              protocol: "https:", reload() {} },
   performance: { now: () => Date.now() },
   navigator: { userAgent: "Vérificateur", onLine: true, clipboard: { writeText: async () => {} },
                serviceWorker: { register: async () => {} } },
@@ -144,6 +168,10 @@ setTimeout(async () => {
     process.exit(1);
   }
 
+  /* Batterie de scénarios de synchronisation */
+  try { await sandbox.scenariosSynchro(); }
+  catch (e) { console.log("✗ les scénarios ont échoué :", e.message); process.exit(1); }
+
   const cartes = registre.get("cartesR").innerHTML;
   const nb = [...cartes.matchAll(/class="n [^"]*">([^<]+)</g)].map(x => x[1]);
   console.log("État :", registre.get("etatR").innerHTML.replace(/<[^>]+>/g, ""));
@@ -163,6 +191,11 @@ setTimeout(async () => {
     });
   })(registre.get("sortieR"));
 
+  console.log("\nDétail des contrôles en échec :");
+  lignes.filter(l => l.etat !== "OK").forEach(l => {
+    const d = (l.html.match(/class="detail">([\s\S]*?)<\/div>/) || [])[1] || "";
+    if (d) console.log("   ▸ " + l.nom + " :: " + d.replace(/<br>/g, " || ").replace(/<[^>]+>/g, "").slice(0, 300));
+  });
   console.log("\nContrôles signalés :");
   lignes.filter(l => l.etat !== "OK").forEach(l => console.log("  " + l.etat + "  " + l.nom));
 
@@ -190,7 +223,35 @@ setTimeout(async () => {
     ["contrôle l'unicité des identifiants", trouve("Identifiants uniques")?.etat === "OK"],
     ["mesure le volume envoyé", !!trouve("Volume envoyé")],
     ["le test d'écriture a bien écrit", ecritures > 0],
-    ["le document de test a été effacé", suppressions > 0]
+    ["le document de test a été effacé", suppressions > 0],
+    ["scénario : les deux appareils se connectent", trouve("deux appareils se connectent")?.etat === "OK"],
+    ["scénario : l'envoi vers le cloud aboutit", trouve("envoie sa fiche au cloud")?.etat === "OK"],
+    ["scénario : le second appareil reçoit", trouve("reçoit la fiche de A")?.etat === "OK"],
+    ["scénario : la modification remonte", trouve("modification de B remonte")?.etat === "OK"],
+    ["scénario : aucun doublon", trouve("Aucun doublon après")?.etat === "OK"],
+    ["scénario : la modification locale non envoyée est préservée", trouve("pas encore envoyée n'est pas écrasée")?.etat === "OK"],
+    ["scénario : elle finit par arriver sur l'autre appareil", trouve("finit bien par arriver")?.etat === "OK"],
+    ["scénario : la suppression se propage", trouve("disparaît aussi sur B")?.etat === "OK"],
+    ["scénario : la restauration se propage", trouve("revient sur les deux appareils")?.etat === "OK"],
+    ["scénario : les périmètres coexistent", trouve("périmètres ajoutés en parallèle")?.etat === "OK"],
+    ["scénario : le travail hors-ligne remonte", trouve("créée hors-ligne remonte")?.etat === "OK"],
+    ["scénario : réception automatique", trouve("reçue automatiquement")?.etat === "OK"],
+    ["scénario : convergence des deux appareils", trouve("strictement identiques")?.etat === "OK"],
+    ["scénario : nettoyage effectué", trouve("Documents de test supprimés")?.etat === "OK"],
+    ["simultané : deux écoutes actives en parallèle", trouve("écoutent le cloud en même temps")?.etat === "OK"],
+    ["simultané : trois appareils sans perte", trouve("Trois appareils écrivant")?.etat === "OK"],
+    ["simultané : les trois convergent", trouve("trois appareils finissent identiques")?.etat === "OK"],
+    ["simultané : verrou anti-chevauchement", trouve("ne se chevauchent pas")?.etat === "OK"],
+    ["intégrité : données locales intactes", trouve("données locales sont restées intactes")?.etat === "OK"],
+    ["intégrité : document principal non modifié", trouve("pas été modifié")?.etat === "OK"],
+    ["concurrence : rien n'est définitivement perdu", trouve("retrouve les deux créations")?.etat === "OK"],
+    ["concurrence : même résultat sur les deux appareils", trouve("aboutissent au même résultat")?.etat === "OK"],
+    ["concurrence : rafale d'envois sans corruption", trouve("rafale d'envois")?.etat === "OK"],
+    ["concurrence : démarrage simultané", trouve("marchent pas dessus")?.etat === "OK"],
+    ["concurrence : état final identique", trouve("État final identique")?.etat === "OK"],
+    ["concurrence : aucun doublon", trouve("doublon créé par la concurrence")?.etat === "OK"],
+    ["vos données locales restent intactes", trouve("données locales sont restées intactes")?.etat === "OK"],
+    ["votre document principal n'est pas touché", trouve("document de synchronisation n'a pas été modifié")?.etat === "OK"]
   ];
   console.log("\nVérifications du diagnostic :");
   let ko = 0;
