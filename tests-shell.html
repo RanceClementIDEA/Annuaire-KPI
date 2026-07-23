@@ -36,6 +36,8 @@
     white-space:nowrap;
   }
   .badge.warn{background:rgba(255,176,32,.12); color:var(--gold); border-color:rgba(255,176,32,.3);}
+  .badge.vert{background:rgba(34,197,94,.12); color:var(--ok); border-color:rgba(34,197,94,.35);}
+  .badge.rouge{background:rgba(239,68,68,.14); color:var(--ko); border-color:rgba(239,68,68,.4);}
 
   /* ── Bandeau d'état ── */
   .etat{
@@ -156,7 +158,7 @@
     </div>
     <div class="badges">
       <span class="badge" id="bVersion">app.js …</span>
-      <span class="badge warn" id="bSandbox">Bac à sable — données réelles intactes</span>
+      <span class="badge" id="bIntegrite">🔒 Relevé de vos données…</span>
     </div>
   </header>
 
@@ -207,8 +209,9 @@
     </div>
 
     <div class="outils">
-      <button class="btn plein" id="btnAnalyser">▶ Lancer l'analyse</button>
+      <button class="btn" id="btnAnalyser">▶ Lancer l'analyse</button>
       <button class="btn" id="btnEcriture" title="Écrit puis efface un document de test dédié">✎ Tester aussi l'écriture</button>
+      <button class="btn plein" id="btnScenarios" title="Fait dialoguer deux appareils simulés via votre vrai Firebase">🔄 Tester la synchronisation en conditions réelles</button>
       <button class="btn" id="btnCopierR">Copier le rapport</button>
     </div>
 
@@ -260,6 +263,7 @@ async function loadApp(surProgression){
     sources.push(t);
   }
   if (surProgression) surProgression(1, "initialisation du bac à sable");
+  window.__sources = sources;      // permet de créer d'autres appareils simulés
   return creerHarnais(sources);
 }
 
@@ -269,6 +273,43 @@ async function loadApp(surProgression){
 /* ══════════════ Les tests ══════════════ */
 let A = null;
 /*__TESTS__*/
+
+/* ══════════════ Empreinte des données réelles ══════════════
+   Relevée AVANT puis APRÈS les tests : prouve que la simulation
+   n'a rien lu de travers ni rien modifié dans vos vraies données. */
+function empreinteDonnees(){
+  const cles = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      if (k) cles.push(k);
+    }
+  } catch(e){ return { erreur: String(e && e.message || e), cles: [], detail: {}, octets: 0, total: 0 }; }
+  cles.sort();
+  const detail = {};
+  let octets = 0, total = 5381;
+  cles.forEach(k => {
+    const v = localStorage.getItem(k) || "";
+    octets += k.length + v.length;
+    let h = 5381;
+    for (let i = 0; i < v.length; i++) h = ((h << 5) + h + v.charCodeAt(i)) | 0;
+    detail[k] = h;
+    total = ((total << 5) + total + h) | 0;
+  });
+  return { cles, detail, octets, total };
+}
+
+/** Compare deux empreintes et décrit précisément ce qui a bougé. */
+function comparerEmpreintes(avant, apres){
+  const ajoutees = apres.cles.filter(k => avant.cles.indexOf(k) < 0);
+  const retirees = avant.cles.filter(k => apres.cles.indexOf(k) < 0);
+  const modifiees = avant.cles.filter(k => apres.cles.indexOf(k) >= 0 && avant.detail[k] !== apres.detail[k]);
+  return {
+    intacte: ajoutees.length === 0 && retirees.length === 0 && modifiees.length === 0,
+    ajoutees, retirees, modifiees,
+    ecartOctets: apres.octets - avant.octets
+  };
+}
 
 /* ══════════════ Exécution et affichage ══════════════ */
 const $ = id => document.getElementById(id);
@@ -340,6 +381,10 @@ const veille = setTimeout(() => {
 }, 30000);
 
 (async function(){
+  /* — Relevé de l'état de vos données, avant toute chose — */
+  const empreinteAvant = empreinteDonnees();
+  $("bIntegrite").textContent = "🔒 " + empreinteAvant.cles.length + " emplacement(s) relevé(s)";
+
   /* — Phase 1 : chargement — */
   majEtat("att", "Chargement de l'application…", true);
   try {
@@ -422,6 +467,54 @@ const veille = setTimeout(() => {
 
   const msTotal = performance.now() - debut;
 
+  /* — Contrôle d'intégrité : vos données ont-elles bougé ? — */
+  const empreinteApres = empreinteDonnees();
+  const ecart = comparerEmpreintes(empreinteAvant, empreinteApres);
+  const blocInt = document.createElement("div");
+  blocInt.className = "groupe";
+  const titreInt = document.createElement("h2");
+  const corpsInt = document.createElement("div"); corpsInt.className = "corps";
+  blocInt.appendChild(titreInt); blocInt.appendChild(corpsInt);
+  $("sortie").insertBefore(blocInt, $("sortie").firstChild);
+  titreInt.addEventListener("click", () => blocInt.classList.toggle("replie"));
+
+  const ligneInt = (ok, nom, detail) => {
+    const l = document.createElement("div");
+    l.className = "ligne" + (ok ? "" : " echec");
+    l.dataset.echec = ok ? "0" : "1";
+    l.dataset.nom = nom.toLowerCase();
+    l.innerHTML = '<span class="puce ' + (ok ? "ok" : "ko") + '">' + (ok ? "✓" : "✗") + '</span>' +
+      '<span class="nom">' + echapper(nom) + (detail ? '<div class="detail">' + detail + '</div>' : '') + '</span>';
+    corpsInt.appendChild(l);
+  };
+
+  ligneInt(ecart.ajoutees.length === 0, "Aucun emplacement ajouté dans vos données",
+    ecart.ajoutees.length ? "Ajoutés : <b>" + ecart.ajoutees.map(echapper).join(", ") + "</b>"
+                          : "la simulation n'a rien créé chez vous");
+  ligneInt(ecart.retirees.length === 0, "Aucun emplacement supprimé de vos données",
+    ecart.retirees.length ? "Supprimés : <b>" + ecart.retirees.map(echapper).join(", ") + "</b>"
+                          : "rien n'a disparu");
+  ligneInt(ecart.modifiees.length === 0, "Aucun contenu modifié",
+    ecart.modifiees.length ? "Modifiés : <b>" + ecart.modifiees.map(echapper).join(", ") + "</b>"
+                           : empreinteAvant.cles.length + " emplacement(s) vérifiés un par un");
+  ligneInt(ecart.ecartOctets === 0, "Volume de données inchangé",
+    ecart.ecartOctets === 0 ? (empreinteAvant.octets / 1024).toFixed(1) + " Ko avant et après"
+                            : "Écart de <b>" + ecart.ecartOctets + "</b> caractère(s)");
+  ligneInt(empreinteAvant.total === empreinteApres.total, "Empreinte globale identique",
+    "signature avant : <b>" + empreinteAvant.total + "</b> · après : <b>" + empreinteApres.total + "</b>");
+
+  titreInt.innerHTML = '<span class="chev">▼</span><span>Intégrité de vos données réelles</span>' +
+    '<span class="gstat">' + (ecart.intacte
+      ? '<span class="pill ok">intactes</span>'
+      : '<span class="pill ko">' + (ecart.ajoutees.length + ecart.retirees.length + ecart.modifiees.length) + ' écart(s)</span>') +
+    '</span>';
+  if (ecart.intacte) blocInt.classList.add("replie");
+
+  $("bIntegrite").textContent = ecart.intacte
+    ? "✓ Vos données sont intactes"
+    : "⚠️ " + (ecart.ajoutees.length + ecart.retirees.length + ecart.modifiees.length) + " écart(s) détecté(s)";
+  $("bIntegrite").className = "badge " + (ecart.intacte ? "vert" : "rouge");
+
   /* — Phase 3 : synthèse — */
   afficherCartes(total, reussis, echoues, msTotal, __groupes.length);
   majBarre(1, "Terminé", faits + " / " + total, echoues > 0);
@@ -489,7 +582,7 @@ const CLE = {
   MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurgedIds",
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
-  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_"
+  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }
@@ -557,6 +650,32 @@ async function analyseReelle(avecEcriture){
   };
   const etatR = (c, t) => { $("etatR").className = "etat " + c; $("etatR").innerHTML = '<span id="etatRTxt">' + echapper(t) + '</span>'; };
   etatR("att", "Analyse en cours…");
+  window.__empreinteReelle = empreinteDonnees();
+
+  /* ─── 0. Fichiers déployés ─── */
+  ouvrirGroupeR("Fichiers déployés");
+  etape(.03, "vérification des fichiers en ligne"); await respirer();
+
+  journalFichiers.forEach(f => ajouterControle("Fichiers déployés", "Fichier " + f.f,
+    f.ok ? { etat:"ok", detail:"chargé (" + f.info + ")" } : { etat:"ko", detail:"introuvable — " + f.info }));
+
+  const clePurge = A.run("Store.KEYS.PURGED");
+  ajouterControle("Fichiers déployés", "js/storage.js à jour",
+    clePurge === "kpiPurgedIds"
+      ? { etat:"ok", detail:"la clé des suppressions définitives est correcte" }
+      : { etat:"ko", detail:
+          "Le fichier <b>js/storage.js</b> en ligne est <b>ancien</b> : il déclare <b>" + echapper(clePurge) +
+          "</b> au lieu de <b>kpiPurgedIds</b>.<br>" +
+          "Déposez la nouvelle version dans le dossier <code>js/</code> de votre dépôt " +
+          "(à côté de <code>merge.js</code> et <code>carousel.js</code>), puis rafraîchissez.<br>" +
+          "<i>Pour vérifier vous-même : ouvrez <b>" +
+          echapper(String(location.href || "").split("?")[0].replace(/[^/]*$/, "") + "js/storage.js") +
+          "</b> et cherchez la ligne PURGED.</i>" });
+
+  const appRecent = A.run("typeof nettoyerPurgees === 'function'");
+  ajouterControle("Fichiers déployés", "app.js à jour",
+    appRecent ? { etat:"ok", detail:"version <b>" + echapper(A.version) + "</b>, nettoyage automatique présent" }
+      : { etat:"ko", detail:"Le fichier <b>app.js</b> en ligne est ancien : la libération automatique des fiches supprimées définitivement n'y figure pas." });
 
   /* ─── 1. Environnement ─── */
   ouvrirGroupeR("Environnement");
@@ -948,6 +1067,282 @@ $("modeReel").addEventListener("click", function(){
 });
 $("btnAnalyser").addEventListener("click", () => analyseReelle(false));
 $("btnEcriture").addEventListener("click", () => analyseReelle(true));
+
+/* ══════════════════════════════════════════════════════════════════════
+   SCÉNARIOS D'UTILISATION RÉELLE
+   Deux appareils simulés dialoguent via VOTRE vrai Firebase, mais dans un
+   document de test isolé (« …__scenario ») effacé à la fin.
+   Votre document de synchronisation n'est jamais touché.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const patiente = ms => new Promise(r => setTimeout(r, ms));
+
+/** Crée un appareil simulé branché sur le vrai Firebase, code de test. */
+function creerAppareil(nom, cfgReelle, codeTest){
+  const h = creerHarnais(window.__sources);
+  h.reset({ currentUser: nom, autoriserSync: true });
+  h.run("firebase = globalThis.firebase;");           // vrai SDK Firebase
+  h.run('localStorage.setItem("kpiOptoutClearedV2","1");');
+  h.run("setSyncConfig(" + JSON.stringify({ config: cfgReelle.config, code: codeTest, enabled: true }) + ");");
+  return h;
+}
+
+/** Titres visibles sur un appareil, triés — sert à comparer deux appareils. */
+const vusPar = h => h.run("data.map(function(k){return k.title + '|' + (k.freq||'');}).sort()");
+
+async function scenariosSynchro(){
+  const groupe = "Scénarios d'utilisation réelle";
+  ouvrirGroupeR(groupe);
+  const etape = (r, txt) => {
+    $("barreRJauge").style.width = Math.round(r*100) + "%";
+    $("progRVal").textContent = Math.round(r*100) + " %";
+    $("progRLib").textContent = "Scénarios de synchronisation";
+    $("encoursR").textContent = txt;
+  };
+  $("zoneProgR").classList.remove("cache");
+
+  const cfgLocale = lireLocal(CLE.CONFIG, null);
+  const cfg = (cfgLocale && cfgLocale.config && cfgLocale.code)
+    ? cfgLocale : { config: A.run("BUILTIN_FIREBASE_CONFIG"), code: A.run("BUILTIN_SYNC_CODE") };
+  const codeTest = cfg.code + "__scenario";
+
+  let db = null;
+  try {
+    await chargerFirebase();
+    if (!firebase.apps.length) firebase.initializeApp(cfg.config);
+    db = firebase.firestore();
+  } catch(e){
+    ajouterControle(groupe, "Connexion à Firebase", { etat:"ko", detail: echapper(String(e.message || e)) });
+    return;
+  }
+
+  let majAvantScenarios = 0;
+  try {
+    const principalAvant = await db.collection("kpi_sync").doc(cfg.code).get();
+    majAvantScenarios = principalAvant.exists ? (principalAvant.data().updatedAt || 0) : 0;
+  } catch {}
+
+  const refTest = () => db.collection("kpi_sync").doc(codeTest);
+  try { await refTest().delete(); } catch {}   // repart d'un document vierge
+
+  const A1 = creerAppareil("appareil-A", cfg, codeTest);
+  const B1 = creerAppareil("appareil-B", cfg, codeTest);
+  const t0 = Date.now();
+
+  const controle = (nom, ok, detail) =>
+    ajouterControle(groupe, nom, ok ? { etat:"ok", detail } : { etat:"ko", detail });
+
+  try {
+    /* ── 1. Connexion ── */
+    etape(.05, "connexion des deux appareils"); await respirer();
+    A1.run("connectSync(false)"); B1.run("connectSync(false)");
+    await patiente(1200);
+    controle("Les deux appareils se connectent au cloud",
+      A1.run("!!fbDb") && B1.run("!!fbDb"),
+      "document de test <b>" + echapper(codeTest) + "</b> (isolé de vos données)");
+
+    /* ── 2. Création puis envoi ── */
+    etape(.15, "l'appareil A crée un KPI"); await respirer();
+    A1.run(`manualEntries = [{ id:"sc_kpi_1", manual:true, title:"KPI de test", freq:"Mensuelle",
+             logistiport:"https://exemple/a", _mtime: now(), _by:"appareil-A" }]; rebuildData(false);`);
+    await A1.run("pushToCloud(false)");
+    const apresEnvoi = (await refTest().get()).data();
+    controle("L'appareil A envoie sa fiche au cloud",
+      !!(apresEnvoi && apresEnvoi.kpiManual && apresEnvoi.kpiManual.length === 1),
+      "le document distant contient bien la fiche créée");
+
+    /* ── 3. Réception sur le second appareil ── */
+    etape(.25, "l'appareil B récupère"); await respirer();
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    controle("L'appareil B reçoit la fiche de A",
+      B1.run("data.length") === 1 && B1.run('data[0].title') === "KPI de test",
+      "B affiche « KPI de test » sans intervention manuelle");
+
+    /* ── 4. Modification concurrente ── */
+    etape(.35, "B modifie, A reçoit"); await respirer();
+    B1.run(`(function(){ var k = manualEntries[0]; k.armement = "https://exemple/mg"; stamp(k); })();
+            saveManualEntries(false); rebuildData(false);`);
+    await B1.run("pushToCloud(false)");
+    A1.run("initialSyncDone = false");
+    await A1.run("initialSync(getSyncConfig().code, false)");
+    controle("La modification de B remonte jusqu'à A",
+      A1.run('data[0].armement') === "https://exemple/mg",
+      "le lien ajouté par B est visible sur A");
+
+    controle("Aucun doublon après l'échange",
+      A1.run("data.length") === 1 && B1.run("data.length") === 1,
+      "une seule fiche de chaque côté");
+
+    /* ── 4 bis. Une modification locale non envoyée ne doit pas être perdue ── */
+    etape(.4, "modification locale non encore envoyée"); await respirer();
+    A1.run(`(function(){ var k = manualEntries[0]; k.ritual = "Comité de direction"; stamp(k); })();
+            saveManualEntries(false); rebuildData(false);`);
+    A1.run("initialSyncDone = false");
+    await A1.run("initialSync(getSyncConfig().code, false)");   // le cloud a une version plus ancienne
+    controle("Une modification faite ici et pas encore envoyée n'est pas écrasée",
+      A1.run('data[0].ritual') === "Comité de direction",
+      "c'est la garantie que votre travail en cours ne disparaît pas lors d'une synchronisation");
+
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    controle("…et elle finit bien par arriver sur l'autre appareil",
+      B1.run('data[0].ritual') === "Comité de direction",
+      "B voit la modification une fois l'envoi effectué");
+
+    /* ── 5. Suppression propagée ── */
+    etape(.45, "suppression et propagation"); await respirer();
+    A1.run(`markDeleted("sc_kpi_1", { title:"KPI de test", freq:"Mensuelle" });
+            saveDeletedIds(false); rebuildData(false);`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    controle("Une suppression faite sur A disparaît aussi sur B",
+      B1.run("data.length") === 0, "la fiche n'est plus affichée sur B");
+
+    /* ── 6. Restauration propagée ── */
+    etape(.55, "restauration"); await respirer();
+    A1.run(`deletedIds = deletedIds.map(function(d){
+              return d.id === "sc_kpi_1" ? Object.assign({}, d, { state:"restored", at: now() }) : d; });
+            saveDeletedIds(false); rebuildData(false);`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    controle("Une fiche réaffichée depuis la corbeille revient sur les deux appareils",
+      B1.run("data.length") === 1, "B la voit de nouveau, avec ses liens");
+
+    /* ── 7. Périmètres ajoutés des deux côtés ── */
+    etape(.65, "ajout de périmètres des deux côtés"); await respirer();
+    A1.run(`sites.push({ key:"sc_qualite", name:"Qualité (test)", _mtime: now() }); saveSites(false);`);
+    B1.run(`sites.push({ key:"sc_securite", name:"Sécurité (test)", _mtime: now() }); saveSites(false);`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false"); await B1.run("initialSync(getSyncConfig().code, false)");
+    await B1.run("pushToCloud(false)");
+    A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+    const clesA = A1.run("activeSites().map(function(s){return s.key;}).sort()");
+    const clesB = B1.run("activeSites().map(function(s){return s.key;}).sort()");
+    controle("Deux périmètres ajoutés en parallèle coexistent",
+      clesA.indexOf("sc_qualite") >= 0 && clesA.indexOf("sc_securite") >= 0 &&
+      clesB.indexOf("sc_qualite") >= 0 && clesB.indexOf("sc_securite") >= 0,
+      "aucun des deux ajouts n'écrase l'autre");
+
+    /* ── 8. Travail hors-ligne ── */
+    etape(.75, "travail hors-ligne puis reconnexion"); await respirer();
+    B1.run(`manualEntries.push({ id:"sc_hors_ligne", manual:true, title:"Créé hors-ligne",
+             freq:"Mensuelle", logistiport:"https://exemple/hl", _mtime: 1, _by:"appareil-B" });
+            saveManualEntries(false); rebuildData(false);`);
+    A1.run(`manualEntries.push({ id:"sc_recent", manual:true, title:"Créé pendant ce temps",
+             freq:"Mensuelle", logistiport:"https://exemple/r", _mtime: now(), _by:"appareil-A" });
+            saveManualEntries(false); rebuildData(false);`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    A1.run("initialSyncDone = false");
+    await A1.run("initialSync(getSyncConfig().code, false)");
+    const titresA = vusPar(A1);
+    controle("Une fiche créée hors-ligne remonte bien au retour du réseau",
+      titresA.some(function(t){ return t.indexOf("Créé hors-ligne") === 0; }),
+      "c'est le défaut corrigé récemment : sans cela, la fiche restait bloquée sur l'appareil");
+
+    /* ── 9. Écoute temps réel ── */
+    etape(.85, "réception automatique"); await respirer();
+    B1.run("initialSyncDone = true; syncBusy = false; lastAppliedSyncAt = 0;");
+    const avantEcoute = B1.run("data.length");
+    A1.run(`manualEntries.push({ id:"sc_temps_reel", manual:true, title:"Envoyé en direct",
+             freq:"Mensuelle", _mtime: now(), _by:"appareil-A" }); saveManualEntries(false); rebuildData(false);`);
+    await A1.run("pushToCloud(false)");
+    await patiente(2500);                       // laisse l'écoute Firestore réagir
+    controle("Une modification est reçue automatiquement, sans clic",
+      B1.run("data.length") > avantEcoute,
+      "l'écoute temps réel fonctionne entre vos appareils");
+
+    /* ── 10. Convergence ── */
+    etape(.9, "convergence finale"); await respirer();
+    A1.run("initialSyncDone = false"); await A1.run("initialSync(getSyncConfig().code, false)");
+    B1.run("initialSyncDone = false"); await B1.run("initialSync(getSyncConfig().code, false)");
+    const finA = vusPar(A1).join(","), finB = vusPar(B1).join(",");
+    controle("Les deux appareils finissent strictement identiques",
+      finA === finB && finA.length > 0,
+      finA === finB ? A1.run("data.length") + " fiche(s) identiques des deux côtés"
+                    : "A : " + echapper(finA) + "<br>B : " + echapper(finB));
+
+    /* ── 11. Horloge et latence ── */
+    etape(.95, "horloge et latence"); await respirer();
+    const decalage = Math.abs(+(A1.stockage().kpiClockOffset || 0));
+    ajouterControle(groupe, "Horloge de cet appareil alignée sur le serveur",
+      decalage < 60000 ? { etat:"ok", detail: decalage ? "correction appliquée : " + Math.round(decalage/1000) + " s" : "aucun décalage significatif" }
+        : { etat:"warn", detail:"Décalage de <b>" + Math.round(decalage/1000) + " s</b> — l'arbitrage des modifications s'appuie sur l'heure du serveur, ce qui le compense." });
+
+    const tLatence = Date.now();
+    await refTest().get();
+    const latence = Date.now() - tLatence;
+    ajouterControle(groupe, "Temps de réponse du cloud",
+      latence < 1500 ? { etat:"ok", detail:"<b>" + latence + " ms</b> pour une lecture" }
+        : { etat:"warn", detail:"<b>" + latence + " ms</b> — connexion lente, la synchronisation peut sembler tardive." });
+
+    ajouterControle(groupe, "Durée totale des scénarios",
+      { etat:"ok", detail:"<b>" + ((Date.now() - t0)/1000).toFixed(1) + " s</b> pour " + 12 + " scénarios" });
+
+  } catch(e){
+    ajouterControle(groupe, "Déroulement des scénarios",
+      { etat:"ko", detail:"Interrompu : " + echapper(String(e && e.message || e)) });
+  } finally {
+    /* ── Nettoyage : on ne laisse aucune trace ── */
+    etape(1, "nettoyage");
+    let nettoye = true;
+    for (const suffixe of ["", "__clock"]) {
+      try { await db.collection("kpi_sync").doc(codeTest + suffixe).delete(); }
+      catch { nettoye = false; }
+    }
+    try { A1.run("if (fbUnsub) fbUnsub();"); B1.run("if (fbUnsub) fbUnsub();"); } catch {}
+    /* Vos données locales et votre document principal ont-ils bougé ? */
+    const apresScenarios = empreinteDonnees();
+    const ecartLocal = comparerEmpreintes(window.__empreinteReelle || apresScenarios, apresScenarios);
+    ajouterControle(groupe, "Vos données locales sont restées intactes",
+      ecartLocal.intacte ? { etat:"ok", detail:"aucun des " + apresScenarios.cles.length + " emplacements n'a été touché par les scénarios" }
+        : { etat:"ko", detail:"<b>Modifiés :</b> " +
+            [].concat(ecartLocal.modifiees, ecartLocal.ajoutees, ecartLocal.retirees).map(echapper).join(", ") });
+
+    try {
+      const principal = await db.collection("kpi_sync").doc(cfg.code).get();
+      const majApres = principal.exists ? (principal.data().updatedAt || 0) : 0;
+      ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
+        majApres === majAvantScenarios
+          ? { etat:"ok", detail:"date de mise à jour inchangée — les scénarios ont travaillé sur un document séparé" }
+          : { etat:"ko", detail:"La date a changé : <b>" + new Date(majAvantScenarios).toLocaleString("fr-FR") +
+              "</b> → <b>" + new Date(majApres).toLocaleString("fr-FR") + "</b>" });
+    } catch(e){
+      ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
+        { etat:"warn", detail:"vérification impossible : " + echapper(String(e && e.message || e)) });
+    }
+
+    ajouterControle(groupe, "Documents de test supprimés",
+      nettoye ? { etat:"ok", detail:"aucune trace laissée dans votre projet Firebase" }
+              : { etat:"warn", detail:"Un document <b>" + echapper(codeTest) + "</b> subsiste (sans effet sur vos données)." });
+  }
+
+  /* Synthèse mise à jour */
+  const n = { ok:0, warn:0, ko:0 };
+  resultatsR.forEach(r => n[r.etat]++);
+  $("cartesR").innerHTML =
+    carte(resultatsR.length, "Contrôles", "acc") +
+    carte(n.ok, "Conformes", "ok") +
+    carte(n.warn, "À vérifier", n.warn ? "gold" : "ok") +
+    carte(n.ko, "Problèmes", n.ko ? "ko" : "ok");
+  const etatR = (c, t) => { $("etatR").className = "etat " + c; $("etatR").innerHTML = '<span id="etatRTxt">' + echapper(t) + '</span>'; };
+  if (n.ko) etatR("ko", n.ko + " problème(s) détecté(s)");
+  else if (n.warn) etatR("att", n.warn + " point(s) à vérifier — aucun blocage");
+  else etatR("ok", "Tout est cohérent, et la synchronisation fonctionne de bout en bout");
+}
+
+$("btnScenarios").addEventListener("click", async function(){
+  this.disabled = true; this.textContent = "Scénarios en cours…";
+  if (!resultatsR.length) await analyseReelle(false);
+  await scenariosSynchro();
+  this.disabled = false; this.textContent = "🔄 Tester la synchronisation en conditions réelles";
+});
+
 $("btnCopierR").addEventListener("click", async function(){
   const l = ["Diagnostic — données réelles (Annuaire KPI)",
              "Version de app.js : " + (A ? A.version : "?"),

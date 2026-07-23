@@ -36,6 +36,8 @@
     white-space:nowrap;
   }
   .badge.warn{background:rgba(255,176,32,.12); color:var(--gold); border-color:rgba(255,176,32,.3);}
+  .badge.vert{background:rgba(34,197,94,.12); color:var(--ok); border-color:rgba(34,197,94,.35);}
+  .badge.rouge{background:rgba(239,68,68,.14); color:var(--ko); border-color:rgba(239,68,68,.4);}
 
   /* ── Bandeau d'état ── */
   .etat{
@@ -156,7 +158,7 @@
     </div>
     <div class="badges">
       <span class="badge" id="bVersion">app.js …</span>
-      <span class="badge warn" id="bSandbox">Bac à sable — données réelles intactes</span>
+      <span class="badge" id="bIntegrite">🔒 Relevé de vos données…</span>
     </div>
   </header>
 
@@ -932,6 +934,68 @@ test("le journal est plafonné au maximum demandé", () => {
   assert.equal(mergeActivity(big, [], 10).length, 10);
 });
 
+/* ═══ Cas limites supplémentaires du moteur de fusion ═══ */
+
+test("une liste distante absente ne détruit pas les données locales", () => {
+  const r = mergeEntries([{ id: "a", _mtime: 5 }], null);
+  assert.equal(r.length, 1);
+});
+
+test("deux listes vides donnent une liste vide", () => {
+  assert.deepEqual(mergeEntries([], []), []);
+});
+
+test("l'ordre des listes n'influe pas sur le résultat", () => {
+  const a = [{ id: "x", _mtime: 3 }, { id: "y", _mtime: 1 }];
+  const b = [{ id: "y", _mtime: 9 }, { id: "z", _mtime: 2 }];
+  const cle = l => l.map(e => e.id + ":" + e._mtime).sort().join(",");
+  assert.equal(cle(mergeEntries(a, b)), cle(mergeEntries(a, b)));
+});
+
+test("une fiche avec une date négative est traitée comme très ancienne", () => {
+  const r = mergeEntries([{ id: "a", v: "récent", _mtime: 1 }], [{ id: "a", v: "négatif", _mtime: -50 }]);
+  assert.equal(r[0].v, "récent");
+});
+
+test("des marqueurs de suppression vides ne cassent pas la fusion", () => {
+  assert.deepEqual(mergeDeleted(null, undefined), []);
+});
+
+test("un marqueur sans date est considéré comme le plus ancien", () => {
+  const r = mergeDeleted([{ id: "k", state: "deleted" }], [{ id: "k", at: 100, state: "restored" }]);
+  assert.equal(r.find(d => d.id === "k").state, "restored");
+});
+
+test("les favoris d'un utilisateur inconnu du cloud sont conservés", () => {
+  const { map } = mergeFavorites({ nouveau: ["a"] }, { nouveau: 10 }, {}, {});
+  assert.deepEqual(map.nouveau, ["a"]);
+});
+
+test("des favoris vides n'effacent pas ceux du cloud", () => {
+  const { map } = mergeFavorites({}, {}, { marie: ["a", "b"] }, { marie: 5 });
+  assert.deepEqual(map.marie, ["a", "b"]);
+});
+
+test("le journal tolère des entrées incomplètes", () => {
+  const r = mergeActivity([null, { at: 1 }], [{ at: 2, by: "x", action: "create", title: "T" }], 400);
+  assert.ok(r.length >= 1, "la fusion ne doit pas planter");
+});
+
+test("un journal distant absent conserve le journal local", () => {
+  const r = mergeActivity([{ at: 5, by: "m", action: "create", title: "A" }], null, 400);
+  assert.equal(r.length, 1);
+});
+
+test("les surcharges tolèrent des valeurs nulles", () => {
+  const r = mergeOverrides({ a: { _mtime: 5 } }, null);
+  assert.ok(r.a);
+});
+
+test("normalizeDeleted conserve l'ordre des identifiants", () => {
+  const r = normalizeDeleted(["z", "a", "m"]);
+  assert.deepEqual(r.map(d => d.id), ["z", "a", "m"]);
+});
+
 __ouvrirGroupe("Synchronisation multi-appareils");
 /* Tests de synchronisation multi-appareils.
    Exécution : node --test sync.test.js  */
@@ -1378,6 +1442,103 @@ test("l'écoute temps réel n'agit pas avant la fusion initiale", () => {
   assert.equal(b.kpiCount(), 1, "B garde ses données locales, aucune fusion prématurée");
   b.initialSync();
   assert.equal(b.kpiCount(), 2, "la fusion a lieu au bon moment");
+});
+
+/* ═══ Scénarios supplémentaires ═══ */
+
+test("un appareil qui ne fait que consulter ne modifie jamais le cloud", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync();
+  const w = c.writes;
+  for (let i = 0; i < 5; i++) { b.initialSyncDone = false; b.initialSync(); b.onRemoteChange(); }
+  assert.equal(c.writes, w, "aucune écriture depuis un appareil qui ne fait que lire");
+});
+
+test("renommer un KPI n'en crée pas un second", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("Ancien nom", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  a.editKpi(k.id, { title: "Nouveau nom" });
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1);
+  assert.equal(b.data[0].title, "Nouveau nom");
+});
+
+test("supprimer puis recréer sous un autre intitulé fonctionne", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Version 1", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("Version 1");
+  a.createKpi("Version 2", "Mensuelle");
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1);
+  assert.equal(b.data[0].title, "Version 2");
+});
+
+test("deux appareils suppriment la même fiche sans conflit", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("À supprimer", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("À supprimer"); b.deleteFiche("À supprimer");
+  a.pushToCloud(); b.onRemoteChange(); b.pushToCloud(); a.onRemoteChange();
+  assert.equal(a.kpiCount(), 0);
+  assert.equal(a.signature(), b.signature());
+});
+
+test("un appareil restaure pendant qu'un autre supprime : le plus récent tranche", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Disputée", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("Disputée"); a.pushToCloud(); b.onRemoteChange();
+  b.restoreFiche("Disputée");            // B restaure ensuite
+  b.pushToCloud(); a.onRemoteChange();
+  assert.equal(a.kpiCount(), 1, "la restauration, plus récente, l'emporte");
+});
+
+test("un site renommé garde ses liens sur les fiches", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle", { logistiport: "https://x" });
+  a.initialSync(); b.initialSync();
+  a.sites.find(s => s.key === "logistiport").name = "Logistiport Nantes";
+  a.sites.find(s => s.key === "logistiport")._mtime = a.now();
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.activeSites().find(s => s.key === "logistiport").name, "Logistiport Nantes");
+  assert.equal(b.data[0].logistiport, "https://x", "le lien est conservé");
+});
+
+test("cent fiches se synchronisent sans perte ni doublon", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 100; i++) a.createKpi("KPI " + i, "Mensuelle");
+  a.initialSync(); b.initialSync();
+  assert.equal(b.kpiCount(), 100);
+  assert.equal(new Set(b.data.map(k => k.id)).size, 100);
+});
+
+test("une synchronisation qui échoue n'altère pas les données locales", () => {
+  const c = new Cloud();
+  const a = new Device("A", c);
+  a.createKpi("Intacte", "Mensuelle");
+  const avant = a.signature();
+  a.online = false;
+  a.initialSync();                    // ne fait rien hors-ligne
+  assert.equal(a.signature(), avant, "les données locales sont inchangées");
+});
+
+test("l'ordre des synchronisations ne change pas le résultat final", () => {
+  const faire = (ordre) => {
+    const c = new Cloud();
+    const a = new Device("A", c), b = new Device("B", c);
+    a.createKpi("Commune", "Mensuelle"); a.initialSync(); b.initialSync();
+    a.createKpi("De A", "Mensuelle"); b.createKpi("De B", "Mensuelle");
+    if (ordre === "AB") { a.pushToCloud(); b.onRemoteChange(); b.pushToCloud(); a.onRemoteChange(); }
+    else                { b.pushToCloud(); a.onRemoteChange(); a.pushToCloud(); b.onRemoteChange(); }
+    return a.data.map(k => k.title).sort().join(",");
+  };
+  assert.equal(faire("AB"), faire("BA"));
 });
 
 __ouvrirGroupe("Fonctions de l'application");
@@ -3696,6 +3857,43 @@ test("surcharges : le système obsolète est bien neutralisé", () => {
 });
 
 
+/* ══════════════ Empreinte des données réelles ══════════════
+   Relevée AVANT puis APRÈS les tests : prouve que la simulation
+   n'a rien lu de travers ni rien modifié dans vos vraies données. */
+function empreinteDonnees(){
+  const cles = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      if (k) cles.push(k);
+    }
+  } catch(e){ return { erreur: String(e && e.message || e), cles: [], detail: {}, octets: 0, total: 0 }; }
+  cles.sort();
+  const detail = {};
+  let octets = 0, total = 5381;
+  cles.forEach(k => {
+    const v = localStorage.getItem(k) || "";
+    octets += k.length + v.length;
+    let h = 5381;
+    for (let i = 0; i < v.length; i++) h = ((h << 5) + h + v.charCodeAt(i)) | 0;
+    detail[k] = h;
+    total = ((total << 5) + total + h) | 0;
+  });
+  return { cles, detail, octets, total };
+}
+
+/** Compare deux empreintes et décrit précisément ce qui a bougé. */
+function comparerEmpreintes(avant, apres){
+  const ajoutees = apres.cles.filter(k => avant.cles.indexOf(k) < 0);
+  const retirees = avant.cles.filter(k => apres.cles.indexOf(k) < 0);
+  const modifiees = avant.cles.filter(k => apres.cles.indexOf(k) >= 0 && avant.detail[k] !== apres.detail[k]);
+  return {
+    intacte: ajoutees.length === 0 && retirees.length === 0 && modifiees.length === 0,
+    ajoutees, retirees, modifiees,
+    ecartOctets: apres.octets - avant.octets
+  };
+}
+
 /* ══════════════ Exécution et affichage ══════════════ */
 const $ = id => document.getElementById(id);
 const echapper = s => String(s).replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c]));
@@ -3766,6 +3964,10 @@ const veille = setTimeout(() => {
 }, 30000);
 
 (async function(){
+  /* — Relevé de l'état de vos données, avant toute chose — */
+  const empreinteAvant = empreinteDonnees();
+  $("bIntegrite").textContent = "🔒 " + empreinteAvant.cles.length + " emplacement(s) relevé(s)";
+
   /* — Phase 1 : chargement — */
   majEtat("att", "Chargement de l'application…", true);
   try {
@@ -3847,6 +4049,54 @@ const veille = setTimeout(() => {
   }
 
   const msTotal = performance.now() - debut;
+
+  /* — Contrôle d'intégrité : vos données ont-elles bougé ? — */
+  const empreinteApres = empreinteDonnees();
+  const ecart = comparerEmpreintes(empreinteAvant, empreinteApres);
+  const blocInt = document.createElement("div");
+  blocInt.className = "groupe";
+  const titreInt = document.createElement("h2");
+  const corpsInt = document.createElement("div"); corpsInt.className = "corps";
+  blocInt.appendChild(titreInt); blocInt.appendChild(corpsInt);
+  $("sortie").insertBefore(blocInt, $("sortie").firstChild);
+  titreInt.addEventListener("click", () => blocInt.classList.toggle("replie"));
+
+  const ligneInt = (ok, nom, detail) => {
+    const l = document.createElement("div");
+    l.className = "ligne" + (ok ? "" : " echec");
+    l.dataset.echec = ok ? "0" : "1";
+    l.dataset.nom = nom.toLowerCase();
+    l.innerHTML = '<span class="puce ' + (ok ? "ok" : "ko") + '">' + (ok ? "✓" : "✗") + '</span>' +
+      '<span class="nom">' + echapper(nom) + (detail ? '<div class="detail">' + detail + '</div>' : '') + '</span>';
+    corpsInt.appendChild(l);
+  };
+
+  ligneInt(ecart.ajoutees.length === 0, "Aucun emplacement ajouté dans vos données",
+    ecart.ajoutees.length ? "Ajoutés : <b>" + ecart.ajoutees.map(echapper).join(", ") + "</b>"
+                          : "la simulation n'a rien créé chez vous");
+  ligneInt(ecart.retirees.length === 0, "Aucun emplacement supprimé de vos données",
+    ecart.retirees.length ? "Supprimés : <b>" + ecart.retirees.map(echapper).join(", ") + "</b>"
+                          : "rien n'a disparu");
+  ligneInt(ecart.modifiees.length === 0, "Aucun contenu modifié",
+    ecart.modifiees.length ? "Modifiés : <b>" + ecart.modifiees.map(echapper).join(", ") + "</b>"
+                           : empreinteAvant.cles.length + " emplacement(s) vérifiés un par un");
+  ligneInt(ecart.ecartOctets === 0, "Volume de données inchangé",
+    ecart.ecartOctets === 0 ? (empreinteAvant.octets / 1024).toFixed(1) + " Ko avant et après"
+                            : "Écart de <b>" + ecart.ecartOctets + "</b> caractère(s)");
+  ligneInt(empreinteAvant.total === empreinteApres.total, "Empreinte globale identique",
+    "signature avant : <b>" + empreinteAvant.total + "</b> · après : <b>" + empreinteApres.total + "</b>");
+
+  titreInt.innerHTML = '<span class="chev">▼</span><span>Intégrité de vos données réelles</span>' +
+    '<span class="gstat">' + (ecart.intacte
+      ? '<span class="pill ok">intactes</span>'
+      : '<span class="pill ko">' + (ecart.ajoutees.length + ecart.retirees.length + ecart.modifiees.length) + ' écart(s)</span>') +
+    '</span>';
+  if (ecart.intacte) blocInt.classList.add("replie");
+
+  $("bIntegrite").textContent = ecart.intacte
+    ? "✓ Vos données sont intactes"
+    : "⚠️ " + (ecart.ajoutees.length + ecart.retirees.length + ecart.modifiees.length) + " écart(s) détecté(s)";
+  $("bIntegrite").className = "badge " + (ecart.intacte ? "vert" : "rouge");
 
   /* — Phase 3 : synthèse — */
   afficherCartes(total, reussis, echoues, msTotal, __groupes.length);
@@ -3983,6 +4233,7 @@ async function analyseReelle(avecEcriture){
   };
   const etatR = (c, t) => { $("etatR").className = "etat " + c; $("etatR").innerHTML = '<span id="etatRTxt">' + echapper(t) + '</span>'; };
   etatR("att", "Analyse en cours…");
+  window.__empreinteReelle = empreinteDonnees();
 
   /* ─── 0. Fichiers déployés ─── */
   ouvrirGroupeR("Fichiers déployés");
@@ -4448,6 +4699,12 @@ async function scenariosSynchro(){
     return;
   }
 
+  let majAvantScenarios = 0;
+  try {
+    const principalAvant = await db.collection("kpi_sync").doc(cfg.code).get();
+    majAvantScenarios = principalAvant.exists ? (principalAvant.data().updatedAt || 0) : 0;
+  } catch {}
+
   const refTest = () => db.collection("kpi_sync").doc(codeTest);
   try { await refTest().delete(); } catch {}   // repart d'un document vierge
 
@@ -4622,6 +4879,27 @@ async function scenariosSynchro(){
       catch { nettoye = false; }
     }
     try { A1.run("if (fbUnsub) fbUnsub();"); B1.run("if (fbUnsub) fbUnsub();"); } catch {}
+    /* Vos données locales et votre document principal ont-ils bougé ? */
+    const apresScenarios = empreinteDonnees();
+    const ecartLocal = comparerEmpreintes(window.__empreinteReelle || apresScenarios, apresScenarios);
+    ajouterControle(groupe, "Vos données locales sont restées intactes",
+      ecartLocal.intacte ? { etat:"ok", detail:"aucun des " + apresScenarios.cles.length + " emplacements n'a été touché par les scénarios" }
+        : { etat:"ko", detail:"<b>Modifiés :</b> " +
+            [].concat(ecartLocal.modifiees, ecartLocal.ajoutees, ecartLocal.retirees).map(echapper).join(", ") });
+
+    try {
+      const principal = await db.collection("kpi_sync").doc(cfg.code).get();
+      const majApres = principal.exists ? (principal.data().updatedAt || 0) : 0;
+      ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
+        majApres === majAvantScenarios
+          ? { etat:"ok", detail:"date de mise à jour inchangée — les scénarios ont travaillé sur un document séparé" }
+          : { etat:"ko", detail:"La date a changé : <b>" + new Date(majAvantScenarios).toLocaleString("fr-FR") +
+              "</b> → <b>" + new Date(majApres).toLocaleString("fr-FR") + "</b>" });
+    } catch(e){
+      ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
+        { etat:"warn", detail:"vérification impossible : " + echapper(String(e && e.message || e)) });
+    }
+
     ajouterControle(groupe, "Documents de test supprimés",
       nettoye ? { etat:"ok", detail:"aucune trace laissée dans votre projet Firebase" }
               : { etat:"warn", detail:"Un document <b>" + echapper(codeTest) + "</b> subsiste (sans effet sur vos données)." });

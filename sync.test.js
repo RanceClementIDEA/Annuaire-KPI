@@ -445,3 +445,100 @@ test("l'écoute temps réel n'agit pas avant la fusion initiale", () => {
   b.initialSync();
   assert.equal(b.kpiCount(), 2, "la fusion a lieu au bon moment");
 });
+
+/* ═══ Scénarios supplémentaires ═══ */
+
+test("un appareil qui ne fait que consulter ne modifie jamais le cloud", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K1", "Mensuelle"); a.initialSync();
+  const w = c.writes;
+  for (let i = 0; i < 5; i++) { b.initialSyncDone = false; b.initialSync(); b.onRemoteChange(); }
+  assert.equal(c.writes, w, "aucune écriture depuis un appareil qui ne fait que lire");
+});
+
+test("renommer un KPI n'en crée pas un second", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const k = a.createKpi("Ancien nom", "Mensuelle");
+  a.initialSync(); b.initialSync();
+  a.editKpi(k.id, { title: "Nouveau nom" });
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1);
+  assert.equal(b.data[0].title, "Nouveau nom");
+});
+
+test("supprimer puis recréer sous un autre intitulé fonctionne", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Version 1", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("Version 1");
+  a.createKpi("Version 2", "Mensuelle");
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 1);
+  assert.equal(b.data[0].title, "Version 2");
+});
+
+test("deux appareils suppriment la même fiche sans conflit", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("À supprimer", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("À supprimer"); b.deleteFiche("À supprimer");
+  a.pushToCloud(); b.onRemoteChange(); b.pushToCloud(); a.onRemoteChange();
+  assert.equal(a.kpiCount(), 0);
+  assert.equal(a.signature(), b.signature());
+});
+
+test("un appareil restaure pendant qu'un autre supprime : le plus récent tranche", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("Disputée", "Mensuelle"); a.initialSync(); b.initialSync();
+  a.deleteFiche("Disputée"); a.pushToCloud(); b.onRemoteChange();
+  b.restoreFiche("Disputée");            // B restaure ensuite
+  b.pushToCloud(); a.onRemoteChange();
+  assert.equal(a.kpiCount(), 1, "la restauration, plus récente, l'emporte");
+});
+
+test("un site renommé garde ses liens sur les fiches", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  a.createKpi("K", "Mensuelle", { logistiport: "https://x" });
+  a.initialSync(); b.initialSync();
+  a.sites.find(s => s.key === "logistiport").name = "Logistiport Nantes";
+  a.sites.find(s => s.key === "logistiport")._mtime = a.now();
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.activeSites().find(s => s.key === "logistiport").name, "Logistiport Nantes");
+  assert.equal(b.data[0].logistiport, "https://x", "le lien est conservé");
+});
+
+test("cent fiches se synchronisent sans perte ni doublon", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 100; i++) a.createKpi("KPI " + i, "Mensuelle");
+  a.initialSync(); b.initialSync();
+  assert.equal(b.kpiCount(), 100);
+  assert.equal(new Set(b.data.map(k => k.id)).size, 100);
+});
+
+test("une synchronisation qui échoue n'altère pas les données locales", () => {
+  const c = new Cloud();
+  const a = new Device("A", c);
+  a.createKpi("Intacte", "Mensuelle");
+  const avant = a.signature();
+  a.online = false;
+  a.initialSync();                    // ne fait rien hors-ligne
+  assert.equal(a.signature(), avant, "les données locales sont inchangées");
+});
+
+test("l'ordre des synchronisations ne change pas le résultat final", () => {
+  const faire = (ordre) => {
+    const c = new Cloud();
+    const a = new Device("A", c), b = new Device("B", c);
+    a.createKpi("Commune", "Mensuelle"); a.initialSync(); b.initialSync();
+    a.createKpi("De A", "Mensuelle"); b.createKpi("De B", "Mensuelle");
+    if (ordre === "AB") { a.pushToCloud(); b.onRemoteChange(); b.pushToCloud(); a.onRemoteChange(); }
+    else                { b.pushToCloud(); a.onRemoteChange(); a.pushToCloud(); b.onRemoteChange(); }
+    return a.data.map(k => k.title).sort().join(",");
+  };
+  assert.equal(faire("AB"), faire("BA"));
+});
