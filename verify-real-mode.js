@@ -58,7 +58,11 @@ const memoire = {
   kpiUser: "marie",
   kpiManualEntries: JSON.stringify(localFiches),
   kpiDeletedIds: JSON.stringify(SAIN ? [] : [{ id: "kpi_disparue", title: "Disparue", at: 500, state: "deleted" }]),
-  kpiPurged: JSON.stringify([]),
+  kpiPurgedIds: JSON.stringify(SAIN ? [] : ["kpi_purgee_ailleurs"]),
+  kpiLocalUpdatedAt: String(Date.now() - 60000),
+  kpiSnapshots: JSON.stringify([{ at: Date.now() - 3600000, reason: "essai", counts: { kpis: 2, variantes: 2 } }]),
+  kpiSyncConfig: JSON.stringify({ config: { projectId: "annuaire-kpi" }, code: "idea-kpi-2026" }),
+  kpiActivity: JSON.stringify([{ at: Date.now(), by: "marie", action: "create", title: "K" }]),
   kpiSites: JSON.stringify(SAIN
     ? [{ key: "logistiport", name: "Logistiport", _mtime: 1 }]
     : [{ key: "logistiport", name: "Logistiport", _mtime: 1 },
@@ -78,7 +82,8 @@ const cloudFiches = SAIN ? JSON.parse(JSON.stringify(localFiches)) : [
   Object.assign({}, localFiches[0], { armement: "https://MG-DIFFERENT" }),  // divergente
   localFiches[1],
   localFiches[2],
-  fiche("Seulement dans le cloud", "Mensuelle", { logistiport: "https://e" })
+  fiche("Seulement dans le cloud", "Mensuelle", { logistiport: "https://e" }),
+  { id: "kpi_purgee_ailleurs", manual: true, title: "Fantôme purgé", freq: "Mensuelle", _mtime: 500 }
 ];
 const docCloud = {
   kpiManual: cloudFiches, kpiDeleted: [], kpiPurged: [],
@@ -179,6 +184,11 @@ setTimeout(async () => {
     ["détecte la fiche sans lien", trouve("au moins un lien")?.html.includes("Sans lien")],
     ["détecte le marqueur orphelin", trouve("Marqueurs de corbeille")?.html.includes("1")],
     ["compte correctement les KPIs", trouve("Nombre de KPIs")?.html.includes("<b>5</b>")],
+    ["détecte la fiche fantôme dans le cloud", trouve("fiche fantôme")?.html.includes("Fantôme purgé")],
+    ["détecte l'écart de suppressions définitives", trouve("Suppressions définitives alignées")?.etat === "!!"],
+    ["signale les liens mal formés ou leur absence", !!trouve("Liens de rapport bien formés")],
+    ["contrôle l'unicité des identifiants", trouve("Identifiants uniques")?.etat === "OK"],
+    ["mesure le volume envoyé", !!trouve("Volume envoyé")],
     ["le test d'écriture a bien écrit", ecritures > 0],
     ["le document de test a été effacé", suppressions > 0]
   ];

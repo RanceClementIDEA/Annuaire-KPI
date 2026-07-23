@@ -788,10 +788,13 @@ function purgeSelectedTrash() {
   if (sharedIds.length) {
     sharedIds.forEach(id => { if (!purgedIds.includes(id)) purgedIds.push(id); });
     deletedIds = deletedIds.filter(d => !sharedIds.includes(d.id));
+    // Suppression définitive : la fiche quitte aussi la mémoire, sinon elle
+    // resterait stockée et repartirait vers le cloud à chaque envoi.
+    manualEntries = manualEntries.filter(k => !sharedIds.includes(k.id));
     favorites = favorites.filter(f => !sharedIds.includes(f));
     savePurged(false);
     saveDeletedIds(false);
-    saveOverrides(false);
+    saveManualEntries(false);
   }
   // Personnelles : simplement effacées de la corbeille locale
   if (personalIds.length) {
@@ -1893,6 +1896,10 @@ function mergeRemoteContent(payload) {
   if (Array.isArray(payload.kpiPurged)) {
     purgedIds = [...new Set([...(purgedIds || []), ...payload.kpiPurged])];
     savePurged(false);
+    // Une purge décidée sur un autre appareil libère aussi la mémoire ici
+    const avant = manualEntries.length;
+    manualEntries = manualEntries.filter(k => !purgedIds.includes(k.id));
+    if (manualEntries.length !== avant) saveManualEntries(false);
   }
   if (Array.isArray(payload.kpiActivity)) {
     activityLog = mergeActivity(activityLog, payload.kpiActivity, MAX_ACTIVITY);

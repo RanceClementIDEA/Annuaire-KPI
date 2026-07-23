@@ -2542,6 +2542,109 @@ test("robustesse : des caractères spéciaux dans l'intitulé sont gérés", () 
   assert.equal(A.get("data.length"), 1);
 });
 
+/* ═══ Suppression définitive : libération de la mémoire ═══ */
+
+test("purge : la fiche quitte réellement la mémoire", () => {
+  const f = fiches(["À purger", "Mensuelle"], ["À garder", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "À purger", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  assert.equal(A.get("manualEntries.length"), 1, "la fiche purgée ne doit plus être stockée");
+  assert.equal(A.get("manualEntries")[0].title, "À garder");
+});
+
+test("purge : la fiche n'est plus envoyée au cloud", () => {
+  const f = fiches(["Fantôme", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Fantôme", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  const envoi = A.run("buildSyncPayload()");
+  assert.ok(!JSON.stringify(envoi.kpiManual).includes("Fantôme"), "aucune trace dans l'envoi");
+});
+
+test("purge : l'identifiant reste marqué pour empêcher tout retour", () => {
+  const f = fiches(["Définitive", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Définitive", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  assert.ok(A.get("purgedIds").includes(f[0].id));
+});
+
+test("purge : une fiche purgée reçue d'un autre appareil est écartée", () => {
+  const f = fiches(["Purgée ailleurs", "Mensuelle"]);
+  A.reset({ manualEntries: [], purgedIds: [] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: f, kpiPurged: [f[0].id], updatedAt: 100
+  })}, true)`);
+  assert.equal(A.get("data.length"), 0, "la fiche n'est pas affichée");
+});
+
+test("purge : une purge décidée ailleurs libère aussi la mémoire ici", () => {
+  const f = fiches(["Encore stockée", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`applyRemoteData(${JSON.stringify({ kpiPurged: [f[0].id], updatedAt: 100 })}, true)`);
+  assert.equal(A.get("manualEntries.length"), 0, "la mémoire est libérée sur cet appareil aussi");
+});
+
+test("purge : les fiches non purgées ne sont pas touchées", () => {
+  const f = fiches(["Purgée", "Mensuelle"], ["Intacte", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`applyRemoteData(${JSON.stringify({ kpiPurged: [f[0].id], updatedAt: 100 })}, true)`);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Intacte");
+});
+
+/* ═══ Cohérence de la couche de stockage ═══ */
+
+test("stockage : chaque clé du registre est réellement utilisée", () => {
+  const registre = A.run("Store.KEYS");
+  ["MANUAL", "DELETED", "PURGED", "SITES", "USER"].forEach(k =>
+    assert.ok(registre[k], "clé absente du registre : " + k));
+});
+
+test("stockage : la clé des suppressions définitives est la bonne", () => {
+  assert.equal(A.run("Store.KEYS.PURGED"), "kpiPurgedIds",
+    "une clé erronée ferait réapparaître des fiches supprimées définitivement");
+});
+
+test("stockage : le registre concorde avec les fiches réellement enregistrées", () => {
+  A.reset({ manualEntries: fiches(["Témoin", "Mensuelle"]) });
+  A.run("saveManualEntries(false)");
+  const brut = A.stockage()[A.run("Store.KEYS.MANUAL")];
+  assert.ok(brut && brut.includes("Témoin"), "les fiches doivent être lisibles via la clé du registre");
+});
+
+test("stockage : les suppressions définitives sont relisibles via le registre", () => {
+  A.reset({ purgedIds: ["abc"] });
+  A.run("savePurged(false)");
+  const brut = A.stockage()[A.run("Store.KEYS.PURGED")];
+  assert.ok(brut && brut.includes("abc"));
+});
+
+/* ═══ Volumétrie envoyée au cloud ═══ */
+
+test("envoi : la taille du contenu reste raisonnable pour 500 variantes", () => {
+  const nombreuses = Array.from({ length: 500 }, (_, i) => ({
+    id: "kpi_" + i, manual: true, title: "KPI " + (i % 150), freq: "Mensuelle",
+    logistiport: "https://app.powerbi.com/groups/xxx/reports/yyy/ReportSection" + i, _mtime: 100
+  }));
+  A.reset({ manualEntries: nombreuses });
+  const octets = JSON.stringify(A.run("buildSyncPayload()")).length;
+  assert.ok(octets < 1048576, "le contenu doit rester sous la limite d'un document (1 Mio), mesuré : " + octets);
+});
+
+test("envoi : le journal d'activité ne fait pas gonfler l'envoi sans limite", () => {
+  A.reset();
+  A.run(`for (let i = 0; i < 600; i++) logActivity("update", "KPI " + i, "détail assez long pour peser");`);
+  assert.ok(A.get("activityLog.length") <= 400, "le journal est plafonné avant l'envoi");
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
@@ -3767,9 +3870,10 @@ const veille = setTimeout(() => {
    ══════════════════════════════════════════════════════════════════════ */
 
 const CLE = {
-  MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurged",
+  MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurgedIds",
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
-  CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2"
+  CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
+  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }
@@ -3883,7 +3987,27 @@ async function analyseReelle(avecEcriture){
   ouvrirGroupeR("Données de cet appareil");
   etape(.2, "lecture de la mémoire locale"); await respirer();
 
-  const manual = lireLocal(CLE.MANUAL, null);
+  const fiches0 = lireLocal(CLE.MANUAL, null);
+
+  /* Garde-fou : ce diagnostic doit lire les MÊMES emplacements que l'application.
+     Si une clé attendue est absente alors que d'autres existent, le diagnostic
+     lirait à côté et donnerait des chiffres faux. */
+  const clesPresentes = [];
+  for (let i = 0; i < localStorage.length; i++) clesPresentes.push(localStorage.key(i));
+  const attendues = [CLE.MANUAL, CLE.DELETED, CLE.PURGED, CLE.SITES];
+  const manquantes = attendues.filter(k => clesPresentes.indexOf(k) < 0);
+  const inconnues = clesPresentes.filter(k =>
+    k.indexOf("kpi") === 0 && Object.values(CLE).every(v => k !== v && k.indexOf(v) !== 0) &&
+    ["kpiMeta","kpiFavMeta","kpiSyncFavorites","kpiLocalUpdatedAt","kpiClockOffset",
+     "kpiSnapshots","kpiOptoutClearedV2","kpiDataCache","kpiOverrides","kpiFile","kpiFileB64"].indexOf(k) < 0);
+  ajouterControle("Données de cet appareil", "Le diagnostic lit bien les mêmes emplacements que l'application",
+    (manquantes.length === 0 || fiches0 === null) && inconnues.length === 0
+      ? { etat:"ok", detail:"emplacements de stockage reconnus" }
+      : { etat:"warn", detail:
+          (manquantes.length ? "Absentes : <b>" + manquantes.map(echapper).join(", ") + "</b> (normal si vous n'avez rien supprimé). " : "") +
+          (inconnues.length ? "Emplacements inconnus : <b>" + inconnues.map(echapper).join(", ") + "</b> — signalez-les." : "") });
+
+  const manual = fiches0;
   ajouterControle("Données de cet appareil", "Fiches partagées lisibles",
     Array.isArray(manual) ? { etat:"ok", detail:"<b>" + manual.length + "</b> variante(s) enregistrée(s)" }
                           : { etat:"ko", detail:"Contenu illisible ou absent — l'application repartirait d'une liste vide." });
@@ -3895,10 +4019,19 @@ async function analyseReelle(avecEcriture){
   const visibles = fiches.filter(f => f && !idsSupprimes.has(f.id) && purges.indexOf(f.id) < 0);
   const nbKpis = A.run("countFiches(" + JSON.stringify(visibles) + ")");
 
+  const nbPurges = fiches.filter(f => f && purges.indexOf(f.id) >= 0).length;
   ajouterControle("Données de cet appareil", "Nombre de KPIs et de variantes",
     { etat: visibles.length ? "ok" : "warn",
       detail:"<b>" + nbKpis + "</b> KPI(s) · <b>" + visibles.length + "</b> variante(s) visible(s)" +
-             (supprimes.length ? " · " + supprimes.length + " en corbeille" : "") });
+             (supprimes.length ? "<br>· " + supprimes.length + " variante(s) en corbeille (récupérables)" : "") +
+             (nbPurges ? "<br>· " + nbPurges + " variante(s) supprimée(s) définitivement" : "") +
+             "<br>· " + fiches.length + " variante(s) stockée(s) au total" });
+
+  const perso = lireLocal(CLE.PERSO + (utilisateur || ""), []) || [];
+  const persoTrash = lireLocal(CLE.PERSO_TRASH + (utilisateur || ""), []) || [];
+  ajouterControle("Données de cet appareil", "Espace personnel (jamais synchronisé)",
+    { etat:"ok", detail:"<b>" + A.run("countFiches(" + JSON.stringify(perso) + ")") + "</b> KPI(s) personnel(s)" +
+      (persoTrash.length ? " · " + persoTrash.length + " dans la corbeille personnelle" : "") });
 
   const anomalies = A.run("findVariantAnomalies(" + JSON.stringify(visibles) + ")");
   ajouterControle("Données de cet appareil", "Cohérence des temporalités",
@@ -3919,6 +4052,83 @@ async function analyseReelle(avecEcriture){
     sansLien.length === 0 ? { etat:"ok", detail:"toutes les variantes ont un lien de rapport" }
       : { etat:"warn", detail:"<b>" + sansLien.length + "</b> variante(s) sans aucun lien :<br>" +
           sansLien.slice(0,8).map(f => "• " + echapper(f.title) + " (" + echapper(f.freq || "?") + ")").join("<br>") });
+
+  /* Identifiants en double : deux fiches ne doivent jamais partager un identifiant */
+  const compteId = {};
+  fiches.forEach(f => { if (f && f.id) compteId[f.id] = (compteId[f.id] || 0) + 1; });
+  const idsDoubles = Object.keys(compteId).filter(id => compteId[id] > 1);
+  ajouterControle("Données de cet appareil", "Identifiants uniques",
+    idsDoubles.length === 0 ? { etat:"ok", detail:"aucun identifiant partagé par deux fiches" }
+      : { etat:"ko", detail:"<b>" + idsDoubles.length + "</b> identifiant(s) en double — la fusion en perdrait une :<br>" +
+          idsDoubles.slice(0,6).map(echapper).join("<br>") });
+
+  const sansId = fiches.filter(f => !f || !f.id);
+  ajouterControle("Données de cet appareil", "Fiches correctement formées",
+    sansId.length === 0 ? { etat:"ok", detail:"toutes les fiches ont un identifiant" }
+      : { etat:"ko", detail:"<b>" + sansId.length + "</b> fiche(s) sans identifiant : elles seraient ignorées à la synchronisation." });
+
+  /* Marqueurs de suppression définitive devenus inutiles */
+  const purgesOrphelins = purges.filter(id => !fiches.some(f => f && f.id === id));
+  ajouterControle("Données de cet appareil", "Suppressions définitives sans résidu",
+    { etat:"ok", detail: purges.length === 0 ? "aucune suppression définitive"
+        : "<b>" + purges.length + "</b> marqueur(s), dont <b>" + purgesOrphelins.length +
+          "</b> dont la fiche a bien été libérée de la mémoire" });
+
+  /* Liens qui ne ressemblent pas à des adresses */
+  const sitesTous = lireLocal(CLE.SITES, []) || [];
+  const liensDouteux = [];
+  visibles.forEach(f => sitesTous.forEach(st => {
+    const v = st && f[st.key];
+    if (v && !/^https?:\/\//i.test(v)) liensDouteux.push(f.title + " / " + st.name);
+  }));
+  ajouterControle("Données de cet appareil", "Liens de rapport bien formés",
+    liensDouteux.length === 0 ? { etat:"ok", detail:"tous les liens commencent par http(s)" }
+      : { etat:"warn", detail:"<b>" + liensDouteux.length + "</b> lien(s) suspect(s) :<br>" +
+          liensDouteux.slice(0,6).map(echapper).join("<br>") });
+
+  /* Liens rattachés à un périmètre qui n'existe plus */
+  const clesSites = new Set(sitesTous.map(s => s && s.key));
+  const clesConnues = new Set(["id","manual","personal","title","type","process","freq","ritual","desc",
+                               "_mtime","_by","edited"]);
+  const orphelinsSite = new Set();
+  visibles.forEach(f => Object.keys(f).forEach(k => {
+    if (!clesConnues.has(k) && !clesSites.has(k) && f[k]) orphelinsSite.add(k);
+  }));
+  ajouterControle("Données de cet appareil", "Liens rattachés à un périmètre existant",
+    orphelinsSite.size === 0 ? { etat:"ok", detail:"aucun lien orphelin" }
+      : { etat:"warn", detail:"Des liens pointent vers des périmètres supprimés : <b>" +
+          [...orphelinsSite].map(echapper).join(", ") + "</b> — ils sont invisibles dans l'application." });
+
+  /* Temporalités hors des trois standard */
+  const freqStd = ["mensuelle","hebdomadaire","quotidienne"];
+  const freqAutres = {};
+  visibles.forEach(f => { const q = (f.freq || "").trim();
+    if (!freqStd.includes(q.toLowerCase())) freqAutres[q || "(vide)"] = (freqAutres[q || "(vide)"] || 0) + 1; });
+  ajouterControle("Données de cet appareil", "Temporalités reconnues",
+    Object.keys(freqAutres).length === 0 ? { etat:"ok", detail:"Mensuelle, Hebdomadaire, Quotidienne uniquement" }
+      : { etat:"warn", detail:"Temporalités inhabituelles : " +
+          Object.entries(freqAutres).map(([q,n]) => "<b>" + echapper(q) + "</b> (" + n + ")").join(", ") });
+
+  /* Historique des versions et journal */
+  const instantanes = lireLocal("kpiSnapshots", []) || [];
+  ajouterControle("Données de cet appareil", "Historique des versions disponible",
+    instantanes.length ? { etat:"ok", detail:"<b>" + instantanes.length + "</b> version(s) enregistrée(s), la plus ancienne du <b>" +
+        new Date(instantanes[instantanes.length-1].at).toLocaleString("fr-FR") + "</b>" }
+      : { etat:"warn", detail:"Aucune version enregistrée : pas de retour en arrière possible pour l'instant." });
+
+  const journal = lireLocal(CLE.ACTIVITY, []) || [];
+  const auteurs = [...new Set(journal.map(e => e && e.by).filter(Boolean))];
+  ajouterControle("Données de cet appareil", "Journal d'activité",
+    { etat:"ok", detail:"<b>" + journal.length + "</b> entrée(s)" +
+      (auteurs.length ? " · utilisateurs vus : <b>" + auteurs.map(echapper).join(", ") + "</b>" : "") });
+
+  /* Volume qui partirait vers le cloud */
+  const tailleEnvoi = JSON.stringify({ kpiManual: fiches, kpiDeleted: supprimes,
+    kpiPurged: purges, kpiSites: sitesTous, kpiActivity: journal }).length;
+  ajouterControle("Données de cet appareil", "Volume envoyé à chaque synchronisation",
+    tailleEnvoi < 700000
+      ? { etat:"ok", detail:"<b>" + (tailleEnvoi/1024).toFixed(0) + " Ko</b> (limite d'un document : 1 024 Ko)" }
+      : { etat:"warn", detail:"<b>" + (tailleEnvoi/1024).toFixed(0) + " Ko</b> — proche de la limite de 1 024 Ko par document." });
 
   const sites = (lireLocal(CLE.SITES, []) || []).filter(s => s && !s._deleted);
   ajouterControle("Données de cet appareil", "Périmètres (sites) configurés",
@@ -4018,6 +4228,51 @@ async function analyseReelle(avecEcriture){
                 const ecarts = champs.filter(c => (a[c] || "") !== (b[c] || ""));
                 return "• " + nom(mLocal, id) + " — champs : " + ecarts.map(echapper).join(", ");
               }).join("<br>") });
+
+      /* Corbeilles et suppressions définitives : sont-elles alignées ? */
+      const dLocal = new Set(supprimes.map(d => d.id));
+      const dCloud = new Set(cSupp.map(d => d.id));
+      const dEcart = [...dLocal].filter(i => !dCloud.has(i)).length + [...dCloud].filter(i => !dLocal.has(i)).length;
+      ajouterControle("Comparaison appareil ↔ cloud", "Corbeilles alignées",
+        dEcart === 0 ? { etat:"ok", detail:"mêmes fiches en corbeille des deux côtés (" + dLocal.size + ")" }
+          : { etat:"warn", detail:"<b>" + dEcart + "</b> écart(s) : une suppression faite quelque part n'a pas encore circulé." });
+
+      const pLocal = new Set(purges), pCloud = new Set(cPurge);
+      const pEcart = [...pLocal].filter(i => !pCloud.has(i)).length + [...pCloud].filter(i => !pLocal.has(i)).length;
+      ajouterControle("Comparaison appareil ↔ cloud", "Suppressions définitives alignées",
+        pEcart === 0 ? { etat:"ok", detail:"mêmes suppressions définitives (" + pLocal.size + ")" }
+          : { etat:"warn", detail:"<b>" + pEcart + "</b> écart(s) entre cet appareil et le cloud." });
+
+      /* Fraîcheur : qui est en avance sur qui ? */
+      const majLocale = +(localStorage.getItem("kpiLocalUpdatedAt") || 0);
+      const majCloud = docCloud.updatedAt || 0;
+      const ecartH = Math.round(Math.abs(majLocale - majCloud) / 60000);
+      ajouterControle("Comparaison appareil ↔ cloud", "Fraîcheur des données",
+        majLocale === 0 ? { etat:"warn", detail:"Aucune modification locale enregistrée sur cet appareil." }
+        : majLocale > majCloud
+          ? { etat:"warn", detail:"Cet appareil a été modifié <b>" + ecartH + " min</b> après le dernier envoi : des changements n'ont pas encore été partagés." }
+          : { etat:"ok", detail:"le cloud est aussi récent ou plus récent que cet appareil" });
+
+      /* Volume du document distant */
+      const tailleCloud = JSON.stringify(docCloud).length;
+      ajouterControle("Comparaison appareil ↔ cloud", "Taille du document distant",
+        tailleCloud < 700000 ? { etat:"ok", detail:"<b>" + (tailleCloud/1024).toFixed(0) + " Ko</b> sur 1 024 Ko autorisés" }
+          : { etat:"warn", detail:"<b>" + (tailleCloud/1024).toFixed(0) + " Ko</b> — proche de la limite d'un document Firestore." });
+
+      /* Le cloud contient-il des fiches déjà supprimées définitivement ici ? */
+      const fantomes = cManual.filter(f => f && purges.includes(f.id));
+      ajouterControle("Comparaison appareil ↔ cloud", "Aucune fiche fantôme dans le cloud",
+        fantomes.length === 0 ? { etat:"ok", detail:"le cloud ne transporte pas de fiche supprimée définitivement" }
+          : { etat:"warn", detail:"<b>" + fantomes.length + "</b> fiche(s) supprimée(s) définitivement ici sont encore stockées dans le cloud :<br>" +
+              fantomes.slice(0,6).map(f => "• " + echapper(f.title || f.id)).join("<br>") +
+              "<br><i>Elles sont invisibles, mais alourdissent chaque synchronisation. Un envoi depuis cet appareil les nettoiera.</i>" });
+
+      /* Doublons côté cloud */
+      const anomCloud = A.run("findVariantAnomalies(" + JSON.stringify(cVisibles) + ")");
+      ajouterControle("Comparaison appareil ↔ cloud", "Cohérence des temporalités côté cloud",
+        anomCloud.length === 0 ? { etat:"ok", detail:"aucun doublon dans le cloud" }
+          : { etat:"warn", detail:"<b>" + anomCloud.length + "</b> fiche(s) à vérifier dans le cloud :<br>" +
+              anomCloud.slice(0,6).map(a => "• " + echapper(a.title) + " — " + echapper(a.reason)).join("<br>") });
 
       const sLocal = sites.map(s => s.key).sort().join(",");
       const sCloud = (docCloud.kpiSites || []).filter(s => s && !s._deleted).map(s => s.key).sort().join(",");

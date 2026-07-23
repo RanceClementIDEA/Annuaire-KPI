@@ -753,3 +753,106 @@ test("robustesse : des caractères spéciaux dans l'intitulé sont gérés", () 
   A.run("rebuildData(false); renderSyncDiag();");
   assert.equal(A.get("data.length"), 1);
 });
+
+/* ═══ Suppression définitive : libération de la mémoire ═══ */
+
+test("purge : la fiche quitte réellement la mémoire", () => {
+  const f = fiches(["À purger", "Mensuelle"], ["À garder", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "À purger", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  assert.equal(A.get("manualEntries.length"), 1, "la fiche purgée ne doit plus être stockée");
+  assert.equal(A.get("manualEntries")[0].title, "À garder");
+});
+
+test("purge : la fiche n'est plus envoyée au cloud", () => {
+  const f = fiches(["Fantôme", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Fantôme", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  const envoi = A.run("buildSyncPayload()");
+  assert.ok(!JSON.stringify(envoi.kpiManual).includes("Fantôme"), "aucune trace dans l'envoi");
+});
+
+test("purge : l'identifiant reste marqué pour empêcher tout retour", () => {
+  const f = fiches(["Définitive", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Définitive", at: 9, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.confirmer(true);
+  A.run("purgeSelectedTrash()");
+  A.confirmer(false);
+  assert.ok(A.get("purgedIds").includes(f[0].id));
+});
+
+test("purge : une fiche purgée reçue d'un autre appareil est écartée", () => {
+  const f = fiches(["Purgée ailleurs", "Mensuelle"]);
+  A.reset({ manualEntries: [], purgedIds: [] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: f, kpiPurged: [f[0].id], updatedAt: 100
+  })}, true)`);
+  assert.equal(A.get("data.length"), 0, "la fiche n'est pas affichée");
+});
+
+test("purge : une purge décidée ailleurs libère aussi la mémoire ici", () => {
+  const f = fiches(["Encore stockée", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`applyRemoteData(${JSON.stringify({ kpiPurged: [f[0].id], updatedAt: 100 })}, true)`);
+  assert.equal(A.get("manualEntries.length"), 0, "la mémoire est libérée sur cet appareil aussi");
+});
+
+test("purge : les fiches non purgées ne sont pas touchées", () => {
+  const f = fiches(["Purgée", "Mensuelle"], ["Intacte", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`applyRemoteData(${JSON.stringify({ kpiPurged: [f[0].id], updatedAt: 100 })}, true)`);
+  assert.equal(A.get("manualEntries.length"), 1);
+  assert.equal(A.get("manualEntries")[0].title, "Intacte");
+});
+
+/* ═══ Cohérence de la couche de stockage ═══ */
+
+test("stockage : chaque clé du registre est réellement utilisée", () => {
+  const registre = A.run("Store.KEYS");
+  ["MANUAL", "DELETED", "PURGED", "SITES", "USER"].forEach(k =>
+    assert.ok(registre[k], "clé absente du registre : " + k));
+});
+
+test("stockage : la clé des suppressions définitives est la bonne", () => {
+  assert.equal(A.run("Store.KEYS.PURGED"), "kpiPurgedIds",
+    "une clé erronée ferait réapparaître des fiches supprimées définitivement");
+});
+
+test("stockage : le registre concorde avec les fiches réellement enregistrées", () => {
+  A.reset({ manualEntries: fiches(["Témoin", "Mensuelle"]) });
+  A.run("saveManualEntries(false)");
+  const brut = A.stockage()[A.run("Store.KEYS.MANUAL")];
+  assert.ok(brut && brut.includes("Témoin"), "les fiches doivent être lisibles via la clé du registre");
+});
+
+test("stockage : les suppressions définitives sont relisibles via le registre", () => {
+  A.reset({ purgedIds: ["abc"] });
+  A.run("savePurged(false)");
+  const brut = A.stockage()[A.run("Store.KEYS.PURGED")];
+  assert.ok(brut && brut.includes("abc"));
+});
+
+/* ═══ Volumétrie envoyée au cloud ═══ */
+
+test("envoi : la taille du contenu reste raisonnable pour 500 variantes", () => {
+  const nombreuses = Array.from({ length: 500 }, (_, i) => ({
+    id: "kpi_" + i, manual: true, title: "KPI " + (i % 150), freq: "Mensuelle",
+    logistiport: "https://app.powerbi.com/groups/xxx/reports/yyy/ReportSection" + i, _mtime: 100
+  }));
+  A.reset({ manualEntries: nombreuses });
+  const octets = JSON.stringify(A.run("buildSyncPayload()")).length;
+  assert.ok(octets < 1048576, "le contenu doit rester sous la limite d'un document (1 Mio), mesuré : " + octets);
+});
+
+test("envoi : le journal d'activité ne fait pas gonfler l'envoi sans limite", () => {
+  A.reset();
+  A.run(`for (let i = 0; i < 600; i++) logActivity("update", "KPI " + i, "détail assez long pour peser");`);
+  assert.ok(A.get("activityLog.length") <= 400, "le journal est plafonné avant l'envoi");
+});
