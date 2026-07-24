@@ -542,3 +542,104 @@ test("l'ordre des synchronisations ne change pas le résultat final", () => {
   };
   assert.equal(faire("AB"), faire("BA"));
 });
+
+/* ═══ Simulation en masse (déterministe) ═══ */
+
+test("masse : 500 fiches se synchronisent intégralement", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 500; i++) a.createKpi("KPI " + Math.floor(i / 3), ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3]);
+  a.initialSync(); b.initialSync();
+  assert.equal(b.variantCount(), a.variantCount());
+  assert.equal(new Set(b.data.map(k => k.id)).size, b.variantCount(), "aucun doublon");
+});
+
+test("masse : dix appareils convergent vers le même état", () => {
+  const c = new Cloud();
+  const app = Array.from({ length: 10 }, (_, i) => new Device("D" + i, c));
+  app[0].createKpi("Base", "Mensuelle");
+  app[0].initialSync();
+  app.forEach(d => { d.initialSyncDone = false; d.initialSync(); });
+  app.forEach((d, i) => d.createKpi("Fiche de " + i, "Mensuelle"));
+  app.forEach(d => d.pushToCloud());
+  for (let tour = 0; tour < 4; tour++) app.forEach(d => { d.initialSyncDone = false; d.initialSync(); });
+  const reference = app[0].signature();
+  app.forEach((d, i) => assert.equal(d.signature(), reference, "appareil " + i + " divergent"));
+  assert.equal(app[0].kpiCount(), 11, "les 10 créations plus la base");
+});
+
+test("masse : 300 modifications successives sans perte", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  const ids = [];
+  for (let i = 0; i < 60; i++) ids.push(a.createKpi("KPI " + i, "Mensuelle").id);
+  a.initialSync(); b.initialSync();
+  for (let i = 0; i < 300; i++) a.editKpi(ids[i % ids.length], { ritual: "Rituel " + i });
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.variantCount(), 60);
+  assert.equal(b.signature(), a.signature());
+});
+
+test("masse : suppression de la moitié d'un annuaire volumineux", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 100; i++) a.createKpi("KPI " + i, "Mensuelle");
+  a.initialSync(); b.initialSync();
+  for (let i = 0; i < 50; i++) a.deleteFiche("KPI " + i);
+  a.pushToCloud(); b.onRemoteChange();
+  assert.equal(b.kpiCount(), 50);
+  assert.equal(a.signature(), b.signature());
+});
+
+test("masse : le volume envoyé reste sous la limite d'un document", () => {
+  const c = new Cloud();
+  const a = new Device("A", c);
+  for (let i = 0; i < 600; i++) {
+    a.createKpi("KPI " + Math.floor(i / 3), ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3], {
+      logistiport: "https://app.powerbi.com/groups/aaaaaaaa/reports/bbbbbbbb/ReportSection" + i,
+      desc: "Description de contrôle relativement détaillée pour la fiche " + i
+    });
+  }
+  const octets = JSON.stringify(a.buildSyncPayload()).length;
+  assert.ok(octets < 1048576, "600 variantes doivent tenir dans un document : " + Math.round(octets / 1024) + " Ko");
+});
+
+test("masse : dix appareils écrivant en même temps ne perdent aucune création", () => {
+  const c = new Cloud();
+  const app = Array.from({ length: 10 }, (_, i) => new Device("D" + i, c));
+  app[0].createKpi("Base", "Mensuelle"); app[0].initialSync();
+  app.forEach(d => { d.initialSyncDone = false; d.initialSync(); });
+  // Tous créent puis envoient « simultanément » : chaque envoi écrase le précédent
+  app.forEach((d, i) => d.createKpi("Simultanée " + i, "Mensuelle"));
+  app.forEach(d => d.pushToCloud());
+  // Cycles de rattrapage
+  for (let tour = 0; tour < 5; tour++) app.forEach(d => { d.initialSyncDone = false; d.initialSync(); });
+  const titres = app[0].data.map(k => k.title);
+  for (let i = 0; i < 10; i++) assert.ok(titres.includes("Simultanée " + i), "création " + i + " perdue");
+});
+
+test("masse : la fusion reste rapide sur un gros volume", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 400; i++) a.createKpi("KPI " + i, "Mensuelle");
+  a.initialSync(); b.initialSync();
+  const t = Date.now();
+  for (let i = 0; i < 20; i++) b.applyRemoteData(c.get());
+  const ms = Date.now() - t;
+  assert.ok(ms < 3000, "20 fusions de 400 variantes doivent rester rapides (mesuré : " + ms + " ms)");
+});
+
+test("masse : un annuaire volumineux converge après un travail hors-ligne", () => {
+  const c = new Cloud();
+  const a = new Device("A", c), b = new Device("B", c);
+  for (let i = 0; i < 150; i++) a.createKpi("KPI " + i, "Mensuelle");
+  a.initialSync(); b.initialSync();
+  b.online = false;
+  for (let i = 0; i < 20; i++) b.createKpi("Hors-ligne " + i, "Mensuelle");
+  for (let i = 0; i < 20; i++) a.createKpi("Pendant ce temps " + i, "Mensuelle");
+  a.pushToCloud();
+  b.online = true; b.initialSyncDone = false; b.initialSync();
+  a.initialSyncDone = false; a.initialSync();
+  assert.equal(a.kpiCount(), 190, "150 + 20 + 20");
+  assert.equal(a.signature(), b.signature());
+});

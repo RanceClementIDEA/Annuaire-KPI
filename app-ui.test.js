@@ -1074,3 +1074,281 @@ test("horloge : la correction du serveur est appliquée aux dates", () => {
   assert.ok(t >= avant + 90000, "l'heure corrigée est utilisée pour dater les modifications");
   A.run("clockOffset = 0;");
 });
+
+/* ═══ Filtre « Type de KPI » ═══ */
+
+test("filtre type : la liste déroulante est alimentée par les types existants", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" },
+    { id: "c", title: "C", freq: "Mensuelle", type: "Contractuel" }
+  ] });
+  A.run("rebuildData(false)");
+  const options = A.el("typeFilter").options.map(o => o.textContent);
+  assert.ok(options.includes("Contractuel"), "le type doit être proposé");
+  assert.ok(options.includes("Opérationnel"));
+  assert.equal(options.filter(o => o === "Contractuel").length, 1, "sans doublon");
+});
+
+test("filtre type : sélectionner un type ne garde que les fiches concernées", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "Contractuelle", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "Opérationnelle", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "un seul KPI affiché");
+});
+
+test("filtre type : sans sélection, toutes les fiches restent visibles", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 2);
+});
+
+test("filtre type : il se combine avec le filtre processus", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel", process: "Logistique" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Contractuel", process: "Transport" },
+    { id: "c", title: "C", freq: "Mensuelle", type: "Opérationnel", process: "Logistique" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.saisir("processFilter", "Logistique");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "seule la fiche cochant les deux critères");
+  A.saisir("processFilter", "");
+});
+
+test("filtre type : il se combine avec la recherche", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "Volumétrie", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "Taux", freq: "Mensuelle", type: "Contractuel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.saisir("search", "volum");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1);
+  A.saisir("search", "");
+});
+
+test("filtre type : il se combine avec la vue Favoris", () => {
+  A.reset({
+    manualEntries: [
+      { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+      { id: "b", title: "B", freq: "Mensuelle", type: "Contractuel" }
+    ],
+    favorites: ["a"]
+  });
+  A.run("rebuildData(false); currentView = 'fav';");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "seul le favori du bon type");
+  A.run("currentView = 'all';");
+});
+
+test("filtre type : la réinitialisation le remet à zéro", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" }] });
+  A.run("rebuildData(false)");
+  A.selectionner("typeFilter", "Contractuel");
+  A.run("resetFilters()");
+  assert.equal(A.el("typeFilter").selectedIndex, 0);
+  assert.equal(A.el("typeFilter").value, "", "le menu revient bien sur « Tous »");
+});
+
+test("filtre type : la sélection est conservée lors d'une mise à jour des données", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("rebuildData(false)");   // par exemple après une synchronisation
+  assert.equal(A.el("typeFilter").value, "Contractuel", "le filtre actif ne doit pas sauter");
+});
+
+test("filtre type : une fiche sans type reste visible quand aucun filtre n'est actif", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Sans type", freq: "Mensuelle" }] });
+  A.run("rebuildData(false); filterData();");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1);
+});
+
+test("filtre type : les fiches personnelles alimentent aussi la liste", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "A", freq: "Mensuelle", type: "Partagé" }],
+    personalEntries: [{ id: "p", title: "P", freq: "Mensuelle", type: "Personnel" }]
+  });
+  A.run("rebuildData(false)");
+  const options = A.el("typeFilter").options.map(o => o.textContent);
+  assert.ok(options.includes("Personnel"), "les types de l'espace personnel sont proposés");
+});
+
+/* ═══ Corbeille : entrées sans données ═══ */
+
+test("corbeille : une entrée dont les données ont disparu est signalée", () => {
+  A.reset({
+    manualEntries: fiches(["Vivante", "Mensuelle"]),
+    deletedIds: [{ id: "orpheline", title: "Orpheline", freq: "Mensuelle", at: 500, state: "deleted" }]
+  });
+  A.run("renderTrashList()");
+  const html = A.el("trashList").children.map(c => c.innerHTML).join("");
+  assert.match(html, /non récupérable/, "l'utilisateur doit savoir qu'elle ne reviendra pas");
+});
+
+test("corbeille : une entrée normale n'est pas signalée à tort", () => {
+  const f = fiches(["Récupérable", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Récupérable", at: 500, state: "deleted" }] });
+  A.run("renderTrashList()");
+  const html = A.el("trashList").children.map(c => c.innerHTML).join("");
+  assert.ok(!/non récupérable/.test(html));
+});
+
+test("corbeille : réafficher une entrée vide le dit clairement", () => {
+  A.reset({ deletedIds: [{ id: "orpheline", title: "Orpheline", at: 500, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "orpheline" } }]);
+  A.run("restoreSelectedTrash()");
+  const messages = A.messages().join(" | ");
+  assert.match(messages, /rien à réafficher/i);
+  assert.ok(!/fiche(s)? réaffichée/i.test(messages),
+    "aucune réussite ne doit être annoncée alors que rien n'est revenu");
+});
+
+test("corbeille : réafficher une entrée valide annonce bien la réussite", () => {
+  const f = fiches(["Bonne", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Bonne", at: 500, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.run("restoreSelectedTrash()");
+  assert.match(A.dernierMessage(), /réaffichée/i);
+});
+
+test("corbeille : une sélection mixte distingue les deux cas", () => {
+  const f = fiches(["Bonne", "Mensuelle"]);
+  A.reset({
+    manualEntries: f,
+    deletedIds: [
+      { id: f[0].id, title: "Bonne", at: 500, state: "deleted" },
+      { id: "orpheline", title: "Orpheline", at: 500, state: "deleted" }
+    ]
+  });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id + ",orpheline" } }]);
+  A.run("restoreSelectedTrash()");
+  const messages = A.messages().join(" | ");
+  assert.match(messages, /réaffichée/i);
+  assert.match(messages, /rien à réafficher/i);
+});
+
+/* ═══ Favoris orphelins ═══ */
+
+test("favoris : ceux qui désignent une fiche supprimée définitivement sont retirés", () => {
+  A.reset({ manualEntries: fiches(["Vivante", "Mensuelle"]), favorites: ["purgee", "autre"], purgedIds: ["purgee"] });
+  assert.equal(A.run("nettoyerFavoris()"), 1);
+  assert.deepEqual(A.get("favorites"), ["autre"]);
+});
+
+test("favoris : un favori dont la fiche n'est pas encore arrivée est conservé", () => {
+  A.reset({ manualEntries: [], favorites: ["pas_encore_synchronisee"], purgedIds: [] });
+  assert.equal(A.run("nettoyerFavoris()"), 0, "ne pas supprimer ce qui peut encore arriver");
+  assert.equal(A.get("favorites.length"), 1);
+});
+
+test("favoris : le nettoyage s'exécute au chargement de l'application", () => {
+  A.reset({ manualEntries: fiches(["K", "Mensuelle"]), favorites: ["purgee"], purgedIds: ["purgee"] });
+  A.run("saveManualEntries(false); savePurged(false); saveFavoritesLocalOnly(); loadSavedFile();");
+  assert.equal(A.get("favorites.length"), 0);
+});
+
+/* ═══ Grande échelle sur les fonctions réelles ═══ */
+
+test("masse : un apport en fin de liste est détecté sur 300 fiches", () => {
+  const nombreuses = Array.from({ length: 300 }, (_, i) => ({ id: "k" + i, title: "KPI " + i, freq: "Mensuelle", _mtime: 100 }));
+  const distantes = nombreuses.slice(0, 299);          // la 300e n'est pas dans le cloud
+  A.reset({ manualEntries: nombreuses, sites: [] });   // seul le contenu des fiches doit compter
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: distantes, kpiDeleted: [], kpiSites: [], kpiPurged: []
+  })})`), true, "une seule fiche nouvelle, tout en fin de liste, doit suffire à déclencher l'envoi");
+});
+
+test("masse : une suppression isolée parmi 300 est détectée", () => {
+  const nombreuses = Array.from({ length: 300 }, (_, i) => ({ id: "k" + i, title: "KPI " + i, freq: "Mensuelle", _mtime: 100 }));
+  const supprimes = Array.from({ length: 40 }, (_, i) => ({ id: "k" + i, at: 500, state: "deleted" }));
+  A.reset({ manualEntries: nombreuses, deletedIds: supprimes, sites: [] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: nombreuses, kpiDeleted: supprimes.slice(0, 39), kpiSites: [], kpiPurged: []
+  })})`), true, "la 40e suppression doit être remarquée");
+});
+
+test("masse : un état strictement identique sur 300 fiches n'envoie rien", () => {
+  const nombreuses = Array.from({ length: 300 }, (_, i) => ({ id: "k" + i, title: "KPI " + i, freq: "Mensuelle", _mtime: 100 }));
+  A.reset({ manualEntries: nombreuses, sites: [] });
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify({
+    kpiManual: nombreuses, kpiDeleted: [], kpiSites: [], kpiPurged: []
+  })})`), false, "aucune écriture inutile même sur un gros volume");
+});
+
+test("masse : 900 variantes s'affichent et se comptent correctement", () => {
+  const nombreuses = Array.from({ length: 900 }, (_, i) => ({
+    id: "k" + i, title: "KPI " + Math.floor(i / 3),
+    freq: ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3], _mtime: 100
+  }));
+  A.reset({ manualEntries: nombreuses });
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 900);
+  assert.equal(A.run("countFiches(data)"), 300, "900 variantes = 300 KPIs à trois temporalités");
+  assert.equal(A.texte("countAll"), "300");
+});
+
+test("masse : la détection d'anomalies reste fiable sur 900 variantes", () => {
+  const nombreuses = Array.from({ length: 900 }, (_, i) => ({
+    id: "k" + i, title: "KPI " + Math.floor(i / 3),
+    freq: ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3]
+  }));
+  nombreuses.push({ id: "doublon", title: "KPI 0", freq: "Mensuelle" });   // un seul doublon caché
+  A.reset({ manualEntries: nombreuses });
+  A.run("rebuildData(false)");
+  const anomalies = A.run("findVariantAnomalies(data)");
+  assert.equal(anomalies.length, 1, "le doublon unique est retrouvé parmi 901 variantes");
+  assert.match(anomalies[0].reason, /double/);
+});
+
+test("masse : l'export Excel traite un gros annuaire", () => {
+  const nombreuses = Array.from({ length: 600 }, (_, i) => ({
+    id: "k" + i, title: "KPI " + Math.floor(i / 3),
+    freq: ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3],
+    logistiport: "https://exemple/" + i, _mtime: 100
+  }));
+  A.reset({ manualEntries: nombreuses });
+  A.run("rebuildData(false); exportExcel();");
+  const aoa = A.fichiersExportes()[0].wb.Sheets["KPIs"]["!aoa"];
+  assert.equal(aoa.length - 1, 600, "toutes les variantes sont exportées");
+});
+
+test("masse : le nettoyage des fiches purgées passe à l'échelle", () => {
+  const nombreuses = Array.from({ length: 500 }, (_, i) => ({ id: "k" + i, title: "KPI " + i, freq: "Mensuelle", _mtime: 100 }));
+  const purges = nombreuses.slice(0, 200).map(k => k.id);
+  A.reset({ manualEntries: nombreuses, purgedIds: purges });
+  assert.equal(A.run("nettoyerPurgees()"), 200);
+  assert.equal(A.get("manualEntries.length"), 300);
+});
+
+test("masse : le contenu envoyé reste sous la limite avec 600 variantes détaillées", () => {
+  const nombreuses = Array.from({ length: 600 }, (_, i) => ({
+    id: "kpi_charge_" + i, manual: true, title: "Indicateur de suivi numéro " + Math.floor(i / 3),
+    freq: ["Mensuelle", "Hebdomadaire", "Quotidienne"][i % 3],
+    type: "Contractuel", process: "Processus " + (i % 7), ritual: "Rituel " + (i % 4),
+    desc: "Description détaillée du mode de calcul de cet indicateur, numéro " + i,
+    logistiport: "https://app.powerbi.com/groups/aaaaaaaaaaaa/reports/bbbbbbbbbbbb/ReportSection" + i,
+    armement: "https://app.powerbi.com/groups/cccccccccccc/reports/dddddddddddd/ReportSection" + i,
+    _mtime: 100, _by: "marie"
+  }));
+  A.reset({ manualEntries: nombreuses });
+  const octets = JSON.stringify(A.run("buildSyncPayload()")).length;
+  assert.ok(octets < 1048576,
+    "600 variantes détaillées doivent tenir dans un document : " + Math.round(octets / 1024) + " Ko");
+});

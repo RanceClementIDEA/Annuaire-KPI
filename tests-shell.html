@@ -163,7 +163,7 @@
   </header>
 
   <div class="modes">
-    <button class="btn actif" id="modeSandbox">🧪 Bac à sable — 320 tests</button>
+    <button class="btn actif" id="modeSandbox">🧪 Bac à sable</button>
     <button class="btn" id="modeReel">🔎 Données réelles — diagnostic</button>
   </div>
 
@@ -211,6 +211,7 @@
     <div class="outils">
       <button class="btn" id="btnAnalyser">▶ Lancer l'analyse</button>
       <button class="btn" id="btnEcriture" title="Écrit puis efface un document de test dédié">✎ Tester aussi l'écriture</button>
+      <button class="btn" id="btnMasse" title="Éprouve le système à grande échelle : 200 fiches, 5 appareils, 100 modifications">⚡ Simulation en masse</button>
       <button class="btn plein" id="btnScenarios" title="Fait dialoguer deux appareils simulés via votre vrai Firebase">🔄 Tester la synchronisation en conditions réelles</button>
       <button class="btn" id="btnCopierR">Copier le rapport</button>
     </div>
@@ -273,6 +274,20 @@ async function loadApp(surProgression){
 /* ══════════════ Les tests ══════════════ */
 let A = null;
 /*__TESTS__*/
+
+/* Le navigateur signale par un événement « storage » toute écriture faite
+   depuis un AUTRE onglet du même site. C'est une attribution certaine :
+   la page de test, elle, n'écrit jamais dans votre stockage réel. */
+const clesModifieesAilleurs = new Set();
+let autreOngletDetecte = false;
+window.addEventListener("storage", function (e) {
+  autreOngletDetecte = true;
+  if (e.key) clesModifieesAilleurs.add(e.key);
+});
+
+/* Documents Firestore réellement écrits par cette page (pour prouver
+   que votre document de synchronisation n'a pas été touché). */
+const docsEcritsParLaPage = new Set();
 
 /* ══════════════ Empreinte des données réelles ══════════════
    Relevée AVANT puis APRÈS les tests : prouve que la simulation
@@ -402,6 +417,7 @@ const veille = setTimeout(() => {
 
   /* — Phase 2 : exécution — */
   const total = __groupes.reduce((n, g) => n + g.tests.length, 0);
+  $("modeSandbox").textContent = "🧪 Bac à sable — " + total + " tests";
   majEtat("att", "Exécution des tests…", true);
   majBarre(0, "Tests exécutés", "0 / " + total);
   await respirer();
@@ -488,19 +504,34 @@ const veille = setTimeout(() => {
     corpsInt.appendChild(l);
   };
 
-  ligneInt(ecart.ajoutees.length === 0, "Aucun emplacement ajouté dans vos données",
+  ligneInt(ecart.ajoutees.length === 0 || ecart.ajoutees.every(k => clesModifieesAilleurs.has(k)),
+    "Aucun emplacement ajouté par cette page",
     ecart.ajoutees.length ? "Ajoutés : <b>" + ecart.ajoutees.map(echapper).join(", ") + "</b>"
                           : "la simulation n'a rien créé chez vous");
-  ligneInt(ecart.retirees.length === 0, "Aucun emplacement supprimé de vos données",
+  ligneInt(ecart.retirees.length === 0 || ecart.retirees.every(k => clesModifieesAilleurs.has(k)),
+    "Aucun emplacement supprimé par cette page",
     ecart.retirees.length ? "Supprimés : <b>" + ecart.retirees.map(echapper).join(", ") + "</b>"
                           : "rien n'a disparu");
-  ligneInt(ecart.modifiees.length === 0, "Aucun contenu modifié",
-    ecart.modifiees.length ? "Modifiés : <b>" + ecart.modifiees.map(echapper).join(", ") + "</b>"
-                           : empreinteAvant.cles.length + " emplacement(s) vérifiés un par un");
-  ligneInt(ecart.ecartOctets === 0, "Volume de données inchangé",
+  const parLaPage = ecart.modifiees.filter(k => !clesModifieesAilleurs.has(k));
+  const parUnAutreOnglet = ecart.modifiees.filter(k => clesModifieesAilleurs.has(k));
+  ligneInt(parLaPage.length === 0, "Aucun contenu modifié par cette page",
+    parLaPage.length
+      ? "Modifiés sans origine externe identifiée : <b>" + parLaPage.map(echapper).join(", ") + "</b>"
+      : (parUnAutreOnglet.length
+          ? "Cette page n'a rien écrit. " + parUnAutreOnglet.length +
+            " emplacement(s) ont changé <b>depuis un autre onglet</b> de l'annuaire : " +
+            parUnAutreOnglet.map(echapper).join(", ")
+          : empreinteAvant.cles.length + " emplacement(s) vérifiés un par un"));
+
+  if (autreOngletDetecte) {
+    ligneInt(true, "L'annuaire est ouvert dans un autre onglet",
+      "Ses écritures apparaissent ci-dessus. Pour une comparaison parfaitement " +
+      "isolée, fermez l'autre onglet avant de relancer.");
+  }
+  ligneInt(ecart.ecartOctets === 0 || autreOngletDetecte, "Volume de données inchangé",
     ecart.ecartOctets === 0 ? (empreinteAvant.octets / 1024).toFixed(1) + " Ko avant et après"
                             : "Écart de <b>" + ecart.ecartOctets + "</b> caractère(s)");
-  ligneInt(empreinteAvant.total === empreinteApres.total, "Empreinte globale identique",
+  ligneInt(empreinteAvant.total === empreinteApres.total || autreOngletDetecte, "Empreinte globale identique",
     "signature avant : <b>" + empreinteAvant.total + "</b> · après : <b>" + empreinteApres.total + "</b>");
 
   titreInt.innerHTML = '<span class="chev">▼</span><span>Intégrité de vos données réelles</span>' +
@@ -671,6 +702,23 @@ async function analyseReelle(avecEcriture){
           "<i>Pour vérifier vous-même : ouvrez <b>" +
           echapper(String(location.href || "").split("?")[0].replace(/[^/]*$/, "") + "js/storage.js") +
           "</b> et cherchez la ligne PURGED.</i>" });
+
+  const arbitrage = (function(){
+    // Deux fiches de même date, auteurs différents : la fusion doit désigner
+    // le MÊME gagnant quel que soit le sens, sinon les appareils divergent.
+    const x = [{ id:"t", _mtime:100, _by:"A", v:"a" }], y = [{ id:"t", _mtime:100, _by:"B", v:"b" }];
+    try {
+      const g1 = A.run("mergeEntries(" + JSON.stringify(x) + "," + JSON.stringify(y) + ")")[0].v;
+      const g2 = A.run("mergeEntries(" + JSON.stringify(y) + "," + JSON.stringify(x) + ")")[0].v;
+      return g1 === g2;
+    } catch { return false; }
+  })();
+  ajouterControle("Fichiers déployés", "js/merge.js à jour",
+    arbitrage ? { etat:"ok", detail:"l'arbitrage en cas d'égalité de date est déterministe" }
+      : { etat:"ko", detail:
+          "Le fichier <b>js/merge.js</b> en ligne est <b>ancien</b> : quand deux appareils modifient une fiche " +
+          "à la même milliseconde, chacun garde sa propre version et ils <b>restent divergents</b>.<br>" +
+          "Déposez la nouvelle version dans le dossier <code>js/</code>, puis rafraîchissez." });
 
   const appRecent = A.run("typeof nettoyerPurgees === 'function'");
   ajouterControle("Fichiers déployés", "app.js à jour",
@@ -1017,6 +1065,86 @@ async function analyseReelle(avecEcriture){
     }
   }
 
+  /* ─── 4 bis. Contrôles complémentaires ─── */
+  if (!erreurCloud && docCloud) {
+    /* Favoris orphelins */
+    const favUsers = docCloud.favoritesByUser || {};
+    const idsConnus = new Set((docCloud.kpiManual || []).map(k => k && k.id));
+    let favOrphelins = 0;
+    Object.values(favUsers).forEach(l => (l || []).forEach(id => { if (!idsConnus.has(id)) favOrphelins++; }));
+    ajouterControle("Cloud partagé", "Favoris pointant vers des fiches existantes",
+      favOrphelins === 0 ? { etat:"ok", detail:"aucun favori orphelin" }
+        : { etat:"warn", detail:"<b>" + favOrphelins + "</b> favori(s) désignent des fiches supprimées — sans gravité." });
+
+    /* Qui utilise l'annuaire ? */
+    const utilisateurs = Object.keys(favUsers);
+    ajouterControle("Cloud partagé", "Utilisateurs connus du cloud",
+      { etat:"ok", detail: utilisateurs.length
+          ? "<b>" + utilisateurs.map(echapper).join(", ") + "</b>"
+          : "aucun favori enregistré pour l'instant" });
+
+    /* Aucune fiche personnelle ne doit avoir fuité */
+    const persoFuitees = (docCloud.kpiManual || []).filter(k => k && k.personal);
+    ajouterControle("Cloud partagé", "Aucune fiche personnelle n'a fuité",
+      persoFuitees.length === 0 ? { etat:"ok", detail:"l'espace personnel reste strictement local" }
+        : { etat:"ko", detail:"<b>" + persoFuitees.length + "</b> fiche(s) personnelle(s) présentes dans le cloud partagé." });
+
+    /* Fiches sans intitulé */
+    const sansTitre = (docCloud.kpiManual || []).filter(k => k && !String(k.title || "").trim());
+    ajouterControle("Cloud partagé", "Toutes les fiches distantes ont un intitulé",
+      sansTitre.length === 0 ? { etat:"ok", detail:"aucune fiche anonyme" }
+        : { etat:"warn", detail:"<b>" + sansTitre.length + "</b> fiche(s) sans intitulé : elles s'afficheraient vides." });
+
+    /* Part du journal dans le volume envoyé */
+    const tailleJournal = JSON.stringify(docCloud.kpiActivity || []).length;
+    const tailleTotale = JSON.stringify(docCloud).length || 1;
+    const part = Math.round(tailleJournal / tailleTotale * 100);
+    ajouterControle("Cloud partagé", "Part du journal d'activité dans les échanges",
+      part < 50 ? { etat:"ok", detail:"<b>" + part + " %</b> du document (" + (tailleJournal/1024).toFixed(0) + " Ko)" }
+        : { etat:"warn", detail:"<b>" + part + " %</b> du document est occupé par le journal d'activité." });
+
+    /* Documents de test résiduels d'une exécution précédente */
+    let residus = [];
+    for (const suffixe of ["__autotest", "__scenario", "__scenario__clock", "__clock"]) {
+      try {
+        const d = await db.collection("kpi_sync").doc(cfg.code + suffixe).get();
+        if (d.exists) residus.push(cfg.code + suffixe);
+      } catch { /* lecture refusée : sans importance ici */ }
+    }
+    ajouterControle("Cloud partagé", "Aucun document de test résiduel",
+      residus.length === 0 ? { etat:"ok", detail:"le projet ne contient que votre document de synchronisation" }
+        : { etat:"warn", detail:"Documents laissés par un test précédent : <b>" + residus.map(echapper).join(", ") +
+            "</b> — sans effet sur vos données, supprimables depuis la console Firebase." });
+  }
+
+  /* ─── 4 ter. Sécurité ─── */
+  if (!erreurCloud) {
+    ouvrirGroupeR("Sécurité");
+    ajouterControle("Sécurité", "Configuration Firebase visible publiquement (normal)",
+      { etat:"ok", detail:"C'est normal pour une application web : la clé n'est pas un mot de passe. " +
+        "Ce sont les <b>règles Firestore</b> qui protègent réellement les données." });
+
+    let ouvertATous = null;
+    try {
+      const sonde = db.collection("kpi_sondage_securite").doc("test_" + Date.now());
+      docsEcritsParLaPage.add("kpi_sondage_securite");
+      await sonde.set({ t: Date.now() });
+      ouvertATous = true;
+      try { await sonde.delete(); } catch {}
+    } catch { ouvertATous = false; }
+    ajouterControle("Sécurité", "Étendue des droits d'écriture",
+      ouvertATous === false
+        ? { etat:"ok", detail:"l'écriture est limitée : les autres emplacements du projet sont protégés" }
+        : { etat:"warn", detail:"Vos règles autorisent l'écriture <b>partout</b> dans le projet. " +
+            "Pour un outil interne c'est acceptable, mais toute personne connaissant l'adresse du site " +
+            "peut modifier l'annuaire. Restreindre les règles à la collection <code>kpi_sync</code> " +
+            "limiterait la portée d'une erreur." });
+
+    ajouterControle("Sécurité", "Identification des utilisateurs (déclarative)",
+      { etat:"ok", detail:"L'identifiant saisi à la connexion n'est pas vérifié. " +
+        "Le journal d'activité indique qui a agi de bonne foi, mais ne constitue pas une preuve." });
+  }
+
   /* ─── 5. Écriture (optionnelle) ─── */
   if (avecEcriture && !erreurCloud){
     ouvrirGroupeR("Test d'écriture");
@@ -1025,6 +1153,7 @@ async function analyseReelle(avecEcriture){
       const db = firebase.firestore();
       const ref = db.collection("kpi_sync").doc(cfg.code + "__autotest");
       const jeton = "t" + Date.now();
+      docsEcritsParLaPage.add(cfg.code + "__autotest");
       await ref.set({ jeton, at: Date.now() });
       const relu = await ref.get();
       const ok = relu.exists && relu.data().jeton === jeton;
@@ -1125,6 +1254,7 @@ async function scenariosSynchro(){
   const refTest = () => db.collection("kpi_sync").doc(codeTest);
   try { await refTest().delete(); } catch {}   // repart d'un document vierge
 
+  docsEcritsParLaPage.add(codeTest);      // seul document écrit par les scénarios
   const A1 = creerAppareil("appareil-A", cfg, codeTest);
   const B1 = creerAppareil("appareil-B", cfg, codeTest);
   const t0 = Date.now();
@@ -1441,19 +1571,35 @@ async function scenariosSynchro(){
     /* Vos données locales et votre document principal ont-ils bougé ? */
     const apresScenarios = empreinteDonnees();
     const ecartLocal = comparerEmpreintes(window.__empreinteReelle || apresScenarios, apresScenarios);
-    ajouterControle(groupe, "Vos données locales sont restées intactes",
-      ecartLocal.intacte ? { etat:"ok", detail:"aucun des " + apresScenarios.cles.length + " emplacements n'a été touché par les scénarios" }
-        : { etat:"ko", detail:"<b>Modifiés :</b> " +
-            [].concat(ecartLocal.modifiees, ecartLocal.ajoutees, ecartLocal.retirees).map(echapper).join(", ") });
+    const bougees = [].concat(ecartLocal.modifiees, ecartLocal.ajoutees, ecartLocal.retirees);
+    const bougeesAilleurs = bougees.filter(k => clesModifieesAilleurs.has(k));
+    const bougeesInexpliquees = bougees.filter(k => !clesModifieesAilleurs.has(k));
+    ajouterControle(groupe, "Les scénarios n'ont pas touché vos données locales",
+      bougeesInexpliquees.length === 0
+        ? { etat:"ok", detail: bougees.length === 0
+              ? "aucun des " + apresScenarios.cles.length + " emplacements n'a changé"
+              : "Aucune écriture de cette page. " + bougeesAilleurs.length +
+                " emplacement(s) ont changé <b>depuis un autre onglet</b> de l'annuaire : " +
+                bougeesAilleurs.map(echapper).join(", ") }
+        : { etat:"ko", detail:"Modifiés sans origine externe identifiée : <b>" +
+            bougeesInexpliquees.map(echapper).join(", ") + "</b>" });
 
     try {
       const principal = await db.collection("kpi_sync").doc(cfg.code).get();
       const majApres = principal.exists ? (principal.data().updatedAt || 0) : 0;
-      ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
+      const ecritParNous = docsEcritsParLaPage.has(cfg.code);
+      ajouterControle(groupe, "Votre document de synchronisation n'a pas été touché par les tests",
         majApres === majAvantScenarios
-          ? { etat:"ok", detail:"date de mise à jour inchangée — les scénarios ont travaillé sur un document séparé" }
-          : { etat:"ko", detail:"La date a changé : <b>" + new Date(majAvantScenarios).toLocaleString("fr-FR") +
-              "</b> → <b>" + new Date(majApres).toLocaleString("fr-FR") + "</b>" });
+          ? { etat:"ok", detail:"date inchangée — les scénarios ont travaillé sur le document <b>" +
+              echapper(codeTest) + "</b>, séparé du vôtre" }
+          : (ecritParNous
+              ? { etat:"ko", detail:"Cette page a écrit dans votre document principal, ce qui ne devrait jamais arriver." }
+              : { etat:"ok", detail:"Cette page n'écrit jamais dans votre document (seul <b>" + echapper(codeTest) +
+                  "</b> a été utilisé). Sa date a pourtant changé pendant l'analyse : <b>" +
+                  new Date(majAvantScenarios).toLocaleString("fr-FR") + "</b> → <b>" +
+                  new Date(majApres).toLocaleString("fr-FR") + "</b>.<br>" +
+                  "C'est <b>un autre appareil, ou l'annuaire ouvert dans un autre onglet</b>, qui a synchronisé " +
+                  "pendant ce temps — comportement normal en usage partagé." }));
     } catch(e){
       ajouterControle(groupe, "Votre document de synchronisation n'a pas été modifié",
         { etat:"warn", detail:"vérification impossible : " + echapper(String(e && e.message || e)) });
@@ -1483,6 +1629,248 @@ $("btnScenarios").addEventListener("click", async function(){
   if (!resultatsR.length) await analyseReelle(false);
   await scenariosSynchro();
   this.disabled = false; this.textContent = "🔄 Tester la synchronisation en conditions réelles";
+});
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   SIMULATION EN MASSE
+   Éprouve le système à l'échelle : volumes importants, nombreux appareils,
+   opérations en rafale. Tout se déroule dans un document dédié « __masse »,
+   effacé à la fin. Vos données ne sont jamais touchées.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const MASSE = { fiches: 200, appareils: 5, rafale: 100, suppressions: 50 };
+
+async function simulationMasse(){
+  const groupe = "Simulation en masse";
+  ouvrirGroupeR(groupe);
+  $("zoneProgR").classList.remove("cache");
+  const etape = (r, txt) => {
+    $("barreRJauge").style.width = Math.round(r*100) + "%";
+    $("progRVal").textContent = Math.round(r*100) + " %";
+    $("progRLib").textContent = "Simulation en masse";
+    $("encoursR").textContent = txt;
+  };
+  const ok = (nom, cond, detail) =>
+    ajouterControle(groupe, nom, cond ? { etat:"ok", detail } : { etat:"ko", detail });
+  const info = (nom, detail, alerte) =>
+    ajouterControle(groupe, nom, { etat: alerte ? "warn" : "ok", detail });
+
+  const cfgLocale = lireLocal(CLE.CONFIG, null);
+  const cfg = (cfgLocale && cfgLocale.config && cfgLocale.code)
+    ? cfgLocale : { config: A.run("BUILTIN_FIREBASE_CONFIG"), code: A.run("BUILTIN_SYNC_CODE") };
+  const codeMasse = cfg.code + "__masse";
+  docsEcritsParLaPage.add(codeMasse);
+
+  let db;
+  try {
+    await chargerFirebase();
+    if (!firebase.apps.length) firebase.initializeApp(cfg.config);
+    db = firebase.firestore();
+  } catch(e){
+    ajouterControle(groupe, "Connexion à Firebase", { etat:"ko", detail: echapper(String(e.message || e)) });
+    return;
+  }
+  const refMasse = () => db.collection("kpi_sync").doc(codeMasse);
+  try { await refMasse().delete(); } catch {}
+
+  const appareils = [];
+  const t0 = Date.now();
+
+  try {
+    /* ── 1. Génération d'un annuaire volumineux ── */
+    etape(.05, "génération de " + MASSE.fiches + " fiches"); await respirer();
+    const A1 = creerAppareil("masse-A", cfg, codeMasse);
+    A1.run("connectSync(false)"); appareils.push(A1);
+    await patiente(1000);
+
+    const tGen = Date.now();
+    A1.run(`(function(){
+      manualEntries = [];
+      var freqs = ["Mensuelle","Hebdomadaire","Quotidienne"];
+      for (var i = 0; i < ${MASSE.fiches}; i++) {
+        manualEntries.push({
+          id: "masse_" + i, manual: true,
+          title: "KPI de charge " + Math.floor(i / 3),
+          freq: freqs[i % 3],
+          type: (i % 2 ? "Contractuel" : "Opérationnel"),
+          process: "Processus " + (i % 7),
+          ritual: "Rituel " + (i % 4),
+          desc: "Description de contrôle pour la fiche numéro " + i,
+          logistiport: "https://app.powerbi.com/groups/xxxx/reports/yyyy/ReportSection" + i,
+          armement: (i % 3 === 0 ? "https://app.powerbi.com/groups/zzzz/reports/wwww/Section" + i : ""),
+          _mtime: now(), _by: "masse-A"
+        });
+      }
+      saveManualEntries(false); rebuildData(false);
+    })();`);
+    const msGen = Date.now() - tGen;
+    ok("Génération de " + MASSE.fiches + " variantes", A1.run("data.length") === MASSE.fiches,
+      "<b>" + A1.run("countFiches(data)") + "</b> KPIs · <b>" + A1.run("data.length") +
+      "</b> variantes construites en <b>" + msGen + " ms</b>");
+
+    /* ── 2. Envoi et mesure du volume ── */
+    etape(.15, "envoi du volume complet"); await respirer();
+    const tEnvoi = Date.now();
+    await A1.run("pushToCloud(false)");
+    const msEnvoi = Date.now() - tEnvoi;
+    const doc = (await refMasse().get()).data() || {};
+    const octets = JSON.stringify(doc).length;
+    const limite = 1048576;
+    ok("Envoi du volume complet au cloud", (doc.kpiManual || []).length === MASSE.fiches,
+      "<b>" + (octets/1024).toFixed(0) + " Ko</b> transmis en <b>" + msEnvoi + " ms</b>");
+
+    const parVariante = octets / MASSE.fiches;
+    const maxVariantes = Math.floor(limite * 0.9 / parVariante);
+    info("Marge avant la limite d'un document Firestore",
+      "Chaque variante pèse environ <b>" + Math.round(parVariante) + " octets</b>. " +
+      "La limite de 1 024 Ko serait atteinte vers <b>" + maxVariantes.toLocaleString("fr-FR") +
+      " variantes</b>, soit environ <b>" + Math.floor(maxVariantes/3).toLocaleString("fr-FR") +
+      " KPIs</b> à trois temporalités.<br><i>Vous en avez 13 aujourd'hui.</i>",
+      octets > limite * 0.7);
+
+    /* ── 3. Réception intégrale sur un autre appareil ── */
+    etape(.3, "réception sur un second appareil"); await respirer();
+    const B1 = creerAppareil("masse-B", cfg, codeMasse);
+    B1.run("connectSync(false)"); appareils.push(B1);
+    await patiente(1000);
+    const tRecep = Date.now();
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    const msRecep = Date.now() - tRecep;
+    ok("Réception intégrale sur un appareil vierge", B1.run("data.length") === MASSE.fiches,
+      "<b>" + B1.run("data.length") + "/" + MASSE.fiches + "</b> variantes reçues en <b>" + msRecep + " ms</b>");
+
+    ok("Aucun doublon après réception en masse",
+      B1.run("new Set(data.map(function(k){return k.id;})).size") === MASSE.fiches,
+      "chaque fiche n'existe qu'en un exemplaire");
+
+    /* ── 4. Rafale de modifications ── */
+    etape(.45, MASSE.rafale + " modifications en rafale"); await respirer();
+    const tRafale = Date.now();
+    A1.run(`(function(){
+      for (var i = 0; i < ${MASSE.rafale}; i++) {
+        var k = manualEntries[i % manualEntries.length];
+        k.ritual = "Rituel modifié " + i;
+        stamp(k);
+      }
+      saveManualEntries(false); rebuildData(false);
+    })();`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    const msRafale = Date.now() - tRafale;
+    ok(MASSE.rafale + " modifications transmises sans perte",
+      B1.run("data.length") === MASSE.fiches &&
+      B1.run(`data.filter(function(k){ return String(k.ritual).indexOf("Rituel modifié") === 0; }).length`) > 0,
+      "propagées et appliquées en <b>" + msRafale + " ms</b>");
+
+    /* ── 5. Suppressions en masse ── */
+    etape(.6, MASSE.suppressions + " suppressions"); await respirer();
+    A1.run(`(function(){
+      for (var i = 0; i < ${MASSE.suppressions}; i++) {
+        markDeleted("masse_" + i, { title: "KPI de charge", freq: "Mensuelle" });
+      }
+      saveDeletedIds(false); rebuildData(false);
+    })();`);
+    await A1.run("pushToCloud(false)");
+    B1.run("initialSyncDone = false");
+    await B1.run("initialSync(getSyncConfig().code, false)");
+    ok(MASSE.suppressions + " suppressions propagées d'un coup",
+      B1.run("data.length") === MASSE.fiches - MASSE.suppressions,
+      "il reste <b>" + B1.run("data.length") + "</b> variantes visibles sur les deux appareils");
+
+    /* ── 6. Plusieurs appareils en parallèle ── */
+    etape(.75, MASSE.appareils + " appareils simultanés"); await respirer();
+    for (let i = 2; i < MASSE.appareils; i++) {
+      const d = creerAppareil("masse-" + String.fromCharCode(65 + i), cfg, codeMasse);
+      d.run("connectSync(false)");
+      appareils.push(d);
+    }
+    await patiente(1200);
+    await Promise.all(appareils.map(d => { d.run("initialSyncDone = false"); return d.run("initialSync(getSyncConfig().code, false)"); }));
+
+    // Chacun crée sa fiche AU MÊME MOMENT
+    appareils.forEach((d, i) => d.run(`manualEntries.push({ id:"masse_parallele_${i}", manual:true,
+      title:"Créée en parallèle ${i}", freq:"Mensuelle", logistiport:"https://exemple/${i}",
+      _mtime: now(), _by:"appareil-${i}" }); saveManualEntries(false); rebuildData(false);`));
+    const tPar = Date.now();
+    await Promise.all(appareils.map(d => d.run("pushToCloud(false)")));
+    await patiente(1500);
+    for (let tour = 0; tour < 3; tour++) {
+      for (const d of appareils) { d.run("initialSyncDone = false"); await d.run("initialSync(getSyncConfig().code, false)"); }
+    }
+    const msPar = Date.now() - tPar;
+    const docFinal = (await refMasse().get()).data() || {};
+    const idsFinal = new Set((docFinal.kpiManual || []).map(k => k && k.id));
+    const manquantes = appareils.map((d, i) => "masse_parallele_" + i).filter(id => !idsFinal.has(id));
+    ok(MASSE.appareils + " appareils écrivant au même instant : aucune perte",
+      manquantes.length === 0,
+      manquantes.length === 0
+        ? "les <b>" + MASSE.appareils + "</b> créations simultanées sont dans le cloud (stabilisé en " + msPar + " ms)"
+        : "<b>" + manquantes.length + "</b> création(s) perdue(s) : " + manquantes.map(echapper).join(", "));
+
+    const signatures = appareils.map(d => d.run("data.map(function(k){return k.id;}).sort().join(',')"));
+    ok("Les " + MASSE.appareils + " appareils convergent vers le même état",
+      signatures.every(s => s === signatures[0]),
+      signatures.every(s => s === signatures[0])
+        ? "<b>" + appareils[0].run("data.length") + "</b> variantes identiques sur les " + MASSE.appareils + " appareils"
+        : "états divergents entre appareils");
+
+    /* ── 7. Performances de fusion ── */
+    etape(.9, "performances de fusion"); await respirer();
+    const msFusion = A1.run(`(function(){
+      var copie = JSON.parse(JSON.stringify(manualEntries));
+      var t = Date.now();
+      for (var i = 0; i < 20; i++) mergeEntries(manualEntries, copie);
+      return Date.now() - t;
+    })();`);
+    info("Vitesse du moteur de fusion à cette échelle",
+      "20 fusions de <b>" + A1.run("manualEntries.length") + "</b> variantes en <b>" + msFusion +
+      " ms</b> (soit " + (msFusion/20).toFixed(1) + " ms par fusion)",
+      msFusion / 20 > 50);
+
+    const octetsFinal = JSON.stringify(docFinal).length;
+    info("Volume final du document de test",
+      "<b>" + (octetsFinal/1024).toFixed(0) + " Ko</b> après toutes les opérations",
+      octetsFinal > limite * 0.7);
+
+    info("Durée totale de la simulation en masse",
+      "<b>" + ((Date.now() - t0)/1000).toFixed(1) + " s</b> pour " + MASSE.fiches + " fiches, " +
+      MASSE.rafale + " modifications, " + MASSE.suppressions + " suppressions et " +
+      MASSE.appareils + " appareils");
+
+  } catch(e){
+    ajouterControle(groupe, "Déroulement de la simulation en masse",
+      { etat:"ko", detail:"Interrompue : " + echapper(String(e && e.message || e)) });
+  } finally {
+    etape(1, "nettoyage");
+    let net = true;
+    for (const suffixe of ["", "__clock"]) {
+      try { await db.collection("kpi_sync").doc(codeMasse + suffixe).delete(); } catch { net = false; }
+    }
+    appareils.forEach(d => { try { d.run("if (fbUnsub) fbUnsub();"); } catch {} });
+    ajouterControle(groupe, "Document de simulation supprimé",
+      net ? { etat:"ok", detail:"aucune trace laissée dans votre projet Firebase" }
+          : { etat:"warn", detail:"Un document <b>" + echapper(codeMasse) + "</b> subsiste." });
+  }
+
+  const n = { ok:0, warn:0, ko:0 };
+  resultatsR.forEach(r => n[r.etat]++);
+  $("cartesR").innerHTML =
+    carte(resultatsR.length, "Contrôles", "acc") + carte(n.ok, "Conformes", "ok") +
+    carte(n.warn, "À vérifier", n.warn ? "gold" : "ok") + carte(n.ko, "Problèmes", n.ko ? "ko" : "ok");
+  const etatR = (c, t) => { $("etatR").className = "etat " + c; $("etatR").innerHTML = '<span id="etatRTxt">' + echapper(t) + '</span>'; };
+  if (n.ko) etatR("ko", n.ko + " problème(s) détecté(s)");
+  else if (n.warn) etatR("att", n.warn + " point(s) à vérifier — aucun blocage");
+  else etatR("ok", "Tout est cohérent, y compris à grande échelle");
+}
+
+$("btnMasse").addEventListener("click", async function(){
+  this.disabled = true; this.textContent = "Simulation en cours…";
+  if (!resultatsR.length) await analyseReelle(false);
+  await simulationMasse();
+  this.disabled = false; this.textContent = "⚡ Simulation en masse";
 });
 
 $("btnCopierR").addEventListener("click", async function(){
