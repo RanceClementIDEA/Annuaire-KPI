@@ -253,7 +253,7 @@ const assert = {
   /** Élément de page simulé : mémorise ce qu'on lui écrit. */
   function creerElement(id) {
     const el = {
-      id, tagName: "DIV", textContent: "", value: "", checked: false, selectedIndex: 0,
+      id, tagName: "DIV", textContent: "", value: "", checked: false,
       // Une liste déroulante garde toujours son option « Tous » en tête
       options: [{ tagName: "OPTION", value: "", textContent: "Tous" }],
       style: {}, dataset: {}, children: [], _classes: new Set(),
@@ -277,6 +277,12 @@ const assert = {
     };
     // Comme dans la vraie page, une fenêtre modale démarre fermée
     if (/Modal$/.test(String(id))) el._classes.add("hidden");
+    // Comme dans un vrai menu déroulant, changer la position change la valeur
+    let _sel = 0;
+    Object.defineProperty(el, "selectedIndex", {
+      get: () => _sel,
+      set(i) { _sel = i; const o = el.options[i]; el.value = o ? (o.value !== undefined ? o.value : "") : ""; }
+    });
     // innerHTML = "" doit réellement vider le contenu (options comprises)
     let _html = "";
     Object.defineProperty(el, "innerHTML", {
@@ -405,8 +411,11 @@ const assert = {
           data = []; groupSel = {}; groupReport = {};
           currentView = "all";                       // on repart toujours de la vue « Tous »
           if (typeof searchInput === "object" && searchInput) searchInput.value = "";
-          if (typeof processFilter === "object" && processFilter) processFilter.selectedIndex = 0;
-          if (typeof ritualFilter === "object" && ritualFilter) ritualFilter.selectedIndex = 0;
+          // Tous les filtres reviennent à « Tous » : valeur ET position
+          [typeof typeFilter    !== "undefined" ? typeFilter    : null,
+           typeof processFilter !== "undefined" ? processFilter : null,
+           typeof ritualFilter  !== "undefined" ? ritualFilter  : null]
+            .forEach(function (f) { if (f) { f.value = ""; f.selectedIndex = 0; } });
           applyingRemoteSync = ${opts.autoriserSync ? "false" : "true"};
           isBooting = ${opts.autoriserSync ? "false" : "true"};
           globalThis.__msg = [];
@@ -431,6 +440,15 @@ const assert = {
       texte: id => { const v = elementPourId(id).textContent; return v === undefined || v === null ? "" : String(v); },
       html: id => { const v = elementPourId(id).innerHTML; return v === undefined || v === null ? "" : String(v); },
       saisir(id, valeur) { elementPourId(id).value = valeur; return this; },
+      /** Choisit une valeur dans un menu déroulant (valeur ET position, comme un vrai clic). */
+      selectionner(id, valeur) {
+        const el = elementPourId(id);
+        let i = el.options.findIndex(o => (o.value !== undefined ? o.value : o.textContent) === valeur);
+        if (i < 0) { el.options.push({ tagName: "OPTION", value: valeur, textContent: valeur }); i = el.options.length - 1; }
+        el.selectedIndex = i;
+        el.value = valeur;
+        return this;
+      },
       cocher(id, v) { elementPourId(id).checked = !!v; return this; },
       requete(selecteur, elements) { requetes.set(selecteur, elements); return this; },
 
@@ -3085,6 +3103,121 @@ test("horloge : la correction du serveur est appliquée aux dates", () => {
   const t = A.run("now()");
   assert.ok(t >= avant + 90000, "l'heure corrigée est utilisée pour dater les modifications");
   A.run("clockOffset = 0;");
+});
+
+/* ═══ Filtre « Type de KPI » ═══ */
+
+test("filtre type : la liste déroulante est alimentée par les types existants", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" },
+    { id: "c", title: "C", freq: "Mensuelle", type: "Contractuel" }
+  ] });
+  A.run("rebuildData(false)");
+  const options = A.el("typeFilter").options.map(o => o.textContent);
+  assert.ok(options.includes("Contractuel"), "le type doit être proposé");
+  assert.ok(options.includes("Opérationnel"));
+  assert.equal(options.filter(o => o === "Contractuel").length, 1, "sans doublon");
+});
+
+test("filtre type : sélectionner un type ne garde que les fiches concernées", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "Contractuelle", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "Opérationnelle", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "un seul KPI affiché");
+});
+
+test("filtre type : sans sélection, toutes les fiches restent visibles", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 2);
+});
+
+test("filtre type : il se combine avec le filtre processus", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel", process: "Logistique" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Contractuel", process: "Transport" },
+    { id: "c", title: "C", freq: "Mensuelle", type: "Opérationnel", process: "Logistique" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.saisir("processFilter", "Logistique");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "seule la fiche cochant les deux critères");
+  A.saisir("processFilter", "");
+});
+
+test("filtre type : il se combine avec la recherche", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "Volumétrie", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "Taux", freq: "Mensuelle", type: "Contractuel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.saisir("search", "volum");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1);
+  A.saisir("search", "");
+});
+
+test("filtre type : il se combine avec la vue Favoris", () => {
+  A.reset({
+    manualEntries: [
+      { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+      { id: "b", title: "B", freq: "Mensuelle", type: "Contractuel" }
+    ],
+    favorites: ["a"]
+  });
+  A.run("rebuildData(false); currentView = 'fav';");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("filterData()");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1, "seul le favori du bon type");
+  A.run("currentView = 'all';");
+});
+
+test("filtre type : la réinitialisation le remet à zéro", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" }] });
+  A.run("rebuildData(false)");
+  A.selectionner("typeFilter", "Contractuel");
+  A.run("resetFilters()");
+  assert.equal(A.el("typeFilter").selectedIndex, 0);
+  assert.equal(A.el("typeFilter").value, "", "le menu revient bien sur « Tous »");
+});
+
+test("filtre type : la sélection est conservée lors d'une mise à jour des données", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", type: "Contractuel" },
+    { id: "b", title: "B", freq: "Mensuelle", type: "Opérationnel" }
+  ] });
+  A.run("rebuildData(false)");
+  A.saisir("typeFilter", "Contractuel");
+  A.run("rebuildData(false)");   // par exemple après une synchronisation
+  assert.equal(A.el("typeFilter").value, "Contractuel", "le filtre actif ne doit pas sauter");
+});
+
+test("filtre type : une fiche sans type reste visible quand aucun filtre n'est actif", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Sans type", freq: "Mensuelle" }] });
+  A.run("rebuildData(false); filterData();");
+  assert.equal(A.run("Object.keys(kpiGroups).length"), 1);
+});
+
+test("filtre type : les fiches personnelles alimentent aussi la liste", () => {
+  A.reset({
+    manualEntries: [{ id: "a", title: "A", freq: "Mensuelle", type: "Partagé" }],
+    personalEntries: [{ id: "p", title: "P", freq: "Mensuelle", type: "Personnel" }]
+  });
+  A.run("rebuildData(false)");
+  const options = A.el("typeFilter").options.map(o => o.textContent);
+  assert.ok(options.includes("Personnel"), "les types de l'espace personnel sont proposés");
 });
 
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");

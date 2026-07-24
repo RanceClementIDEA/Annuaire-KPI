@@ -130,6 +130,7 @@ const container     = document.getElementById("kpiContainer");
 const fileInput     = document.getElementById("fileInput");
 const refreshBtn    = document.getElementById("refreshBtn");
 const searchInput   = document.getElementById("search");
+const typeFilter    = document.getElementById("typeFilter");
 const processFilter = document.getElementById("processFilter");
 const ritualFilter  = document.getElementById("ritualFilter");
 const countAll      = document.getElementById("countAll");
@@ -1404,12 +1405,14 @@ function initFilters() {
     // Restaure la sélection si elle existe toujours
     if (prev && values.includes(prev)) el.value = prev;
   };
+  makeOptions([...data, ...personalEntries].map(d => d.type),    typeFilter);
   makeOptions([...data, ...personalEntries].map(d => d.process), processFilter);
   makeOptions([...data, ...personalEntries].map(d => d.ritual),  ritualFilter);
 }
 
 function resetFilters() {
   searchInput.value = "";
+  typeFilter.selectedIndex = 0;
   processFilter.selectedIndex = 0;
   ritualFilter.selectedIndex = 0;
   filterData();
@@ -1423,9 +1426,10 @@ function getViewSource() {
 }
 
 // Une variante correspond-elle aux filtres/recherche actifs ?
-function variantMatches(d, s, p, r) {
+function variantMatches(d, s, p, r, t) {
   if (currentView === "fav" && !isFavorite(d.id)) return false;
-  return (!p || d.process === p) &&
+  return (!t || d.type === t) &&
+         (!p || d.process === p) &&
          (!r || d.ritual === r) &&
          (!s ||
            (d.title   || "").toLowerCase().includes(s) ||
@@ -1439,6 +1443,7 @@ function filterData() {
   const s = searchInput.value.toLowerCase().trim();
   const p = processFilter.value;
   const r = ritualFilter.value;
+  const t = typeFilter.value;
 
   // Regroupe TOUTES les temporalités par intitulé : le KPI reste entier
   const groupsMap = new Map();
@@ -1452,7 +1457,7 @@ function filterData() {
   const groups = [];
   let matchCount = 0;
   groupsMap.forEach((variants, key) => {
-    const matching = variants.filter(v => variantMatches(v, s, p, r));
+    const matching = variants.filter(v => variantMatches(v, s, p, r, t));
     if (!matching.length) return;
     matchCount += matching.length;
     variants.sort((a, b) => freqRank(a.freq) - freqRank(b.freq));
@@ -1701,6 +1706,7 @@ function render(groups, matchCount) {
    EVENTS
 ============================================ */
 searchInput.addEventListener("input", filterData);
+typeFilter.addEventListener("change", filterData);
 processFilter.addEventListener("change", filterData);
 ritualFilter.addEventListener("change", filterData);
 refreshBtn.addEventListener("click", () => { rebuildData(false); showToast("🔄 Affichage rafraîchi"); });
