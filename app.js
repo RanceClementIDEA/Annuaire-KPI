@@ -1580,6 +1580,23 @@ let animateNextRender = true; // anime l'entrée des cartes seulement quand util
 
 // Corps d'une carte pour UNE variante de KPI (grouped = true si la carte
 // regroupe plusieurs temporalités : la fréquence est alors dans le sélecteur)
+/**
+ * Décrit la dernière modification d'une variante, en LECTURE SEULE.
+ * Les métadonnées `_mtime` / `_by` servent déjà à l'arbitrage de la
+ * synchronisation : on se contente de les afficher, jamais de les écrire.
+ * @param {Object} kpi variante affichée
+ * @returns {string} HTML, vide si l'information n'est pas disponible
+ */
+function derniereModifHtml(kpi) {
+  const t = kpi && kpi._mtime;
+  if (!t) return "";                       // fiche ancienne ou importée : rien à afficher
+  const auteur = kpi._by ? ` par <b>${esc(kpi._by)}</b>` : "";
+  return `<div class="card-modif" title="Dernière modification de cette temporalité">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Modifié le ${fmtDate(t)}${auteur}
+          </div>`;
+}
+
 function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const isFav  = isFavorite(kpi.id);
   const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
@@ -1636,6 +1653,8 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </button>
       </div>` : ""}
+
+      ${derniereModifHtml(kpi)}
 
       ${freqSelectorHtml}
   `;

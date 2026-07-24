@@ -3485,6 +3485,113 @@ test("masse : le contenu envoyé reste sous la limite avec 600 variantes détail
     "600 variantes détaillées doivent tenir dans un document : " + Math.round(octets / 1024) + " Ko");
 });
 
+/* ═══ Affichage de la dernière modification ═══ */
+
+test("dernière modif : la date apparaît sur la carte", () => {
+  const t = Date.UTC(2026, 6, 20, 14, 30);
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: t, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  const html = A.run(`cardBody(data[0], false, "", "k")`);
+  assert.match(html, /Modifié le/);
+  assert.match(html, /20\/07\/2026/);
+});
+
+test("dernière modif : l'auteur est indiqué", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000000, _by: "BENJAMIN" }] });
+  A.run("rebuildData(false)");
+  assert.match(A.run(`cardBody(data[0], false, "", "k")`), /par <b>BENJAMIN<\/b>/);
+});
+
+test("dernière modif : une fiche sans date n'affiche rien", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Ancienne", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.ok(!/Modifié le/.test(A.run(`cardBody(data[0], false, "", "k")`)),
+    "aucune mention trompeuse sur les fiches importées");
+});
+
+test("dernière modif : une date sans auteur reste lisible", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000000 }] });
+  A.run("rebuildData(false)");
+  const html = A.run(`cardBody(data[0], false, "", "k")`);
+  assert.match(html, /Modifié le/);
+  assert.ok(!/par <b>/.test(html));
+});
+
+test("dernière modif : un nom d'auteur malveillant est neutralisé", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000, _by: '<img src=x onerror=alert(1)>' }] });
+  A.run("rebuildData(false)");
+  assert.ok(!A.run(`cardBody(data[0], false, "", "k")`).includes("<img"), "le contenu est échappé");
+});
+
+test("dernière modif : chaque temporalité affiche SA propre date", () => {
+  A.reset({ manualEntries: [
+    { id: "m", title: "K", freq: "Mensuelle", _mtime: Date.UTC(2026, 0, 5), _by: "marie" },
+    { id: "h", title: "K", freq: "Hebdomadaire", _mtime: Date.UTC(2026, 5, 18), _by: "jean" }
+  ] });
+  A.run("rebuildData(false)");
+  const hM = A.run(`cardBody(data[0], true, "", "k")`);
+  const hH = A.run(`cardBody(data[1], true, "", "k")`);
+  assert.match(hM, /05\/01\/2026/);
+  assert.match(hH, /18\/06\/2026/);
+});
+
+/* ═══ Garantie : l'affichage ne modifie rien ═══ */
+
+test("garantie : afficher une carte ne change aucune donnée", () => {
+  const depart = [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 123456, _by: "marie", logistiport: "https://x" }];
+  A.reset({ manualEntries: JSON.parse(JSON.stringify(depart)) });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k"); cardBody(data[0], true, "", "k");`);
+  assert.deepEqual(A.get("manualEntries"), depart, "les fiches sont strictement inchangées");
+});
+
+test("garantie : afficher une carte ne modifie pas la date de modification", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 999, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  A.run(`for (var i = 0; i < 20; i++) cardBody(data[0], false, "", "k");`);
+  assert.equal(A.get("manualEntries")[0]._mtime, 999, "sinon chaque affichage écraserait le travail des autres appareils");
+});
+
+test("garantie : le contenu envoyé au cloud est identique après affichage", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 555, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  const avant = JSON.stringify(A.run("buildSyncPayload()").kpiManual);
+  A.run(`filterData(); cardBody(data[0], false, "", "k");`);
+  const apres = JSON.stringify(A.run("buildSyncPayload()").kpiManual);
+  assert.equal(avant, apres, "l'affichage ne doit rien ajouter à ce qui part au cloud");
+});
+
+test("garantie : un rendu complet ne déclenche aucune synchronisation", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", _mtime: 100, _by: "marie" },
+    { id: "b", title: "B", freq: "Mensuelle", _mtime: 200, _by: "jean" }
+  ] });
+  A.run("rebuildData(false); filterData();");
+  const distant = { kpiManual: A.get("manualEntries"), kpiDeleted: [], kpiSites: A.get("sites"), kpiPurged: [] };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(distant)})`), false,
+    "après un simple affichage, l'appareil ne doit rien avoir à renvoyer");
+});
+
+test("garantie : l'affichage ne perturbe pas la fusion avec le cloud", () => {
+  const f = { id: "a", title: "K", freq: "Mensuelle", _mtime: 100, _by: "marie" };
+  A.reset({ manualEntries: [f] });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k");`);
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [{ ...f, logistiport: "https://depuis-le-cloud", _mtime: 9999 }], updatedAt: 9999
+  })}, true)`);
+  assert.equal(A.get("data")[0].logistiport, "https://depuis-le-cloud",
+    "la version distante plus récente est bien appliquée");
+});
+
+test("garantie : la métadonnée d'auteur reste celle qui sert à l'arbitrage", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 100, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k");`);
+  assert.equal(A.get("manualEntries")[0]._by, "marie",
+    "l'auteur départage les modifications de même date : il ne doit jamais être réécrit à l'affichage");
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
