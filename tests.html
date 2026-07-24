@@ -3220,6 +3220,80 @@ test("filtre type : les fiches personnelles alimentent aussi la liste", () => {
   assert.ok(options.includes("Personnel"), "les types de l'espace personnel sont proposés");
 });
 
+/* ═══ Corbeille : entrées sans données ═══ */
+
+test("corbeille : une entrée dont les données ont disparu est signalée", () => {
+  A.reset({
+    manualEntries: fiches(["Vivante", "Mensuelle"]),
+    deletedIds: [{ id: "orpheline", title: "Orpheline", freq: "Mensuelle", at: 500, state: "deleted" }]
+  });
+  A.run("renderTrashList()");
+  const html = A.el("trashList").children.map(c => c.innerHTML).join("");
+  assert.match(html, /non récupérable/, "l'utilisateur doit savoir qu'elle ne reviendra pas");
+});
+
+test("corbeille : une entrée normale n'est pas signalée à tort", () => {
+  const f = fiches(["Récupérable", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Récupérable", at: 500, state: "deleted" }] });
+  A.run("renderTrashList()");
+  const html = A.el("trashList").children.map(c => c.innerHTML).join("");
+  assert.ok(!/non récupérable/.test(html));
+});
+
+test("corbeille : réafficher une entrée vide le dit clairement", () => {
+  A.reset({ deletedIds: [{ id: "orpheline", title: "Orpheline", at: 500, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "orpheline" } }]);
+  A.run("restoreSelectedTrash()");
+  const messages = A.messages().join(" | ");
+  assert.match(messages, /rien à réafficher/i);
+  assert.ok(!/fiche(s)? réaffichée/i.test(messages),
+    "aucune réussite ne doit être annoncée alors que rien n'est revenu");
+});
+
+test("corbeille : réafficher une entrée valide annonce bien la réussite", () => {
+  const f = fiches(["Bonne", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Bonne", at: 500, state: "deleted" }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id } }]);
+  A.run("restoreSelectedTrash()");
+  assert.match(A.dernierMessage(), /réaffichée/i);
+});
+
+test("corbeille : une sélection mixte distingue les deux cas", () => {
+  const f = fiches(["Bonne", "Mensuelle"]);
+  A.reset({
+    manualEntries: f,
+    deletedIds: [
+      { id: f[0].id, title: "Bonne", at: 500, state: "deleted" },
+      { id: "orpheline", title: "Orpheline", at: 500, state: "deleted" }
+    ]
+  });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: f[0].id + ",orpheline" } }]);
+  A.run("restoreSelectedTrash()");
+  const messages = A.messages().join(" | ");
+  assert.match(messages, /réaffichée/i);
+  assert.match(messages, /rien à réafficher/i);
+});
+
+/* ═══ Favoris orphelins ═══ */
+
+test("favoris : ceux qui désignent une fiche supprimée définitivement sont retirés", () => {
+  A.reset({ manualEntries: fiches(["Vivante", "Mensuelle"]), favorites: ["purgee", "autre"], purgedIds: ["purgee"] });
+  assert.equal(A.run("nettoyerFavoris()"), 1);
+  assert.deepEqual(A.get("favorites"), ["autre"]);
+});
+
+test("favoris : un favori dont la fiche n'est pas encore arrivée est conservé", () => {
+  A.reset({ manualEntries: [], favorites: ["pas_encore_synchronisee"], purgedIds: [] });
+  assert.equal(A.run("nettoyerFavoris()"), 0, "ne pas supprimer ce qui peut encore arriver");
+  assert.equal(A.get("favorites.length"), 1);
+});
+
+test("favoris : le nettoyage s'exécute au chargement de l'application", () => {
+  A.reset({ manualEntries: fiches(["K", "Mensuelle"]), favorites: ["purgee"], purgedIds: ["purgee"] });
+  A.run("saveManualEntries(false); savePurged(false); saveFavoritesLocalOnly(); loadSavedFile();");
+  assert.equal(A.get("favorites.length"), 0);
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,

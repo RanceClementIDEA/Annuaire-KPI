@@ -1308,3 +1308,7 @@ select.modal-input {
 .inspect-meta { font-size:10px; color:var(--text-3); margin-top:2px; }
 .inspect-meta code { font-size:9.5px; background:var(--bg-surface); padding:0 4px; border-radius:3px; }
 .inspect-deleted { opacity:0.55; }
+
+/* Entrée de corbeille dont les données n'existent plus */
+.trash-row.trash-vide { opacity: .75; }
+.trash-alerte { display: block; color: var(--gold); font-size: 10.5px; margin-top: 2px; }

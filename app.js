@@ -318,6 +318,7 @@ fileInput.addEventListener("change", e => {
 function loadSavedFile() {
   migrateExcelToManual();
   nettoyerPurgees();
+  nettoyerFavoris();
   rebuildData(false);
 }
 
@@ -327,6 +328,21 @@ function loadSavedFile() {
  * stockée : elle restait invisible mais repartait vers le cloud à chaque envoi.
  * @returns {number} nombre de fiches retirées
  */
+/**
+ * Retire les favoris qui désignent des fiches supprimées DÉFINITIVEMENT.
+ * On se limite aux suppressions définitives : un favori dont la fiche n'est
+ * pas encore arrivée sur cet appareil doit être conservé.
+ * @returns {number} nombre de favoris retirés
+ */
+function nettoyerFavoris() {
+  if (!favorites.length || !purgedIds.length) return 0;
+  const avant = favorites.length;
+  favorites = favorites.filter(id => !purgedIds.includes(id));
+  const retires = avant - favorites.length;
+  if (retires) saveFavoritesLocalOnly();
+  return retires;
+}
+
 function nettoyerPurgees() {
   if (!purgedIds.length || !manualEntries.length) return 0;
   const avant = manualEntries.length;
@@ -715,13 +731,19 @@ function renderTrashList() {
       ? `${nb} temporalités (${g.freqs.join(", ")}) · `
       : (g.freqs[0] ? esc(g.freqs[0]) + " · " : "");
     const auteur = g.perso ? "" : (g.by ? " par " + esc(g.by) : "");
+    // Un marqueur peut subsister sans ses données (fiche déjà effacée ailleurs) :
+    // le réafficher ne ramènerait rien, autant le dire clairement.
+    const recuperable = g.perso
+      ? true
+      : g.ids.some(id => manualEntries.some(k => k.id === id));
     const row = document.createElement("label");
-    row.className = "trash-row";
+    row.className = "trash-row" + (recuperable ? "" : " trash-vide");
     row.innerHTML = `
       <input type="checkbox" class="trash-check" data-ids="${esc(g.ids.join(","))}" data-perso="${g.perso ? "1" : "0"}">
       <div class="trash-info">
         <b>${g.perso ? "🔒 " : ""}${esc(g.title)}</b>
         <span>${tempTxt}supprimée le ${fmtDate(g.at)}${auteur}</span>
+        ${recuperable ? "" : `<span class="trash-alerte">⚠️ données absentes — non récupérable, à supprimer définitivement</span>`}
       </div>`;
     el.appendChild(row);
   });
@@ -766,11 +788,22 @@ function restoreSelectedTrash() {
     savePersonalTrash();
   }
 
-  const nbFiches = new Set([...titres].map(t => titleKey(t))).size;
+  // On ne compte que les fiches dont les données existent encore
+  const revenues = new Set();
+  [...titres].forEach(t => {
+    const cle = titleKey(t);
+    if (manualEntries.some(k => titleKey(k.title) === cle) ||
+        personalEntries.some(k => titleKey(k.title) === cle)) revenues.add(cle);
+  });
+  const nbFiches = revenues.size;
+  const nbVides = new Set([...titres].map(t => titleKey(t))).size - nbFiches;
   [...titres].forEach(t => logActivity("restore", t, "fiche réaffichée"));
   rebuildData(true);
   renderTrashList();
-  showToast(`✅ ${nbFiches} fiche${nbFiches > 1 ? "s" : ""} réaffichée${nbFiches > 1 ? "s" : ""}`);
+  if (nbFiches) showToast(`✅ ${nbFiches} fiche${nbFiches > 1 ? "s" : ""} réaffichée${nbFiches > 1 ? "s" : ""}`);
+  if (nbVides) {
+    showToast(`⚠️ ${nbVides} fiche${nbVides > 1 ? "s" : ""} sans données : rien à réafficher`, 4000);
+  }
   const stillShared = deletedIds.some(d => d.state !== "restored");
   if (!stillShared && !personalTrash.length) closeTrashModal();
 }
