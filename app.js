@@ -569,19 +569,55 @@ function saveManualEntries(sync = true) {
    stockés en local par identifiant, jamais envoyés
    dans la synchronisation cloud partagée.
 ============================================ */
+/* ─────────────────────────────────────────────────────────────────────
+   ESPACE PERSONNEL
+   Les fiches personnelles suivent l'UTILISATEUR d'un appareil à l'autre :
+   elles voyagent dans le document partagé, mais rangées sous le nom de
+   leur propriétaire. L'application n'affiche jamais que le bloc de
+   l'utilisateur connecté ; les blocs des autres sont transportés tels
+   quels, sans jamais être lus ni modifiés.
+   ───────────────────────────────────────────────────────────────────── */
+
+const LS_PERSO_SYNC   = "kpiPersonalSync";        // "0" = ne pas synchroniser cet espace
+const LS_PERSO_MAP    = "kpiPersonalByUser";      // { utilisateur: [fiches] }
+const LS_PERSO_TRASH  = "kpiPersonalTrashByUser"; // { utilisateur: [corbeille] }
+
+/** L'utilisateur a-t-il laissé la synchronisation de son espace personnel active ? */
+function isPersonalSyncOn() {
+  return localStorage.getItem(LS_PERSO_SYNC) !== "0";
+}
+
+function lireMapPerso(cle) {
+  try { const m = JSON.parse(localStorage.getItem(cle)); return (m && typeof m === "object") ? m : {}; }
+  catch { return {}; }
+}
+
 function loadPersonalEntries() {
   try {
     personalEntries = JSON.parse(localStorage.getItem("kpiPersonal_" + currentUser)) || [];
   } catch { personalEntries = []; }
   loadPersonalTrash();
+
+  // Nouvel appareil, même utilisateur : on adopte le bloc déjà reçu du cloud
+  // plutôt que d'attendre la prochaine fusion. Ne remplit que si c'est vide.
+  if (isPersonalSyncOn() && !personalEntries.length) {
+    const distant = lireMapPerso(LS_PERSO_MAP)[currentUser];
+    if (Array.isArray(distant) && distant.length) {
+      personalEntries = distant;
+      const corbeille = lireMapPerso(LS_PERSO_TRASH)[currentUser];
+      if (Array.isArray(corbeille)) personalTrash = corbeille;
+      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+    }
+  }
 }
 
 function savePersonalEntries() {
   localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+  if (isPersonalSyncOn()) scheduleAutoSync();
 }
 
-// Corbeille personnelle : propre à chaque utilisateur, stockée en local,
-// JAMAIS synchronisée (comme les fiches personnelles elles-mêmes).
+// Corbeille personnelle : propre à chaque utilisateur.
 let personalTrash = [];
 function loadPersonalTrash() {
   try {
@@ -590,6 +626,36 @@ function loadPersonalTrash() {
 }
 function savePersonalTrash() {
   localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+  if (isPersonalSyncOn()) scheduleAutoSync();
+}
+
+/**
+ * Fusionne deux corbeilles personnelles : union par identifiant, en gardant
+ * la date de suppression la plus récente.
+ */
+function mergePersonalTrash(locale, distante) {
+  const map = new Map();
+  [...(locale || []), ...(distante || [])].forEach(v => {
+    if (!v || !v.id) return;
+    const enPlace = map.get(v.id);
+    if (!enPlace || (v._deletedAt || 0) > (enPlace._deletedAt || 0)) map.set(v.id, v);
+  });
+  return [...map.values()];
+}
+
+/**
+ * Applique la corbeille aux fiches personnelles : une fiche supprimée
+ * disparaît, sauf si elle a été ré-éditée APRÈS sa suppression (restauration
+ * ou modification depuis un autre appareil).
+ */
+function appliquerCorbeillePerso() {
+  const supprimee = new Map(personalTrash.filter(v => v && v.id).map(v => [v.id, v._deletedAt || 0]));
+  personalEntries = personalEntries.filter(k => {
+    const at = supprimee.get(k.id);
+    return at === undefined || (k._mtime || 0) > at;
+  });
+  const vivantes = new Set(personalEntries.map(k => k.id));
+  personalTrash = personalTrash.filter(v => v && !vivantes.has(v.id));
 }
 
 
@@ -1905,12 +1971,29 @@ function buildSyncPayload() {
   localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
   localStorage.setItem("kpiFavMeta", JSON.stringify(favoritesMeta));
 
+  // Espace personnel : on remplace UNIQUEMENT son propre bloc et on
+  // retransmet ceux des autres utilisateurs sans y toucher.
+  const personalByUser      = lireMapPerso(LS_PERSO_MAP);
+  const personalTrashByUser = lireMapPerso(LS_PERSO_TRASH);
+  if (isPersonalSyncOn()) {
+    personalByUser[currentUser]      = personalEntries;
+    personalTrashByUser[currentUser] = personalTrash;
+  } else {
+    // Synchronisation désactivée ici : on retire son bloc du document partagé
+    delete personalByUser[currentUser];
+    delete personalTrashByUser[currentUser];
+  }
+  localStorage.setItem(LS_PERSO_MAP, JSON.stringify(personalByUser));
+  localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(personalTrashByUser));
+
   return {
     kpiManual: manualEntries,     // toutes les fiches partagées, fusionnées par élément
     kpiDeleted: deletedIds,
     kpiSites: sites,
     kpiPurged: purgedIds,
     kpiActivity: activityLog,
+    personalByUser,
+    personalTrashByUser,
     favoritesByUser,
     favoritesMeta,
     updatedAt: now()
@@ -1989,6 +2072,27 @@ function mergeRemoteContent(payload) {
   if (Array.isArray(payload.kpiActivity)) {
     activityLog = mergeActivity(activityLog, payload.kpiActivity, MAX_ACTIVITY);
     saveActivity(false);
+  }
+
+  // ── Espace personnel, rangé par utilisateur ──
+  if (payload.personalByUser && typeof payload.personalByUser === "object") {
+    const distant      = payload.personalByUser;
+    const distantTrash = (payload.personalTrashByUser && typeof payload.personalTrashByUser === "object")
+                       ? payload.personalTrashByUser : {};
+    // On conserve les blocs de TOUS les utilisateurs pour pouvoir les
+    // retransmettre intacts, mais on n'en lit qu'un seul : le sien.
+    localStorage.setItem(LS_PERSO_MAP, JSON.stringify(distant));
+    localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(distantTrash));
+
+    if (isPersonalSyncOn()) {
+      const mien = Array.isArray(distant[currentUser]) ? distant[currentUser] : [];
+      const mienneTrash = Array.isArray(distantTrash[currentUser]) ? distantTrash[currentUser] : [];
+      personalEntries = mergeEntries(personalEntries, mien);
+      personalTrash   = mergePersonalTrash(personalTrash, mienneTrash);
+      appliquerCorbeillePerso();
+      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+    }
   }
 }
 
@@ -2109,6 +2213,18 @@ function replaceLocalWithRemote(payload) {
     localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
     if (payload.favoritesByUser[currentUser]) { favorites = payload.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
   }
+  if (payload.personalByUser && typeof payload.personalByUser === "object") {
+    localStorage.setItem(LS_PERSO_MAP, JSON.stringify(payload.personalByUser));
+    localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(payload.personalTrashByUser || {}));
+    if (isPersonalSyncOn()) {
+      personalEntries = Array.isArray(payload.personalByUser[currentUser])
+                      ? payload.personalByUser[currentUser] : [];
+      personalTrash = Array.isArray((payload.personalTrashByUser || {})[currentUser])
+                    ? payload.personalTrashByUser[currentUser] : [];
+      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+    }
+  }
 
   rebuildData(false);
   applyingRemoteSync = false;
@@ -2223,6 +2339,14 @@ function hasLocalDataNewerThan(remote) {
   if (plusRecent(sites,         remote.kpiSites,  "key", "_mtime")) return true;
   const distantsPurges = new Set(remote.kpiPurged || []);
   if ((purgedIds || []).some(id => !distantsPurges.has(id))) return true;
+
+  // Espace personnel : on ne compare que SON propre bloc
+  if (isPersonalSyncOn()) {
+    const monBlocDistant   = (remote.personalByUser || {})[currentUser];
+    const maCorbeilleDist  = (remote.personalTrashByUser || {})[currentUser];
+    if (plusRecent(personalEntries, monBlocDistant, "id", "_mtime")) return true;
+    if (plusRecent(personalTrash, maCorbeilleDist, "id", "_deletedAt")) return true;
+  }
   return false;
 }
 
@@ -2322,6 +2446,10 @@ function renderSyncDiag() {
   const proj = cfg?.config?.projectId || "—";
   const code = cfg?.code || "—";
   const auto = cfg?.enabled ? "activée" : "en pause";
+
+  // L'interrupteur reflète l'état réel enregistré sur cet appareil
+  const bascule = document.getElementById("personalSyncToggle");
+  if (bascule) bascule.checked = isPersonalSyncOn();
 
   // Analyse fiches vs variantes (temporalités), en séparant partagé et perso.
   // On ne compte que le VISIBLE (data exclut déjà la corbeille).
@@ -2914,6 +3042,21 @@ document.getElementById("inspectKpiInput")?.addEventListener("input", function (
 });
 
 document.getElementById("resetSyncBtn")?.addEventListener("click", resetSyncCompletely);
+
+// Interrupteur de synchronisation de l'espace personnel
+document.getElementById("personalSyncToggle")?.addEventListener("change", function () {
+  localStorage.setItem(LS_PERSO_SYNC, this.checked ? "1" : "0");
+  if (this.checked) {
+    // On (re)publie son espace sous son nom
+    savePersonalEntries(); savePersonalTrash();
+    showToast("✅ Vos KPIs personnels vous suivront sur vos appareils", 3200);
+  } else {
+    // On retire son bloc du document partagé, sans toucher aux données locales
+    scheduleAutoSync();
+    showToast("🔒 Vos KPIs personnels restent sur cet appareil", 3200);
+  }
+  renderSyncDiag();
+});
 
 // Test de connexion en direct : écrit puis relit une valeur dans Firestore.
 // Affiche précisément ce qui bloque (config absente, Firebase non chargé,
