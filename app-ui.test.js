@@ -510,19 +510,34 @@ test("synchro : le contenu envoyé comporte fiches, suppressions, sites et purge
     assert.ok(p[c] !== undefined, "champ manquant : " + c));
 });
 
-test("synchro : les fiches personnelles ne sont jamais envoyées", () => {
+test("synchro : les fiches personnelles ne rejoignent jamais la liste partagée", () => {
   A.reset({
     manualEntries: fiches(["Partagé", "Mensuelle"]),
     personalEntries: [{ id: "p1", title: "Mon KPI privé", freq: "Mensuelle" }]
   });
   const p = A.run("buildSyncPayload()");
-  assert.ok(!JSON.stringify(p).includes("Mon KPI privé"));
+  assert.ok(!JSON.stringify(p.kpiManual).includes("Mon KPI privé"),
+    "une fiche personnelle ne doit jamais apparaître dans l'annuaire partagé");
 });
 
-test("synchro : la corbeille personnelle n'est jamais envoyée", () => {
-  A.reset({ personalTrash: [{ id: "p1", title: "Supprimé en privé", freq: "Mensuelle" }] });
+test("synchro : les fiches personnelles partent rangées sous le nom de leur propriétaire", () => {
+  A.reset({
+    currentUser: "marie",
+    personalEntries: [{ id: "p1", title: "Mon KPI privé", freq: "Mensuelle", _mtime: 100 }]
+  });
   const p = A.run("buildSyncPayload()");
-  assert.ok(!JSON.stringify(p).includes("Supprimé en privé"));
+  assert.ok(p.personalByUser, "le bloc personnel doit exister");
+  assert.equal(p.personalByUser.marie.length, 1);
+  assert.equal(p.personalByUser.marie[0].title, "Mon KPI privé");
+});
+
+test("synchro : la corbeille personnelle voyage sous le nom de son propriétaire", () => {
+  A.reset({ currentUser: "marie",
+            personalTrash: [{ id: "p1", title: "Supprimé en privé", freq: "Mensuelle", _deletedAt: 50 }] });
+  const p = A.run("buildSyncPayload()");
+  assert.equal(p.personalTrashByUser.marie.length, 1);
+  assert.ok(!JSON.stringify(p.kpiDeleted).includes("Supprimé en privé"),
+    "elle ne doit pas se mélanger à la corbeille partagée");
 });
 
 test("synchro : recevoir des données fusionne sans écraser le local", () => {
@@ -1351,4 +1366,352 @@ test("masse : le contenu envoyé reste sous la limite avec 600 variantes détail
   const octets = JSON.stringify(A.run("buildSyncPayload()")).length;
   assert.ok(octets < 1048576,
     "600 variantes détaillées doivent tenir dans un document : " + Math.round(octets / 1024) + " Ko");
+});
+
+/* ═══ Affichage de la dernière modification ═══ */
+
+test("dernière modif : la date apparaît sur la carte", () => {
+  const t = Date.UTC(2026, 6, 20, 14, 30);
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: t, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  const html = A.run(`cardBody(data[0], false, "", "k")`);
+  assert.match(html, /Modifié le/);
+  assert.match(html, /20\/07\/2026/);
+});
+
+test("dernière modif : l'auteur est indiqué", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000000, _by: "BENJAMIN" }] });
+  A.run("rebuildData(false)");
+  assert.match(A.run(`cardBody(data[0], false, "", "k")`), /par <b>BENJAMIN<\/b>/);
+});
+
+test("dernière modif : une fiche sans date n'affiche rien", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "Ancienne", freq: "Mensuelle" }] });
+  A.run("rebuildData(false)");
+  assert.ok(!/Modifié le/.test(A.run(`cardBody(data[0], false, "", "k")`)),
+    "aucune mention trompeuse sur les fiches importées");
+});
+
+test("dernière modif : une date sans auteur reste lisible", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000000 }] });
+  A.run("rebuildData(false)");
+  const html = A.run(`cardBody(data[0], false, "", "k")`);
+  assert.match(html, /Modifié le/);
+  assert.ok(!/par <b>/.test(html));
+});
+
+test("dernière modif : un nom d'auteur malveillant est neutralisé", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 1000, _by: '<img src=x onerror=alert(1)>' }] });
+  A.run("rebuildData(false)");
+  assert.ok(!A.run(`cardBody(data[0], false, "", "k")`).includes("<img"), "le contenu est échappé");
+});
+
+test("dernière modif : chaque temporalité affiche SA propre date", () => {
+  A.reset({ manualEntries: [
+    { id: "m", title: "K", freq: "Mensuelle", _mtime: Date.UTC(2026, 0, 5), _by: "marie" },
+    { id: "h", title: "K", freq: "Hebdomadaire", _mtime: Date.UTC(2026, 5, 18), _by: "jean" }
+  ] });
+  A.run("rebuildData(false)");
+  const hM = A.run(`cardBody(data[0], true, "", "k")`);
+  const hH = A.run(`cardBody(data[1], true, "", "k")`);
+  assert.match(hM, /05\/01\/2026/);
+  assert.match(hH, /18\/06\/2026/);
+});
+
+/* ═══ Garantie : l'affichage ne modifie rien ═══ */
+
+test("garantie : afficher une carte ne change aucune donnée", () => {
+  const depart = [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 123456, _by: "marie", logistiport: "https://x" }];
+  A.reset({ manualEntries: JSON.parse(JSON.stringify(depart)) });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k"); cardBody(data[0], true, "", "k");`);
+  assert.deepEqual(A.get("manualEntries"), depart, "les fiches sont strictement inchangées");
+});
+
+test("garantie : afficher une carte ne modifie pas la date de modification", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 999, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  A.run(`for (var i = 0; i < 20; i++) cardBody(data[0], false, "", "k");`);
+  assert.equal(A.get("manualEntries")[0]._mtime, 999, "sinon chaque affichage écraserait le travail des autres appareils");
+});
+
+test("garantie : le contenu envoyé au cloud est identique après affichage", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 555, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  const avant = JSON.stringify(A.run("buildSyncPayload()").kpiManual);
+  A.run(`filterData(); cardBody(data[0], false, "", "k");`);
+  const apres = JSON.stringify(A.run("buildSyncPayload()").kpiManual);
+  assert.equal(avant, apres, "l'affichage ne doit rien ajouter à ce qui part au cloud");
+});
+
+test("garantie : un rendu complet ne déclenche aucune synchronisation", () => {
+  A.reset({ manualEntries: [
+    { id: "a", title: "A", freq: "Mensuelle", _mtime: 100, _by: "marie" },
+    { id: "b", title: "B", freq: "Mensuelle", _mtime: 200, _by: "jean" }
+  ] });
+  A.run("rebuildData(false); filterData();");
+  const distant = { kpiManual: A.get("manualEntries"), kpiDeleted: [], kpiSites: A.get("sites"), kpiPurged: [] };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(distant)})`), false,
+    "après un simple affichage, l'appareil ne doit rien avoir à renvoyer");
+});
+
+test("garantie : l'affichage ne perturbe pas la fusion avec le cloud", () => {
+  const f = { id: "a", title: "K", freq: "Mensuelle", _mtime: 100, _by: "marie" };
+  A.reset({ manualEntries: [f] });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k");`);
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [{ ...f, logistiport: "https://depuis-le-cloud", _mtime: 9999 }], updatedAt: 9999
+  })}, true)`);
+  assert.equal(A.get("data")[0].logistiport, "https://depuis-le-cloud",
+    "la version distante plus récente est bien appliquée");
+});
+
+test("garantie : la métadonnée d'auteur reste celle qui sert à l'arbitrage", () => {
+  A.reset({ manualEntries: [{ id: "a", title: "K", freq: "Mensuelle", _mtime: 100, _by: "marie" }] });
+  A.run("rebuildData(false)");
+  A.run(`cardBody(data[0], false, "", "k");`);
+  assert.equal(A.get("manualEntries")[0]._by, "marie",
+    "l'auteur départage les modifications de même date : il ne doit jamais être réécrit à l'affichage");
+});
+
+/* ═══ Espace personnel synchronisé par utilisateur ═══ */
+
+const perso = (id, titre, mtime) => ({ id, title: titre, freq: "Mensuelle", personal: true, _mtime: mtime || 100 });
+
+test("perso : mes fiches me suivent d'un appareil à l'autre", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [perso("p1", "Mon suivi")] }, updatedAt: 100
+  })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 1);
+  assert.equal(A.get("personalEntries")[0].title, "Mon suivi");
+});
+
+test("perso : je ne vois jamais l'espace personnel d'un autre utilisateur", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [perso("p1", "À Marie")], jean: [perso("p2", "À Jean")] }, updatedAt: 100
+  })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 1);
+  assert.equal(A.get("personalEntries")[0].title, "À Marie");
+});
+
+test("perso : le bloc des autres utilisateurs est retransmis intact", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "À Marie")] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { jean: [perso("p2", "À Jean")] }, updatedAt: 100
+  })}, true)`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.personalByUser.jean.length, 1,
+    "les fiches de Jean ne doivent pas être perdues quand Marie envoie");
+  assert.equal(envoi.personalByUser.marie.length, 1);
+});
+
+test("perso : une fiche personnelle n'entre jamais dans l'annuaire partagé", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Privé")] });
+  const envoi = A.run("buildSyncPayload()");
+  assert.ok(!JSON.stringify(envoi.kpiManual).includes("Privé"));
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data.length"), 0, "et n'apparaît pas dans la liste partagée affichée");
+});
+
+test("perso : une suppression se propage à mes autres appareils", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "À supprimer")] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [] },
+    personalTrashByUser: { marie: [{ id: "p1", title: "À supprimer", _deletedAt: 500 }] },
+    updatedAt: 500
+  })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 0, "la fiche supprimée ailleurs disparaît ici");
+});
+
+test("perso : une fiche ré-éditée après suppression n'est pas effacée à tort", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Reprise", 900)] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [] },
+    personalTrashByUser: { marie: [{ id: "p1", _deletedAt: 500 }] },
+    updatedAt: 900
+  })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 1,
+    "la modification (900) est postérieure à la suppression (500) : elle l'emporte");
+});
+
+test("perso : la version la plus récente l'emporte entre deux appareils", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Ancienne", 100)] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [{ ...perso("p1", "Récente", 900) }] }, updatedAt: 900
+  })}, true)`);
+  assert.equal(A.get("personalEntries")[0].title, "Récente");
+  assert.equal(A.get("personalEntries.length"), 1, "sans créer de doublon");
+});
+
+test("perso : une modification locale déclenche bien un envoi", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Nouvelle", 900)] });
+  const distant = { kpiManual: [], kpiDeleted: [], kpiSites: A.get("sites"), kpiPurged: [],
+                    personalByUser: { marie: [] } };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(distant)})`), true);
+});
+
+test("perso : rien à envoyer si mon espace est déjà à jour", () => {
+  const p = perso("p1", "Stable", 100);
+  A.reset({ currentUser: "marie", personalEntries: [p], sites: [] });
+  const distant = { kpiManual: [], kpiDeleted: [], kpiSites: [], kpiPurged: [],
+                    personalByUser: { marie: [p] }, personalTrashByUser: { marie: [] } };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(distant)})`), false);
+});
+
+test("perso : désactivée, la synchronisation personnelle n'envoie rien", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Reste ici")] });
+  A.run(`localStorage.setItem("kpiPersonalSync", "0");`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.ok(!envoi.personalByUser.marie, "mon bloc est retiré du document partagé");
+  assert.ok(!JSON.stringify(envoi).includes("Reste ici"));
+  A.run(`localStorage.removeItem("kpiPersonalSync");`);
+});
+
+test("perso : désactivée, rien n'est reçu non plus", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`localStorage.setItem("kpiPersonalSync", "0");`);
+  A.run(`applyRemoteData(${JSON.stringify({
+    personalByUser: { marie: [perso("p1", "Depuis le cloud")] }, updatedAt: 100
+  })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 0);
+  A.run(`localStorage.removeItem("kpiPersonalSync");`);
+});
+
+test("perso : « Récupérer » restaure aussi mon espace personnel", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("px", "Obsolète")] });
+  A.run(`replaceLocalWithRemote(${JSON.stringify({
+    kpiManual: [], kpiDeleted: [], kpiPurged: [],
+    personalByUser: { marie: [perso("p1", "Depuis le cloud")] }, updatedAt: 500
+  })})`);
+  assert.equal(A.get("personalEntries.length"), 1);
+  assert.equal(A.get("personalEntries")[0].title, "Depuis le cloud");
+});
+
+test("perso : un contenu distant sans bloc personnel ne vide pas mon espace", () => {
+  A.reset({ currentUser: "marie", personalEntries: [perso("p1", "Intacte")] });
+  A.run(`applyRemoteData(${JSON.stringify({ kpiManual: [], updatedAt: 100 })}, true)`);
+  assert.equal(A.get("personalEntries.length"), 1);
+});
+
+test("perso : un nouvel appareil adopte mon espace dès la connexion", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`localStorage.setItem("kpiPersonalByUser", ${JSON.stringify(JSON.stringify({
+    marie: [perso("p1", "Déjà reçue")]
+  }))}); personalEntries = []; loadPersonalEntries();`);
+  assert.equal(A.get("personalEntries.length"), 1);
+});
+
+test("perso : une suppression locale est détectée comme à envoyer", () => {
+  A.reset({ currentUser: "marie", sites: [],
+            personalTrash: [{ id: "p1", title: "Supprimée ici", _deletedAt: 900 }] });
+  const distant = { kpiManual: [], kpiDeleted: [], kpiSites: [], kpiPurged: [],
+                    personalByUser: { marie: [] }, personalTrashByUser: { marie: [] } };
+  assert.equal(A.run(`hasLocalDataNewerThan(${JSON.stringify(distant)})`), true,
+    "sans cela, la suppression resterait bloquée sur cet appareil");
+});
+
+test("perso : supprimer une fiche la range dans la corbeille personnelle", () => {
+  A.reset({ currentUser: "marie",
+            personalEntries: [{ id: "p1", title: "À jeter", freq: "Mensuelle", personal: true }] });
+  A.run("rebuildData(false)");
+  A.confirmer(true);
+  A.run(`deleteKPI("p1")`);
+  A.confirmer(false);
+  assert.equal(A.get("personalEntries.length"), 0);
+  assert.equal(A.get("personalTrash.length"), 1);
+  const envoi = A.run("buildSyncPayload()");
+  assert.equal(envoi.personalTrashByUser.marie.length, 1, "et part vers mes autres appareils");
+});
+
+test("perso : enregistrer une fiche personnelle déclenche un envoi immédiat", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`globalThis.__envois = 0;
+         globalThis.__vraiSchedule = scheduleAutoSync;
+         scheduleAutoSync = function(){ globalThis.__envois++; };
+         personalEntries = [{ id:"p1", title:"Nouvelle", freq:"Mensuelle" }];
+         savePersonalEntries();`);
+  const n = A.run("globalThis.__envois");
+  A.run(`scheduleAutoSync = globalThis.__vraiSchedule;`);
+  assert.equal(n, 1, "sans cela, la fiche n'atteindrait mes autres appareils qu'au prochain rechargement");
+});
+
+test("perso : supprimer une fiche personnelle déclenche aussi un envoi immédiat", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`globalThis.__envois = 0;
+         globalThis.__vraiSchedule = scheduleAutoSync;
+         scheduleAutoSync = function(){ globalThis.__envois++; };
+         personalTrash = [{ id:"p1", _deletedAt: 500 }];
+         savePersonalTrash();`);
+  const n = A.run("globalThis.__envois");
+  A.run(`scheduleAutoSync = globalThis.__vraiSchedule;`);
+  assert.equal(n, 1);
+});
+
+test("perso : désactivée, l'enregistrement ne déclenche aucun envoi", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`localStorage.setItem("kpiPersonalSync", "0");
+         globalThis.__envois = 0;
+         globalThis.__vraiSchedule = scheduleAutoSync;
+         scheduleAutoSync = function(){ globalThis.__envois++; };
+         personalEntries = [{ id:"p1", title:"Locale", freq:"Mensuelle" }];
+         savePersonalEntries();`);
+  const n = A.run("globalThis.__envois");
+  A.run(`scheduleAutoSync = globalThis.__vraiSchedule; localStorage.removeItem("kpiPersonalSync");`);
+  assert.equal(n, 0);
+});
+
+test("perso : l'interrupteur reflète l'état réel à l'ouverture", () => {
+  A.reset({ currentUser: "marie" });
+  A.run(`localStorage.setItem("kpiPersonalSync", "0"); renderSyncDiag();`);
+  assert.equal(A.el("personalSyncToggle").checked, false);
+  A.run(`localStorage.removeItem("kpiPersonalSync"); renderSyncDiag();`);
+  assert.equal(A.el("personalSyncToggle").checked, true, "activée par défaut");
+});
+
+test("perso : le diagnostic compte mon espace séparément du partagé", () => {
+  A.reset({
+    currentUser: "marie",
+    manualEntries: fiches(["Partagé", "Mensuelle"]),
+    personalEntries: [{ id: "p1", title: "Privé", freq: "Mensuelle" }]
+  });
+  A.run("rebuildData(false); renderSyncDiag();");
+  const h = A.html("syncDiag");
+  assert.match(h, /KPIs partagés<\/span><b>1/);
+  assert.match(h, /KPIs personnels/);
+});
+
+/* ═══ Favoris orphelins dans le cloud ═══ */
+
+test("favoris : ceux des autres utilisateurs pointant vers une fiche purgée sont nettoyés", () => {
+  A.reset({ currentUser: "marie", purgedIds: ["mort"], favorites: ["vivant"] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["vivant"], BENJAMIN: ["mort", "vivant2"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.BENJAMIN, ["vivant2"],
+    "la référence morte est retirée sans toucher au reste");
+  assert.deepEqual(envoi.favoritesByUser.marie, ["vivant"]);
+});
+
+test("favoris : un favori vers une fiche simplement en corbeille est conservé", () => {
+  A.reset({ currentUser: "marie", purgedIds: [], favorites: ["corbeille"],
+            deletedIds: [{ id: "corbeille", at: 5, state: "deleted" }] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["corbeille"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.marie, ["corbeille"],
+    "la fiche peut encore être réaffichée : son favori reste valable");
+});
+
+test("favoris : sans suppression définitive, rien n'est touché", () => {
+  A.reset({ currentUser: "marie", purgedIds: [], favorites: ["a"] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["a"], jean: ["b", "c"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.jean, ["b", "c"]);
 });

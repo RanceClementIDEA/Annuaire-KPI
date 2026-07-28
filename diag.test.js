@@ -75,12 +75,36 @@ test("le diagnostic masque les fiches en corbeille ET les suppressions définiti
   assert.match(bloc[1], /purges/, "les suppressions définitives doivent être exclues");
 });
 
+/** Liste d'exceptions RÉELLEMENT utilisée par le garde-fou du diagnostic. */
+function exceptionsDuDiagnostic() {
+  const bloc = shell.match(/const inconnues = clesPresentes\.filter\([\s\S]*?\.indexOf\(k\) < 0\);/);
+  assert.ok(bloc, "le garde-fou du diagnostic doit exister");
+  return new Set([...bloc[0].matchAll(/"(kpi[A-Za-z0-9_]*)"/g)].map(m => m[1]));
+}
+
 test("aucune clé de stockage de l'application n'est oubliée sans raison", () => {
-  // Clés volontairement ignorées par le diagnostic (sans intérêt pour l'analyse)
-  const ignorees = new Set(["kpiMeta", "kpiFavMeta", "kpiSyncFavorites", "kpiLocalUpdatedAt",
-    "kpiClockOffset", "kpiSnapshots", "kpiOptoutClearedV2", "kpiDataCache", "kpiOverrides",
-    "kpiFile", "kpiFileB64", "kpiFav_", "kpiActivity", "kpiPersonal_", "kpiPersonalTrash_"]);
   const utilisees = new Set(Object.values(diag));
+  const ignorees = exceptionsDuDiagnostic();
   const oubliees = [...app_].filter(k => !utilisees.has(k) && !ignorees.has(k));
   assert.deepEqual(oubliees, [], "clés de l'application non prises en compte : " + JSON.stringify(oubliees));
+});
+
+test("le garde-fou du diagnostic ne signalera aucun emplacement légitime", () => {
+  // Reproduit exactement le calcul fait par le diagnostic sur un appareil réel :
+  // toute clé écrite par l'application doit être soit déclarée, soit explicitement ignorée.
+  const declarees = Object.values(diag);
+  const ignorees = exceptionsDuDiagnostic();
+  const signalees = [...app_].filter(k =>
+    k.indexOf("kpi") === 0 &&
+    declarees.every(v => k !== v && k.indexOf(v) !== 0) &&
+    !ignorees.has(k));
+  assert.deepEqual(signalees, [],
+    "ces emplacements apparaîtraient comme « inconnus » dans le diagnostic : " + JSON.stringify(signalees));
+});
+
+test("l'espace personnel synchronisé est déclaré dans le diagnostic", () => {
+  assert.equal(diag.PERSO_MAP, "kpiPersonalByUser");
+  assert.equal(diag.PERSO_MAP_TRASH, "kpiPersonalTrashByUser");
+  assert.equal(diag.PERSO_SYNC, "kpiPersonalSync");
+  assert.ok(app.includes("kpiPersonalByUser"), "l'application utilise bien cet emplacement");
 });

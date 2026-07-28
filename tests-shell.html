@@ -613,7 +613,8 @@ const CLE = {
   MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurgedIds",
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
-  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_"
+  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
+  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }
@@ -812,9 +813,14 @@ async function analyseReelle(avecEcriture){
 
   const perso = lireLocal(CLE.PERSO + (utilisateur || ""), []) || [];
   const persoTrash = lireLocal(CLE.PERSO_TRASH + (utilisateur || ""), []) || [];
-  ajouterControle("Données de cet appareil", "Espace personnel (jamais synchronisé)",
+  const persoSyncActif = localStorage.getItem("kpiPersonalSync") !== "0";
+  ajouterControle("Données de cet appareil",
+    "Espace personnel " + (persoSyncActif ? "(suit votre nom d'utilisateur)" : "(gardé sur cet appareil)"),
     { etat:"ok", detail:"<b>" + A.run("countFiches(" + JSON.stringify(perso) + ")") + "</b> KPI(s) personnel(s)" +
-      (persoTrash.length ? " · " + persoTrash.length + " dans la corbeille personnelle" : "") });
+      (persoTrash.length ? " · " + persoTrash.length + " dans la corbeille personnelle" : "") +
+      "<br><i>" + (persoSyncActif
+        ? "Ces fiches vous suivent sur vos appareils et ne sont visibles par personne d'autre dans l'application."
+        : "Synchronisation personnelle désactivée : ces fiches ne quittent pas cet appareil.") + "</i>" });
 
   const anomalies = A.run("findVariantAnomalies(" + JSON.stringify(visibles) + ")");
   ajouterControle("Données de cet appareil", "Cohérence des temporalités",
@@ -1085,8 +1091,46 @@ async function analyseReelle(avecEcriture){
 
     /* Aucune fiche personnelle ne doit avoir fuité */
     const persoFuitees = (docCloud.kpiManual || []).filter(k => k && k.personal);
+    /* Espace personnel : rangé par utilisateur, invisible aux autres */
+    const persoMap = (docCloud.personalByUser && typeof docCloud.personalByUser === "object")
+                   ? docCloud.personalByUser : null;
+    const persoSyncOn = localStorage.getItem("kpiPersonalSync") !== "0";
+    if (persoMap) {
+      // On ne compte que les espaces réellement remplis : un bloc vide ne
+      // signifie rien d'autre que « cet utilisateur s'est déjà synchronisé ».
+      const remplis = Object.keys(persoMap).filter(u => Array.isArray(persoMap[u]) && persoMap[u].length);
+      const miens = Array.isArray(persoMap[utilisateur]) ? persoMap[utilisateur] : [];
+      ajouterControle("Cloud partagé", "Espace personnel synchronisé par utilisateur",
+        { etat:"ok", detail:
+          (remplis.length
+            ? "<b>" + remplis.length + "</b> utilisateur(s) ont des fiches personnelles dans le cloud"
+            : "aucun utilisateur n'a encore de fiche personnelle dans le cloud") +
+          (utilisateur ? " · le vôtre en contient <b>" + miens.length + "</b>" : "") +
+          "<br><i>L'application n'affiche jamais que le bloc de l'utilisateur connecté.</i>" });
+
+      // Aucun bloc personnel ne doit contenir de fiche marquée « partagée »
+      const melange = Object.keys(persoMap).filter(u =>
+        Array.isArray(persoMap[u]) && persoMap[u].some(k => k && k.personal === false));
+      ajouterControle("Cloud partagé", "Les deux espaces ne se mélangent pas",
+        melange.length === 0
+          ? { etat:"ok", detail:"aucune fiche partagée ne s'est glissée dans un espace personnel" }
+          : { etat:"warn", detail:"Blocs concernés : <b>" + melange.map(echapper).join(", ") + "</b>" });
+
+      const tailleP = JSON.stringify(persoMap).length;
+      ajouterControle("Cloud partagé", "Poids de l'espace personnel dans les échanges",
+        tailleP < 300000
+          ? { etat:"ok", detail:"<b>" + (tailleP/1024).toFixed(0) + " Ko</b> pour l'ensemble des utilisateurs" }
+          : { etat:"warn", detail:"<b>" + (tailleP/1024).toFixed(0) + " Ko</b> — cet espace commence à peser lourd dans chaque synchronisation." });
+    } else {
+      ajouterControle("Cloud partagé", "Espace personnel synchronisé par utilisateur",
+        persoSyncOn
+          ? { etat:"warn", detail:"Aucun espace personnel dans le cloud pour l'instant. Il y apparaîtra à votre prochaine modification personnelle." }
+          : { etat:"ok", detail:"Synchronisation personnelle <b>désactivée</b> sur cet appareil : vos fiches personnelles restent ici." });
+    }
+
     ajouterControle("Cloud partagé", "Aucune fiche personnelle n'a fuité",
-      persoFuitees.length === 0 ? { etat:"ok", detail:"l'espace personnel reste strictement local" }
+      persoFuitees.length === 0
+        ? { etat:"ok", detail:"aucune fiche personnelle ne s'est glissée dans l'annuaire partagé" }
         : { etat:"ko", detail:"<b>" + persoFuitees.length + "</b> fiche(s) personnelle(s) présentes dans le cloud partagé." });
 
     /* Fiches sans intitulé */
@@ -1538,6 +1582,63 @@ async function scenariosSynchro(){
       "le verrou interne sérialise les opérations, sans blocage résiduel");
 
     try { C1.run("if (fbUnsub) fbUnsub();"); } catch {}
+
+
+    /* ── 21. Espace personnel : me suit, sans jamais fuiter ── */
+    etape(.97, "espace personnel entre mes appareils"); await respirer();
+    const M1 = creerAppareil("marie", cfg, codeTest);
+    const M2 = creerAppareil("marie", cfg, codeTest);       // même personne, autre appareil
+    const J1 = creerAppareil("jean", cfg, codeTest);        // quelqu'un d'autre
+    [M1, M2, J1].forEach(d => d.run("connectSync(false)"));
+    await patiente(1200);
+    for (const d of [M1, M2, J1]) { d.run("initialSyncDone = false"); await d.run("initialSync(getSyncConfig().code, false)"); }
+
+    // Marie crée une fiche personnelle sur son premier appareil
+    M1.run(`personalEntries = [{ id:"sc_perso_marie", title:"Note privée de Marie",
+             freq:"Mensuelle", personal:true, _mtime: now(), _by:"marie" }];
+            savePersonalEntries();`);
+    await M1.run("pushToCloud(false)");
+
+    M2.run("initialSyncDone = false"); await M2.run("initialSync(getSyncConfig().code, false)");
+    controle("Ma fiche personnelle me suit sur mon autre appareil",
+      M2.run("personalEntries.length") === 1 &&
+      M2.run(`personalEntries[0] && personalEntries[0].title`) === "Note privée de Marie",
+      "créée sur un appareil, retrouvée sur l'autre, sans manipulation");
+
+    J1.run("initialSyncDone = false"); await J1.run("initialSync(getSyncConfig().code, false)");
+    controle("Un autre utilisateur ne voit pas ma fiche personnelle",
+      J1.run("personalEntries.length") === 0,
+      "Jean ne récupère rien de l'espace personnel de Marie");
+
+    controle("Ma fiche personnelle n'entre pas dans l'annuaire partagé",
+      !J1.run("data.some(function(k){ return k.title === 'Note privée de Marie'; })") &&
+      !M2.run("data.some(function(k){ return k.title === 'Note privée de Marie'; })"),
+      "elle reste hors de la liste commune, sur tous les appareils");
+
+    // Jean crée la sienne : les deux espaces doivent coexister
+    J1.run(`personalEntries = [{ id:"sc_perso_jean", title:"Note privée de Jean",
+             freq:"Mensuelle", personal:true, _mtime: now(), _by:"jean" }];
+            savePersonalEntries();`);
+    await J1.run("pushToCloud(false)");
+    M1.run("initialSyncDone = false"); await M1.run("initialSync(getSyncConfig().code, false)");
+    await M1.run("pushToCloud(false)");
+    J1.run("initialSyncDone = false"); await J1.run("initialSync(getSyncConfig().code, false)");
+    controle("Deux espaces personnels coexistent sans s'écraser",
+      M1.run("personalEntries.length") === 1 && J1.run("personalEntries.length") === 1 &&
+      J1.run(`personalEntries[0].title`) === "Note privée de Jean",
+      "chacun garde le sien, même après des envois croisés");
+
+    // Suppression personnelle propagée entre les appareils de Marie
+    M1.run(`personalTrash = [{ id:"sc_perso_marie", title:"Note privée de Marie", _deletedAt: now() }];
+            personalEntries = []; savePersonalEntries(); savePersonalTrash();`);
+    await M1.run("pushToCloud(false)");
+    M2.run("initialSyncDone = false"); await M2.run("initialSync(getSyncConfig().code, false)");
+    controle("La suppression d'une fiche personnelle me suit aussi",
+      M2.run("personalEntries.length") === 0,
+      "supprimée sur un appareil, elle disparaît de l'autre");
+
+    [M1, M2, J1].forEach(d => { try { d.run("if (fbUnsub) fbUnsub();"); } catch {} });
+
 
     /* ── 11. Horloge et latence ── */
     etape(.95, "horloge et latence"); await respirer();

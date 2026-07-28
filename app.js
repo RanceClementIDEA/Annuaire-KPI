@@ -1968,6 +1968,17 @@ function buildSyncPayload() {
   const favoritesMeta   = JSON.parse(localStorage.getItem("kpiFavMeta") || "{}");
   favoritesByUser[currentUser] = favorites;
   favoritesMeta[currentUser]   = meta.favAt || now();
+  // Une fiche supprimée définitivement ne reviendra jamais : les favoris qui
+  // la désignent, y compris ceux des autres utilisateurs, sont des références
+  // mortes. On les retire du document partagé pour qu'ils cessent de s'accumuler.
+  if (purgedIds && purgedIds.length) {
+    const morts = new Set(purgedIds);
+    Object.keys(favoritesByUser).forEach(u => {
+      const liste = favoritesByUser[u];
+      if (Array.isArray(liste)) favoritesByUser[u] = liste.filter(id => !morts.has(id));
+    });
+    favorites = favoritesByUser[currentUser] || favorites;
+  }
   localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
   localStorage.setItem("kpiFavMeta", JSON.stringify(favoritesMeta));
 

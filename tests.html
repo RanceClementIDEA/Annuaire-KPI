@@ -3815,6 +3815,39 @@ test("perso : le diagnostic compte mon espace séparément du partagé", () => {
   assert.match(h, /KPIs personnels/);
 });
 
+/* ═══ Favoris orphelins dans le cloud ═══ */
+
+test("favoris : ceux des autres utilisateurs pointant vers une fiche purgée sont nettoyés", () => {
+  A.reset({ currentUser: "marie", purgedIds: ["mort"], favorites: ["vivant"] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["vivant"], BENJAMIN: ["mort", "vivant2"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.BENJAMIN, ["vivant2"],
+    "la référence morte est retirée sans toucher au reste");
+  assert.deepEqual(envoi.favoritesByUser.marie, ["vivant"]);
+});
+
+test("favoris : un favori vers une fiche simplement en corbeille est conservé", () => {
+  A.reset({ currentUser: "marie", purgedIds: [], favorites: ["corbeille"],
+            deletedIds: [{ id: "corbeille", at: 5, state: "deleted" }] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["corbeille"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.marie, ["corbeille"],
+    "la fiche peut encore être réaffichée : son favori reste valable");
+});
+
+test("favoris : sans suppression définitive, rien n'est touché", () => {
+  A.reset({ currentUser: "marie", purgedIds: [], favorites: ["a"] });
+  A.run(`localStorage.setItem("kpiSyncFavorites", ${JSON.stringify(JSON.stringify({
+    marie: ["a"], jean: ["b", "c"]
+  }))});`);
+  const envoi = A.run("buildSyncPayload()");
+  assert.deepEqual(envoi.favoritesByUser.jean, ["b", "c"]);
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
@@ -5162,7 +5195,8 @@ const CLE = {
   MANUAL:"kpiManualEntries", DELETED:"kpiDeletedIds", PURGED:"kpiPurgedIds",
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
-  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_"
+  PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
+  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }
@@ -5644,12 +5678,25 @@ async function analyseReelle(avecEcriture){
                    ? docCloud.personalByUser : null;
     const persoSyncOn = localStorage.getItem("kpiPersonalSync") !== "0";
     if (persoMap) {
-      const proprietaires = Object.keys(persoMap);
+      // On ne compte que les espaces réellement remplis : un bloc vide ne
+      // signifie rien d'autre que « cet utilisateur s'est déjà synchronisé ».
+      const remplis = Object.keys(persoMap).filter(u => Array.isArray(persoMap[u]) && persoMap[u].length);
       const miens = Array.isArray(persoMap[utilisateur]) ? persoMap[utilisateur] : [];
       ajouterControle("Cloud partagé", "Espace personnel synchronisé par utilisateur",
-        { etat:"ok", detail:"<b>" + proprietaires.length + "</b> utilisateur(s) ont un espace personnel dans le cloud" +
-          (utilisateur ? " · le vôtre contient <b>" + miens.length + "</b> variante(s)" : "") +
+        { etat:"ok", detail:
+          (remplis.length
+            ? "<b>" + remplis.length + "</b> utilisateur(s) ont des fiches personnelles dans le cloud"
+            : "aucun utilisateur n'a encore de fiche personnelle dans le cloud") +
+          (utilisateur ? " · le vôtre en contient <b>" + miens.length + "</b>" : "") +
           "<br><i>L'application n'affiche jamais que le bloc de l'utilisateur connecté.</i>" });
+
+      // Aucun bloc personnel ne doit contenir de fiche marquée « partagée »
+      const melange = Object.keys(persoMap).filter(u =>
+        Array.isArray(persoMap[u]) && persoMap[u].some(k => k && k.personal === false));
+      ajouterControle("Cloud partagé", "Les deux espaces ne se mélangent pas",
+        melange.length === 0
+          ? { etat:"ok", detail:"aucune fiche partagée ne s'est glissée dans un espace personnel" }
+          : { etat:"warn", detail:"Blocs concernés : <b>" + melange.map(echapper).join(", ") + "</b>" });
 
       const tailleP = JSON.stringify(persoMap).length;
       ajouterControle("Cloud partagé", "Poids de l'espace personnel dans les échanges",
@@ -5664,7 +5711,8 @@ async function analyseReelle(avecEcriture){
     }
 
     ajouterControle("Cloud partagé", "Aucune fiche personnelle n'a fuité",
-      persoFuitees.length === 0 ? { etat:"ok", detail:"l'espace personnel reste strictement local" }
+      persoFuitees.length === 0
+        ? { etat:"ok", detail:"aucune fiche personnelle ne s'est glissée dans l'annuaire partagé" }
         : { etat:"ko", detail:"<b>" + persoFuitees.length + "</b> fiche(s) personnelle(s) présentes dans le cloud partagé." });
 
     /* Fiches sans intitulé */
