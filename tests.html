@@ -284,13 +284,31 @@ const assert = {
       get: () => _sel,
       set(i) { _sel = i; const o = el.options[i]; el.value = o ? (o.value !== undefined ? o.value : "") : ""; }
     });
-    // innerHTML = "" doit réellement vider le contenu (options comprises)
+    // Écrire innerHTML REMPLACE tout le contenu, comme dans un vrai navigateur.
+    // Le simulateur ne vidait les enfants que pour innerHTML = "" : un
+    // affichage réécrit avec du texte laissait les anciennes lignes en place,
+    // et un test pouvait croire qu'une liste périmée était toujours à l'écran.
     let _html = "";
     Object.defineProperty(el, "innerHTML", {
       get: () => _html,
-      set(v) { _html = String(v); if (_html === "") { el.children.length = 0; el.options.length = 0; } }
+      set(v) { _html = String(v); el.children.length = 0; el.options.length = 0; }
     });
     return el;
+  }
+
+  /** Remet un élément simulé dans son état de départ, sans changer son identité. */
+  function reinitialiserElement(el) {
+    if (!el) return;
+    el.textContent = ""; el.value = ""; el.checked = false;
+    el.innerHTML = "";
+    el.options.length = 0;
+    el.options.push({ tagName: "OPTION", value: "", textContent: "Tous" });
+    el.selectedIndex = 0;
+    el.children.length = 0;
+    el._classes.clear();
+    if (/Modal$/.test(String(el.id))) el._classes.add("hidden");
+    Object.keys(el.dataset).forEach(k => delete el.dataset[k]);
+    Object.keys(el.style).forEach(k => delete el.style[k]);
   }
 
   /**
@@ -302,6 +320,10 @@ const assert = {
     const requetes = new Map();          // sélecteur → liste d'éléments
     const memoire = {};                  // localStorage simulé
     const captures = { ouvertures: [], alertes: [], fichiers: [] };
+    const contenusBlob = new Map();      // url simulée → texte du fichier
+    let compteurBlob = 0;
+    const minuteries = [];               // rappels programmés par setTimeout
+    let prochaineMinuterie = 1;
     let reponseConfirm = false;
 
     const elementPourId = id => {
@@ -313,7 +335,15 @@ const assert = {
       getElementById: id => elementPourId(id),
       querySelector: sel => (requetes.get(sel) || [null])[0] || null,
       querySelectorAll: sel => requetes.get(sel) || [],
-      createElement: tag => { const e = creerElement("créé:" + tag); e.tagName = String(tag).toUpperCase(); return e; },
+      createElement: tag => {
+        const e = creerElement("créé:" + tag);
+        e.tagName = String(tag).toUpperCase();
+        // Un lien de téléchargement (exportBackup) est capturé au clic, avec
+        // son CONTENU : sans cela, seul le nom du fichier était observable et
+        // aucun test ne pouvait vérifier ce qu'on exportait réellement.
+        e.click = () => { if (e.download) captures.fichiers.push({ nom: e.download, contenu: contenusBlob.get(e.href) || "" }); };
+        return e;
+      },
       addEventListener() {},
       body: creerElement("body"),
       documentElement: creerElement("html")
@@ -369,12 +399,33 @@ const assert = {
       () => reponseConfirm,
       m => captures.alertes.push(String(m)),
       () => null,
-      function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
-      function () {},
-      { createObjectURL: () => "blob:x", revokeObjectURL() {} },
+      // Lecteur de fichier RÉELLEMENT fonctionnel : il déclenche onload.
+      // Auparavant c'était une coquille vide, si bien que TOUT le code
+      // d'import (sauvegarde JSON, classeur Excel) était inatteignable par
+      // les tests — un angle mort de plusieurs dizaines de lignes.
+      function () {
+        const lecteur = this;
+        lecteur.result = null;
+        lecteur.readAsText = f => {
+          lecteur.result = (f && (f.__contenu !== undefined ? f.__contenu : f.contenu)) || "";
+          if (typeof lecteur.onload === "function") lecteur.onload({ target: lecteur });
+        };
+        lecteur.readAsArrayBuffer = f => {
+          lecteur.result = (f && f.__buffer) || new ArrayBuffer(0);
+          if (typeof lecteur.onload === "function") lecteur.onload({ target: lecteur });
+        };
+      },
+      function (parties) { this.__texte = (parties || []).map(String).join(""); this.size = this.__texte.length; },
+      { createObjectURL: (b) => { const u = "blob:" + (++compteurBlob); contenusBlob.set(u, (b && b.__texte) || ""); return u; },
+        revokeObjectURL() {} },
       () => Promise.resolve({ ok: true, json: () => ({}), text: () => "" }),
       () => {}, () => {}, () => ({ matches: false, addListener() {}, addEventListener() {} }),
-      () => 0, () => 0, () => {},
+      // setTimeout PILOTABLE : le rappel n'était jamais exécuté, si bien que
+      // l'envoi différé de 1,5 s (scheduleAutoSync) n'était testable par aucun
+      // test. Ici on met le rappel en file ; A.avancerHorloge(ms) le déclenche.
+      (fn, delai) => { const id = prochaineMinuterie++; minuteries.push({ id, fn, quand: delai || 0 }); return id; },
+      () => 0,
+      (id) => { const i = minuteries.findIndex(m => m.id === id); if (i >= 0) minuteries.splice(i, 1); },
       { log() {}, warn() {}, error() {}, info() {} }
     );
 
@@ -421,7 +472,29 @@ const assert = {
           isBooting = ${opts.autoriserSync ? "false" : "true"};
           globalThis.__msg = [];
         `);
+        // ── Remise à zéro des variables globales que reset() oubliait ──
+        // 23 d'entre elles survivaient d'un test à l'autre : un test pouvait
+        // hériter d'une modale à moitié ouverte, d'un verrou de synchro resté
+        // pris ou d'un identifiant en cours d'édition. Le risque était latent,
+        // pas encore visible ; il le serait devenu au premier test ajouté.
+        run(`
+          editingKpiId = null; modalSlots = {}; modalCurrentFreq = "Mensuelle";
+          modalInitialIds = {}; modalExtraVariants = []; sitesDraft = [];
+          syncBusy = false; initialSyncDone = false; pendingPush = false;
+          pendingRemotePayload = null; lastSyncPushAt = 0; lastAppliedSyncAt = 0;
+          connectedSyncCode = null; localUpdatedAt = 0; clockOffset = 0;
+          netHandlersBound = false; lastSyncState = null; fbApp = null;
+          animateNextRender = false; excelData = []; overrides = {};
+          syncDebounceHandle = null; kpiGroups = [];
+        `);
         captures.ouvertures.length = 0; captures.alertes.length = 0; captures.fichiers.length = 0;
+        contenusBlob.clear(); minuteries.length = 0;
+        // Le contenu des éléments de page était CONSERVÉ d'un test à l'autre :
+        // un champ de saisie gardait la valeur laissée par le test précédent.
+        // On les remet à neuf SANS les remplacer : app.js garde des références
+        // directes vers ces objets, les recréer les rendrait inatteignables.
+        registre.forEach(reinitialiserElement);
+        requetes.clear();
         // Mémoire du navigateur remise à neuf : les tests ne se contaminent pas
         if (!opts.conserverStockage) Object.keys(memoire).forEach(k => delete memoire[k]);
         // Un test a pu détourner setItem (simulation de mémoire saturée) : on rétablit
@@ -515,7 +588,22 @@ const assert = {
       ouvertures: () => captures.ouvertures.slice(),
       fichiersExportes: () => captures.fichiers.slice(),
       stockage: () => Object.assign({}, memoire),
-      ecrireStockage(cle, valeur) { memoire[cle] = typeof valeur === "string" ? valeur : JSON.stringify(valeur); return this; }
+      ecrireStockage(cle, valeur) { memoire[cle] = typeof valeur === "string" ? valeur : JSON.stringify(valeur); return this; },
+
+      /* --- horloge simulée : exécute les rappels différés (setTimeout) --- */
+      /** Nombre de rappels différés encore en attente. */
+      minuteriesEnAttente: () => minuteries.length,
+      /**
+       * Fait « avancer le temps » : exécute tous les rappels dont le délai est
+       * atteint. Permet enfin de tester l'envoi différé de 1,5 s.
+       * @param {number} ms
+       */
+      avancerHorloge(ms) {
+        const du = minuteries.filter(m => m.quand <= (ms === undefined ? Infinity : ms));
+        du.forEach(m => { const i = minuteries.indexOf(m); if (i >= 0) minuteries.splice(i, 1); });
+        du.sort((a, b) => a.quand - b.quand).forEach(m => { try { m.fn(); } catch (e) { captures.alertes.push("minuterie: " + e.message); } });
+        return du.length;
+      }
     };
 
     // A.titleKey("x") appelle directement la fonction dans le bac à sable
@@ -2228,16 +2316,39 @@ test("corbeille : les fiches partagées et personnelles cohabitent", () => {
   assert.equal(A.el("trashList").children.length, 2);
 });
 
+const marqueurs = (...ids) => ids.map(id => ({ id, title: id, at: 9, state: "deleted" }));
+
 test("corbeille : la sélection regroupe tous les identifiants d'une fiche", () => {
-  A.reset();
+  A.reset({ deletedIds: marqueurs("a", "b", "c") });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b,c" } }]);
   assert.deepEqual(A.run("getTrashSelection()"), ["a", "b", "c"]);
 });
 
 test("corbeille : plusieurs fiches cochées donnent tous leurs identifiants", () => {
-  A.reset();
+  A.reset({ deletedIds: marqueurs("a", "b", "c") });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }, { dataset: { ids: "c" } }]);
   assert.equal(A.run("getTrashSelection().length"), 3);
+});
+
+test("corbeille : une ligne périmée (fiche restaurée entre-temps) est ignorée", () => {
+  // Scénario réel : la corbeille est ouverte, une synchronisation restaure la
+  // fiche « b » chez un collègue. La ligne reste affichée à l'écran ; agir
+  // dessus détruirait une fiche redevenue visible pour tout le monde.
+  A.reset({ deletedIds: [
+    { id: "a", title: "a", at: 9, state: "deleted" },
+    { id: "b", title: "b", at: 20, state: "restored" }
+  ] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }]);
+  assert.deepEqual(A.run("getTrashSelection()"), ["a"], "seule la fiche encore en corbeille est retenue");
+});
+
+test("corbeille : une ligne dont la fiche a été purgée ailleurs est ignorée", () => {
+  A.reset({
+    deletedIds: marqueurs("a", "b"),
+    purgedIds: ["b"]
+  });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }]);
+  assert.deepEqual(A.run("getTrashSelection()"), ["a"]);
 });
 
 test("corbeille : aucune coche donne une sélection vide", () => {
@@ -2703,10 +2814,31 @@ test("synchro : « Récupérer » remplace réellement les données locales", ()
 test("synchro : « Récupérer » prend un instantané de sécurité au préalable", () => {
   A.reset({ manualEntries: fiches(["Avant", "Mensuelle"]) });
   A.run("rebuildData(false)");
-  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
+  A.confirmer(true);
+  A.run(`replaceLocalWithRemote(${JSON.stringify({
+    kpiManual: [{ id: "kpi_apres_mensuelle", title: "Après", freq: "Mensuelle", _mtime: 5 }],
+    kpiDeleted: [], updatedAt: 1
+  })})`);
   const snaps = A.run("getSnapshots()");
   assert.ok(snaps.length > 0, "un instantané existe");
   assert.equal(snaps[0].manualEntries[0].title, "Avant", "il contient bien l'état précédent");
+});
+
+test("synchro : un cloud VIDE n'efface pas l'annuaire sans accord explicite", () => {
+  A.reset({ manualEntries: fiches(["Précieuse", "Mensuelle"]) });
+  A.run("rebuildData(false)");
+  A.confirmer(false);                       // l'utilisateur refuse
+  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
+  assert.equal(A.get("manualEntries").length, 1, "la fiche locale est conservée");
+  assert.equal(A.get("data").length, 1, "elle reste affichée");
+});
+
+test("synchro : un cloud VIDE efface bien l'annuaire si l'utilisateur accepte", () => {
+  A.reset({ manualEntries: fiches(["Précieuse", "Mensuelle"]) });
+  A.run("rebuildData(false)");
+  A.confirmer(true);                        // l'utilisateur confirme
+  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
+  assert.equal(A.get("manualEntries").length, 0, "le remplacement a bien eu lieu");
 });
 
 test("synchro : un ancien format Excel reçu est converti en fiches", () => {
@@ -4856,6 +4988,696 @@ test("surcharges : le système obsolète est bien neutralisé", () => {
   assert.deepEqual(A.get("overrides"), {}, "plus aucune surcharge n'est rechargée");
 });
 
+__ouvrirGroupe("Non-régression : défauts corrigés");
+/* ============================================================
+   TESTS DE NON-RÉGRESSION — juillet 2026
+   ------------------------------------------------------------
+   Chaque test de ce fichier correspond à un défaut RÉEL trouvé
+   lors de la revue complète du système. Le commentaire décrit le
+   symptôme tel qu'il se manifestait pour l'utilisateur.
+
+   Règle : chaque test a été éprouvé « par mutation » — on a
+   remis le bug en place et vérifié que le test échouait.
+   ============================================================ */
+
+
+
+
+
+/* Fabrique un jeu de fiches lisible */
+const fichesR = (...defs) => defs.map(([titre, freq, liens]) => Object.assign(
+  { id: "kpi_" + titre.toLowerCase().replace(/\W+/g, "_") + "_" + freq.toLowerCase(),
+    manual: true, title: titre, freq, _mtime: 100, _by: "marie" }, liens || {}));
+
+const idR = (titre, freq) => "kpi_" + titre.toLowerCase().replace(/\W+/g, "_") + "_" + freq.toLowerCase();
+
+/* ═══════════════════════════════════════════════════════════
+   A. RÉSURRECTION DE FICHES SUPPRIMÉES
+   « Un utilisateur se synchronise et des KPIs qui n'ont rien
+     à faire là réapparaissent dans l'annuaire de tout le monde. »
+   ═══════════════════════════════════════════════════════════ */
+
+test("résurrection : un document cloud SANS champ « suppressions définitives » ne ramène pas les fiches purgées", () => {
+  // Le filtre de purge était enfermé dans « si le document contient kpiPurged ».
+  // Un document ancien, partiel ou écrit par une version différente n'a pas ce
+  // champ : la fiche purgée revenait dans la liste locale… puis repartait vers
+  // le cloud au premier envoi. C'est le mécanisme central du défaut signalé.
+  const id = idR("Fiche purgée", "Mensuelle");
+  A.reset({ manualEntries: [], purgedIds: [id] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [{ id, title: "Fiche purgée", freq: "Mensuelle", manual: true, _mtime: 999 }],
+    updatedAt: 1000
+  })}, true)`);
+  assert.equal(A.get("manualEntries").length, 0, "la fiche purgée ne doit pas revenir en mémoire");
+  assert.equal(A.get("data").length, 0, "ni s'afficher");
+  assert.deepEqual(A.get("purgedIds"), [id], "la suppression définitive reste enregistrée");
+});
+
+test("résurrection : un champ « suppressions définitives » corrompu ne ramène pas les fiches purgées", () => {
+  const id = idR("Fiche purgée", "Mensuelle");
+  A.reset({ manualEntries: [], purgedIds: [id] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [{ id, title: "Fiche purgée", freq: "Mensuelle", manual: true, _mtime: 999 }],
+    kpiPurged: "pas-un-tableau",
+    updatedAt: 1000
+  })}, true)`);
+  assert.equal(A.get("manualEntries").length, 0);
+});
+
+test("résurrection : une fiche purgée ne repart JAMAIS vers le cloud", () => {
+  // Dernier filet : même si un chemin d'import la réintroduisait en mémoire,
+  // elle ne doit pas être publiée dans le document partagé.
+  const id = idR("Zombie", "Mensuelle");
+  A.reset({ manualEntries: fichesR(["Zombie", "Mensuelle"]), purgedIds: [id] });
+  const p = A.run("buildSyncPayload()");
+  assert.ok(!p.kpiManual.some(k => k.id === id), "la fiche purgée est exclue de l'envoi");
+});
+
+test("résurrection : un résidu d'ancien format ne réinjecte rien quand le cloud est à jour", () => {
+  // Un document contenant à la fois la liste moderne `kpiManual` ET un vieux
+  // champ `kpiData` réinjectait les lignes du vieux champ À CHAQUE fusion.
+  // Comme l'envoi réécrit le document entier, la fiche fantôme finissait
+  // gravée dans l'annuaire partagé, sans que personne ne l'ait créée.
+  A.reset({ manualEntries: [] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [{ id: "kpi_vrai_mensuelle", title: "Vrai KPI", freq: "Mensuelle", manual: true, _mtime: 500 }],
+    kpiData: [{ id: "vieux_1", title: "Fantôme", freq: "Mensuelle", manual: false, _mtime: 1 }],
+    updatedAt: 600
+  })}, true)`);
+  const titres = A.get("manualEntries").map(k => k.title);
+  assert.deepEqual(titres, ["Vrai KPI"], "le résidu d'ancien format est ignoré : " + JSON.stringify(titres));
+});
+
+test("résurrection : la conversion d'un ancien format respecte la corbeille et les purges", () => {
+  // Sur un document réellement ancien (sans kpiManual), la conversion doit
+  // encore avoir lieu — mais sans ramener ce qui a été supprimé ici.
+  const idSuppr = "kpi_supprimee_mensuelle";
+  const idPurge = "kpi_purgee_mensuelle";
+  A.reset({
+    deletedIds: [{ id: idSuppr, title: "Supprimée", at: 50, state: "deleted" }],
+    purgedIds: [idPurge]
+  });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiExcel: [
+      { id: "x1", title: "Supprimée", freq: "Mensuelle", _mtime: 10 },
+      { id: "x2", title: "Purgée",    freq: "Mensuelle", _mtime: 10 },
+      { id: "x3", title: "Légitime",  freq: "Mensuelle", _mtime: 10 }
+    ],
+    updatedAt: 100
+  })}, true)`);
+  const titres = A.get("manualEntries").map(k => k.title).sort();
+  assert.deepEqual(titres, ["Légitime"], "seule la fiche jamais supprimée est convertie : " + JSON.stringify(titres));
+});
+
+test("résurrection : « Remplacer par le cloud » ne remet pas les purges à zéro", () => {
+  // Un document ancien n'a ni corbeille ni suppressions définitives.
+  // Les remettre à [] faisait réapparaître toutes les fiches supprimées.
+  const id = idR("Déjà purgée", "Mensuelle");
+  A.reset({ manualEntries: [], purgedIds: [id], deletedIds: [{ id: "autre", title: "Autre", at: 5, state: "deleted" }] });
+  A.confirmer(true);
+  A.run(`replaceLocalWithRemote(${JSON.stringify({
+    kpiManual: [{ id, title: "Déjà purgée", freq: "Mensuelle", manual: true, _mtime: 900 }],
+    updatedAt: 900
+  })})`);
+  assert.deepEqual(A.get("purgedIds"), [id], "les suppressions définitives sont conservées");
+  assert.equal(A.get("manualEntries").length, 0, "et appliquées aux fiches reçues");
+  assert.equal(A.get("deletedIds").length, 1, "la corbeille locale n'est pas effacée");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   B. DESTRUCTION DU TRAVAIL DES AUTRES
+   ═══════════════════════════════════════════════════════════ */
+
+test("envoi : le cloud est relu et refusionné avant d'être réécrit", async () => {
+  // L'envoi remplace le document entier. Un appareil qui avait manqué une
+  // modification effaçait le travail du collègue en envoyant sa propre vue.
+  A.firebaseSimule();
+  A.reset({ manualEntries: fichesR(["Ma fiche", "Mensuelle"]), autoriserSync: true });
+  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
+         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();`);
+  // Un collègue a déposé une fiche que cet appareil n'a jamais vue
+  A.run(`globalThis.__cloud["kpi_sync/essai"] = ${JSON.stringify({
+    kpiManual: [{ id: "kpi_collegue_mensuelle", title: "Fiche du collègue", freq: "Mensuelle", manual: true, _mtime: 5000 }],
+    kpiDeleted: [], kpiPurged: [], updatedAt: 5000
+  })};`);
+  await A.run("pushToCloud(false)");
+  const doc = A.cloudPrincipal();
+  const titres = doc.kpiManual.map(k => k.title).sort();
+  assert.deepEqual(titres, ["Fiche du collègue", "Ma fiche"], "les deux fiches coexistent : " + JSON.stringify(titres));
+});
+
+test("déconnexion : aucun envoi ne part avec des listes vidées", async () => {
+  // À la déconnexion toutes les listes passent à []. Un envoi resté en attente
+  // écrivait alors un document VIDE : l'annuaire de toute l'équipe disparaissait.
+  A.firebaseSimule();
+  A.reset({ manualEntries: fichesR(["Précieuse", "Mensuelle"]), autoriserSync: true });
+  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
+         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();`);
+  A.run(`globalThis.__cloud["kpi_sync/essai"] = ${JSON.stringify({
+    kpiManual: [{ id: "kpi_precieuse_mensuelle", title: "Précieuse", freq: "Mensuelle", manual: true, _mtime: 100 }],
+    kpiDeleted: [], kpiPurged: [], updatedAt: 100
+  })};`);
+  A.run("globalThis.__ecritures = 0;");
+  A.run("deconnecter();");
+  await A.run("pushToCloud(false)");
+  assert.equal(A.ecrituresCloud(), 0, "AUCUNE écriture n'est partie après la déconnexion");
+  const doc = A.cloudPrincipal();
+  assert.equal(doc.kpiManual.length, 1, "le document partagé est intact");
+});
+
+test("déconnexion : l'envoi différé est annulé", () => {
+  // `pendingPush` restait à true et `currentUser` n'était pas remis à zéro :
+  // le retour sur l'onglet déclenchait l'envoi d'un document vide.
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]), autoriserSync: true });
+  A.run("pendingPush = true; syncDebounceHandle = 42; pendingRemotePayload = { updatedAt: 1 };");
+  A.run("deconnecter();");
+  assert.equal(A.run("pendingPush"), false, "plus d'envoi en attente");
+  assert.equal(A.run("currentUser"), null, "plus d'utilisateur connecté");
+  assert.equal(A.run("pendingRemotePayload"), null, "plus de mise à jour en file");
+});
+
+test("verrou : une mise à jour reçue pendant une opération n'est pas perdue", () => {
+  // Elle était purement et simplement JETÉE par l'écoute temps réel :
+  // l'appareil gardait une vue périmée, puis son envoi suivant annulait la
+  // modification du collègue. On passe ici par le VRAI chemin d'écoute.
+  A.firebaseSimule();
+  A.reset({ manualEntries: [], autoriserSync: true });
+  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
+         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();
+         listenForRemoteChanges("essai");
+         initialSyncDone = true; syncBusy = true;`);   // ← verrou pris
+
+  // Un collègue publie une modification pendant que le verrou est pris
+  A.run(`globalThis.__ecoutes.forEach(e => e.cb({ exists: true, data: () => (${JSON.stringify({
+    kpiManual: [{ id: "kpi_tardive_mensuelle", title: "Tardive", freq: "Mensuelle", manual: true, _mtime: 700 }],
+    kpiDeleted: [], kpiPurged: [], updatedAt: 700
+  })}) }));`);
+  assert.equal(A.get("manualEntries").length, 0, "elle n'est pas appliquée tout de suite (verrou pris)");
+  assert.ok(A.run("pendingRemotePayload !== null"), "mais elle est mise de côté");
+
+  A.run("syncBusy = false; rejouerSyncEnAttente();");
+  assert.equal(A.get("manualEntries").length, 1, "elle est rejouée dès le verrou relâché");
+  assert.equal(A.run("pendingRemotePayload"), null, "et la file est vidée");
+});
+
+test("espaces personnels : le bloc d'un collègue n'est jamais écrasé", () => {
+  // Un appareil au document périmé remplaçait la carte complète des espaces
+  // personnels : le bloc des autres utilisateurs disparaissait du cloud.
+  A.reset({ currentUser: "marie" });
+  A.ecrireStockage("kpiPersonalByUser", { paul: [{ id: "perso_p1", title: "Note de Paul", _mtime: 10 }], marie: [] });
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [], personalByUser: { marie: [] }, updatedAt: 300
+  })}, true)`);
+  const carte = JSON.parse(A.stockage()["kpiPersonalByUser"]);
+  assert.ok(Array.isArray(carte.paul) && carte.paul.length === 1, "le bloc de Paul est conservé");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   C. MÉLANGE ENTRE ANNUAIRE PARTAGÉ ET ESPACE PERSONNEL
+   ═══════════════════════════════════════════════════════════ */
+
+test("espaces : déplacer une fiche partagée vers le personnel lui donne un NOUVEL identifiant", () => {
+  // L'identifiant était réutilisé : la fiche quittait la liste partagée sans
+  // laisser de marqueur, un collègue la renvoyait, et elle se retrouvait dans
+  // les DEUX espaces — impossible à supprimer.
+  const f = fichesR(["À déplacer", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  const res = A.run(`upsertTemporality("Mensuelle", { ritual: "", links: {} }, ${JSON.stringify(f[0].id)}, "manual",
+                     { title: "À déplacer", type: "", process: "", desc: "" }, "perso")`);
+  assert.ok(String(res.id).startsWith("perso_"), "identifiant personnel : " + res.id);
+  assert.notEqual(res.id, f[0].id);
+  assert.ok(A.get("deletedIds").some(d => d.id === f[0].id && d.state === "deleted"),
+    "un marqueur de suppression partagé a été posé");
+  assert.ok(res.shared && res.perso, "les DEUX espaces sont signalés comme modifiés");
+});
+
+test("espaces : les deux espaces sont toujours enregistrés sur disque", () => {
+  // N'enregistrer que l'espace signalé comme « touché » laissait l'autre
+  // périmé sur le disque. Après rechargement la fiche existait des deux côtés
+  // et repartait dans l'annuaire partagé de toute l'équipe.
+  const f = fichesR(["Bascule", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`upsertTemporality("Mensuelle", { ritual: "", links: {} }, ${JSON.stringify(f[0].id)}, "manual",
+         { title: "Bascule", type: "", process: "", desc: "" }, "perso")`);
+  // On n'annonce QUE l'espace personnel : l'annuaire partagé doit tout de même
+  // être réécrit, puisque la fiche vient d'en sortir.
+  A.run(`persistKpiChanges(false, true, "Bascule", "perso", { created: [], updated: ["Mensuelle"], removed: [] })`);
+  const surDisque = JSON.parse(A.stockage()["kpiManualEntries"] || "[]");
+  const persoDisque = JSON.parse(A.stockage()["kpiPersonal_marie"] || "[]");
+  const corbeilleDisque = JSON.parse(A.stockage()["kpiDeletedIds"] || "[]");
+  assert.equal(persoDisque.length, 1, "l'espace personnel est enregistré");
+  assert.ok(corbeilleDisque.some(d => d.id === f[0].id),
+    "le marqueur de suppression partagé est bien enregistré, pas seulement en mémoire");
+  assert.ok(!persoDisque.some(k => surDisque.some(s => s.id === k.id)),
+    "aucun identifiant n'existe dans les deux espaces");
+});
+
+test("espaces : un identifiant présent des deux côtés est tranché par son préfixe", () => {
+  const partagee = { id: "kpi_double_mensuelle", title: "Double", freq: "Mensuelle", manual: true, _mtime: 10 };
+  A.reset({ manualEntries: [partagee], personalEntries: [{ ...partagee }] });
+  assert.equal(A.run(`classifyId("kpi_double_mensuelle")`), "manual",
+    "un identifiant « kpi_ » appartient à l'annuaire partagé, même dupliqué");
+});
+
+test("espaces : la réparation retire le doublon au chargement", () => {
+  const partagee = { id: "kpi_double_mensuelle", title: "Double", freq: "Mensuelle", manual: true, _mtime: 10 };
+  A.reset({ manualEntries: [partagee], personalEntries: [{ ...partagee }] });
+  assert.equal(A.run("reparerCollisionsEspaces()"), 1);
+  assert.equal(A.get("manualEntries").length, 1, "la fiche reste dans l'annuaire partagé");
+  assert.equal(A.get("personalEntries").length, 0, "et quitte l'espace personnel");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   D. CORBEILLE
+   « La corbeille se met bien à jour ? »
+   ═══════════════════════════════════════════════════════════ */
+
+test("corbeille : un marqueur dont la fiche a été purgée ailleurs disparaît", () => {
+  // Il produisait une ligne « ⚠️ données absentes » indestructible : la
+  // supprimer définitivement retirait le marqueur ici, mais le premier
+  // appareil n'ayant pas rejoué l'opération le renvoyait aussitôt.
+  const id = idR("Fantôme", "Mensuelle");
+  A.reset({
+    manualEntries: [],
+    deletedIds: [{ id, title: "Fantôme", at: 10, state: "deleted" }],
+    purgedIds: [id]
+  });
+  assert.equal(A.run("nettoyerMarqueursPurges()"), 1);
+  assert.equal(A.get("deletedIds").length, 0, "le marqueur fantôme est retiré");
+});
+
+test("corbeille : le compteur du bouton correspond au nombre de lignes affichées", () => {
+  // Le bouton regroupait sur le titre BRUT du marqueur et la liste sur un
+  // titre avec repli : trois marqueurs sans intitulé s'effondraient en un seul
+  // groupe. Le bouton annonçait « Corbeille (1) » au-dessus de trois lignes.
+  const f = fichesR(["Alpha", "Mensuelle"], ["Beta", "Mensuelle"], ["Gamma", "Mensuelle"]);
+  A.reset({
+    manualEntries: f,
+    deletedIds: f.map(k => ({ id: k.id, title: "", freq: "", at: 5, by: "", state: "deleted" }))
+  });
+  A.run("updateRestoreDeletedBtn()");
+  assert.equal(A.texte("restoreDeletedLabel"), "Corbeille (3)");
+});
+
+test("corbeille : les fiches purgées ne sont plus comptées dans le bouton", () => {
+  const f = fichesR(["Vivante", "Mensuelle"], ["Purgée", "Mensuelle"]);
+  A.reset({
+    manualEntries: f,
+    deletedIds: f.map(k => ({ id: k.id, title: k.title, at: 5, state: "deleted" })),
+    purgedIds: [f[1].id]
+  });
+  A.run("updateRestoreDeletedBtn()");
+  assert.equal(A.texte("restoreDeletedLabel"), "Corbeille (1)");
+});
+
+test("corbeille : une synchronisation reçue rafraîchit la liste ouverte", () => {
+  // La liste n'était redessinée qu'à l'ouverture de la fenêtre. Une synchro
+  // arrivant pendant la consultation laissait des lignes périmées à l'écran,
+  // et l'utilisateur pouvait détruire une fiche redevenue active.
+  const f = fichesR(["Sera restaurée", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Sera restaurée", at: 5, state: "deleted" }] });
+  A.run("openTrashModal()");
+  assert.equal(A.el("trashList").children.length, 1, "la ligne est affichée au départ");
+  A.run(`applyRemoteData(${JSON.stringify({
+    kpiManual: [], kpiDeleted: [{ id: f[0].id, title: "Sera restaurée", at: 99, state: "restored" }],
+    kpiPurged: [], updatedAt: 99
+  })}, true)`);
+  assert.equal(A.el("trashList").children.length, 0,
+    "après la synchro, la ligne périmée a disparu de la liste");
+  assert.match(A.html("trashList"), /vide/i, "et la corbeille s'annonce vide");
+});
+
+test("corbeille : une synchronisation NE rafraîchit PAS la liste si elle est fermée", () => {
+  // Contre-épreuve : on ne redessine que ce qui est visible.
+  const f = fichesR(["Peu importe", "Mensuelle"]);
+  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Peu importe", at: 5, state: "deleted" }] });
+  A.run("updateRestoreDeletedBtn()");
+  assert.equal(A.el("trashList").children.length, 0, "rien n'a été dessiné : la fenêtre est fermée");
+});
+
+test("corbeille : restaurer deux fois une fiche personnelle ne la duplique pas", () => {
+  const v = { id: "perso_x", title: "Note", freq: "Mensuelle", _mtime: 5, _deletedAt: 10 };
+  A.reset({ personalTrash: [v, { ...v }] });
+  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "perso_x,perso_x" } }]);
+  A.run("restoreSelectedTrash()");
+  assert.equal(A.get("personalEntries").length, 1, "une seule copie revient");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   E. FAVORIS
+   « 1 favori désigne une fiche supprimée »
+   ═══════════════════════════════════════════════════════════ */
+
+test("favoris : une référence morte est nettoyée après la première synchro", () => {
+  // Aucun chemin ne nettoyait un favori dont la fiche avait quitté l'annuaire
+  // sans passer par une suppression définitive (identifiant réécrit par une
+  // migration, fiche remplacée, sauvegarde importée…). La référence morte
+  // restait publiée dans le document partagé et le banc de test la signalait.
+  A.reset({ manualEntries: fichesR(["Vivante", "Mensuelle"]), favorites: ["identifiant_disparu", idR("Vivante", "Mensuelle")] });
+  A.run("initialSyncDone = true;");
+  assert.equal(A.run("nettoyerFavoris()"), 1);
+  assert.deepEqual(A.get("favorites"), [idR("Vivante", "Mensuelle")]);
+});
+
+test("favoris : les références mortes des AUTRES utilisateurs sont nettoyées à l'envoi", () => {
+  // Personne ne nettoyait le bloc des collègues : leurs références mortes
+  // restaient publiées indéfiniment dans le document partagé.
+  const f = fichesR(["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, favorites: [f[0].id] });
+  A.run("initialSyncDone = true;");
+  A.ecrireStockage("kpiSyncFavorites", { marie: [f[0].id], jean: [f[0].id, "kpi_disparue_depuis_longtemps"] });
+  A.ecrireStockage("kpiPersonalByUser", { jean: [{ id: "perso_j1", title: "Note de Jean" }] });
+  const p = A.run("buildSyncPayload()");
+  assert.deepEqual(p.favoritesByUser.jean, [f[0].id],
+    "la référence morte de Jean est retirée : " + JSON.stringify(p.favoritesByUser.jean));
+});
+
+test("favoris : le favori personnel d'un collègue est préservé", () => {
+  // Contre-épreuve : son identifiant n'est pas dans kpiManual, mais il est
+  // parfaitement légitime — il désigne sa propre fiche personnelle.
+  const f = fichesR(["Vivante", "Mensuelle"]);
+  A.reset({ manualEntries: f, favorites: [f[0].id] });
+  A.run("initialSyncDone = true;");
+  A.ecrireStockage("kpiSyncFavorites", { marie: [f[0].id], jean: ["perso_j1"] });
+  A.ecrireStockage("kpiPersonalByUser", { jean: [{ id: "perso_j1", title: "Note de Jean" }] });
+  const p = A.run("buildSyncPayload()");
+  assert.deepEqual(p.favoritesByUser.jean, ["perso_j1"], "il est conservé");
+});
+
+test("favoris : avant la première synchro, rien n'est nettoyé à tort", () => {
+  // Une fiche pas encore arrivée sur cet appareil ne doit pas coûter son favori.
+  A.reset({ manualEntries: [], favorites: ["kpi_pas_encore_arrivee_mensuelle"] });
+  A.run("initialSyncDone = false;");
+  assert.equal(A.run("nettoyerFavoris()"), 0);
+  assert.equal(A.get("favorites").length, 1);
+});
+
+test("favoris : un favori sur une fiche en corbeille est conservé", () => {
+  const f = fichesR(["En corbeille", "Mensuelle"]);
+  A.reset({
+    manualEntries: f, favorites: [f[0].id],
+    deletedIds: [{ id: f[0].id, title: "En corbeille", at: 5, state: "deleted" }]
+  });
+  A.run("initialSyncDone = true;");
+  assert.equal(A.run("nettoyerFavoris()"), 0, "la fiche est récupérable : le favori reste");
+});
+
+test("favoris : un retrait est horodaté, donc jamais ressuscité par un autre appareil", () => {
+  // Sans horodatage, la liste raccourcie partait avec l'ancienne date ;
+  // l'appareil d'en face renvoyait sa liste complète et le favori revenait.
+  const f = fichesR(["À supprimer", "Mensuelle"]);
+  A.reset({ manualEntries: f, favorites: [f[0].id] });
+  A.run("rebuildData(false)");
+  const avant = A.run("getMeta().favAt || 0");
+  A.confirmer(true);
+  A.run(`deleteKPI(${JSON.stringify(f[0].id)})`);
+  const apres = A.run("getMeta().favAt || 0");
+  assert.ok(apres > avant, "la date des favoris a été mise à jour (" + avant + " → " + apres + ")");
+});
+
+test("favoris : le bloc partagé est mis à jour IMMÉDIATEMENT, pas seulement à l'envoi", () => {
+  // Il ne s'écrivait qu'au moment de l'envoi, 1,5 s plus tard. Une synchro
+  // reçue entre-temps relisait la version d'avant le clic et l'annulait.
+  const f = fichesR(["Favorite", "Mensuelle"]);
+  A.reset({ manualEntries: f, autoriserSync: true });
+  A.run(`toggleFavorite(${JSON.stringify(f[0].id)})`);
+  const bloc = JSON.parse(A.stockage()["kpiSyncFavorites"] || "{}");
+  assert.deepEqual(bloc.marie, [f[0].id], "le bloc partagé contient déjà le nouveau favori");
+});
+
+test("favoris : un retrait est reporté IMMÉDIATEMENT dans le bloc partagé", () => {
+  // Le retrait passe par saveFavoritesLocalOnly (suppression de fiche, purge,
+  // nettoyage…). Ce chemin n'écrivait pas le bloc partagé : une synchro reçue
+  // dans la seconde suivante ressuscitait le favori.
+  const f = fichesR(["Sera supprimée", "Mensuelle"], ["Reste", "Mensuelle"]);
+  A.reset({ manualEntries: f, favorites: [f[0].id, f[1].id] });
+  A.run("rebuildData(false)");
+  A.confirmer(true);
+  A.run(`deleteKPI(${JSON.stringify(f[0].id)})`);
+  const bloc = JSON.parse(A.stockage()["kpiSyncFavorites"] || "{}");
+  assert.deepEqual(bloc.marie, [f[1].id],
+    "le bloc partagé reflète déjà le retrait : " + JSON.stringify(bloc));
+});
+
+test("favoris : changer de temporalité reporte le favori au lieu de le perdre", () => {
+  // Décocher « Mensuelle » et cocher « Hebdomadaire » créait un identifiant
+  // neuf. Le favori était retiré sans avertissement, et l'ancienne variante
+  // atterrissait dans la corbeille alors que l'utilisateur n'avait rien supprimé.
+  const f = fichesR(["Taux de service", "Mensuelle"]);
+  A.reset({ manualEntries: f, favorites: [f[0].id] });
+  const nouvel = A.run(`upsertTemporality("Hebdomadaire", { ritual: "", links: {} }, null, null,
+                        { title: "Taux de service", type: "", process: "", desc: "" }, "shared").id`);
+  assert.ok(A.run(`reporterFavori(${JSON.stringify(f[0].id)}, ${JSON.stringify(nouvel)})`));
+  assert.deepEqual(A.get("favorites"), [nouvel], "le favori suit la fiche");
+});
+
+test("favoris : à égalité de date, la liste la plus courte l'emporte", () => {
+  // Sans arbitrage, deux appareils se renvoyaient indéfiniment leur version :
+  // un favori retiré ici réapparaissait depuis là-bas, sans fin.
+  const r = A.run(`mergeFavorites({ marie: ["a"] }, { marie: 500 }, { marie: ["a", "b"] }, { marie: 500 })`);
+  assert.deepEqual(r.map.marie, ["a"], "le retrait n'est pas annulé");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   F. MÉMOIRE DU NAVIGATEUR
+   « Espace mémoire utilisé : 3,32 Mo sur environ 5 Mo »
+   ═══════════════════════════════════════════════════════════ */
+
+test("mémoire : un instantané ne recopie plus le journal d'activité", () => {
+  // Le journal (jusqu'à 140 Ko) était dupliqué dans chacun des 12 instantanés,
+  // soit près de la MOITIÉ de toute la mémoire occupée par l'application.
+  A.reset({
+    manualEntries: fichesR(["A", "Mensuelle"]),
+    activityLog: Array.from({ length: 200 }, (_, i) => ({ at: i, by: "marie", action: "update", title: "T" + i, detail: "x".repeat(60) }))
+  });
+  A.run(`pushSnapshot("essai")`);
+  const s = A.run("getSnapshots()")[0];
+  assert.equal(s.activityLog, undefined, "le journal n'est pas recopié dans l'instantané");
+  assert.ok(Array.isArray(s.manualEntries), "les fiches, elles, sont bien conservées");
+});
+
+test("mémoire : une rafale de réceptions cloud ne produit qu'un seul instantané", () => {
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
+  for (let i = 0; i < 6; i++) {
+    A.run(`applyRemoteData(${JSON.stringify({ kpiManual: [], kpiDeleted: [], kpiPurged: [], updatedAt: i + 1 })}, true)`);
+  }
+  assert.equal(A.run("getSnapshots().length"), 1,
+    "six réceptions ne doivent pas produire six copies complètes de l'annuaire");
+});
+
+test("mémoire : deux réceptions espacées de 6 secondes ne font toujours qu'un instantané", () => {
+  // L'espacement était de 5 SECONDES : un collègue modifiant une fiche toutes
+  // les 6 secondes remplissait les 12 emplacements en 72 secondes. Les
+  // « 12 versions de sécurité » ne couvraient donc qu'une minute d'historique,
+  // pour 2,6 Mo de mémoire.
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
+  A.run(`pushSnapshot("avant réception cloud")`);
+  // On recule artificiellement l'instantané existant de 6 secondes
+  A.run(`(function () {
+    const l = getSnapshots(); l[0].at = l[0].at - 6000;
+    localStorage.setItem("kpiSnapshots", JSON.stringify(l));
+  })()`);
+  A.run(`pushSnapshot("avant réception cloud")`);
+  assert.equal(A.run("getSnapshots().length"), 1,
+    "6 secondes ne suffisent pas à justifier une deuxième copie complète");
+});
+
+test("mémoire : un instantané est bien pris après un délai suffisant", () => {
+  // Contre-épreuve : l'espacement ne doit pas non plus tout bloquer.
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
+  A.run(`pushSnapshot("avant réception cloud")`);
+  A.run(`(function () {
+    const l = getSnapshots(); l[0].at = l[0].at - (11 * 60 * 1000);
+    localStorage.setItem("kpiSnapshots", JSON.stringify(l));
+  })()`);
+  A.run(`pushSnapshot("avant réception cloud")`);
+  assert.equal(A.run("getSnapshots().length"), 2, "au-delà de 10 minutes, on garde bien une nouvelle version");
+});
+
+test("mémoire : le classeur Excel n'est plus recopié dans le stockage", () => {
+  // `kpiFileB64` pouvait peser plusieurs centaines de kilo-octets alors
+  // qu'aucune ligne de l'application ne le relisait.
+  A.reset();
+  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
+  A.ecrireStockage("kpiDataCache", "[]");
+  const liberes = A.run("libererEspaceInutile()");
+  assert.ok(liberes > 0, "de la place a été libérée");
+  assert.equal(A.stockage()["kpiFileB64"], undefined, "l'ancien classeur est effacé");
+});
+
+test("mémoire : le nettoyage a lieu même quand la migration a déjà eu lieu", () => {
+  // La suppression de `kpiFileB64` était placée APRÈS la sortie anticipée de
+  // la migration : un import Excel postérieur restait stocké pour toujours.
+  A.reset();
+  A.ecrireStockage("kpiMigratedV2", "1");
+  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
+  A.run("migrateExcelToManual()");
+  assert.equal(A.stockage()["kpiFileB64"], undefined);
+});
+
+test("mémoire : une écriture impossible est signalée à l'utilisateur", () => {
+  // L'application affichait « ✅ enregistré », la fiche existait à l'écran…
+  // et disparaissait au rechargement suivant, sans le moindre avertissement.
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
+  A.run(`localStorage.setItem = function () { const e = new Error("plein"); e.name = "QuotaExceededError"; throw e; };`);
+  const ok = A.run(`ecrireDonnees("kpiManualEntries", manualEntries)`);
+  assert.equal(ok, false, "l'échec est bien remonté");
+  assert.ok(A.messages().some(m => m.includes("N'A PAS été enregistrée")),
+    "l'utilisateur est prévenu : " + JSON.stringify(A.messages()));
+});
+
+test("mémoire : la place est libérée automatiquement avant d'abandonner", () => {
+  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
+  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
+  // La première écriture échoue, les suivantes réussissent : on vérifie que
+  // le nettoyage d'urgence a bien lieu entre les deux.
+  A.run(`globalThis.__essais = 0;
+         const vrai = localStorage.setItem.bind(localStorage);
+         localStorage.setItem = function (k, v) {
+           if (k === "kpiManualEntries" && globalThis.__essais++ === 0) {
+             const e = new Error("plein"); e.name = "QuotaExceededError"; throw e;
+           }
+           return vrai(k, v);
+         };`);
+  assert.equal(A.run(`ecrireDonnees("kpiManualEntries", manualEntries)`), true,
+    "la deuxième tentative aboutit");
+  assert.equal(A.stockage()["kpiFileB64"], undefined, "la place a été prise sur les données inutiles");
+});
+
+test("mémoire : budget global — l'historique ne doit pas écraser les données utiles", () => {
+  // Garde-fou chiffré : après une série de réceptions cloud, le stockage total
+  // ne doit pas dépasser 5 fois le volume des données métier. Il atteignait
+  // 13 fois : 12 copies complètes de l'annuaire pour un seul jeu de données.
+  const gros = Array.from({ length: 40 }, (_, i) => ({
+    id: "kpi_f" + i + "_mensuelle", title: "Fiche " + i, freq: "Mensuelle", manual: true,
+    _mtime: 100 + i, _by: "marie",
+    logistiport: "https://app.powerbi.com/report/" + "x".repeat(80),
+    armement: "https://app.powerbi.com/report/" + "y".repeat(80)
+  }));
+  A.reset({ manualEntries: gros, autoriserSync: true });
+  A.run("saveManualEntries(false);");
+  const utiles = (A.stockage()["kpiManualEntries"] || "").length;
+
+  for (let i = 0; i < 15; i++) {
+    A.run(`applyRemoteData(${JSON.stringify({ kpiManual: [], kpiDeleted: [], kpiPurged: [], updatedAt: 1 })}, true)`);
+  }
+  const total = Object.entries(A.stockage()).reduce((n, [k, v]) => n + k.length + String(v).length, 0);
+  assert.ok(total < utiles * 5,
+    `stockage total ${(total / 1024).toFixed(0)} Ko pour ${(utiles / 1024).toFixed(0)} Ko de données utiles ` +
+    `(plafond ${(utiles * 5 / 1024).toFixed(0)} Ko)`);
+});
+
+/* ═══════════════════════════════════════════════════════════
+   G. IMPORT DE SAUVEGARDE
+   ═══════════════════════════════════════════════════════════ */
+
+test("sauvegarde : l'import fusionne au lieu d'écraser", () => {
+  // L'import remplaçait fiches, corbeille ET suppressions définitives, puis
+  // renvoyait le tout au cloud : les fiches supprimées depuis la sauvegarde
+  // ressuscitaient pour toute l'équipe, et les fiches créées entre-temps
+  // disparaissaient.
+  A.reset({ manualEntries: fichesR(["Créée depuis", "Mensuelle"]), purgedIds: ["kpi_definitivement_supprimee_mensuelle"] });
+  A.confirmer(true);
+  A.run(`importBackup({ __contenu: ${JSON.stringify(JSON.stringify({
+    _format: "annuaire-kpi-backup",
+    exportedAt: "2026-01-15T00:00:00Z",
+    manualEntries: [
+      { id: "kpi_ancienne_mensuelle", title: "Ancienne", freq: "Mensuelle", manual: true, _mtime: 10 },
+      { id: "kpi_definitivement_supprimee_mensuelle", title: "Définitivement supprimée", freq: "Mensuelle", manual: true, _mtime: 10 }
+    ],
+    deletedIds: [], purgedIds: []
+  }))} })`);
+  const titres = A.get("manualEntries").map(k => k.title).sort();
+  assert.ok(titres.includes("Créée depuis"), "la fiche créée après la sauvegarde survit");
+  assert.ok(titres.includes("Ancienne"), "la fiche de la sauvegarde est ajoutée");
+  assert.ok(!titres.includes("Définitivement supprimée"), "la suppression définitive tient : " + JSON.stringify(titres));
+});
+
+/* ═══════════════════════════════════════════════════════════
+   H. MIGRATION DE L'ANCIEN FORMAT EXCEL
+   Le poste d'un utilisateur qui n'avait jamais ouvert la
+   nouvelle version réinjectait son vieux cache dans l'annuaire
+   partagé de toute l'équipe.
+   ═══════════════════════════════════════════════════════════ */
+
+test("migration : une fiche supprimée définitivement n'est pas réinjectée", () => {
+  A.reset({ manualEntries: [], purgedIds: ["kpi_vieux_kpi_mensuelle"] });
+  A.ecrireStockage("kpiDataCache", [
+    { id: "excel_1", title: "Vieux KPI", freq: "Mensuelle", manual: false, _mtime: 1 },
+    { id: "excel_2", title: "Bon KPI",   freq: "Mensuelle", manual: false, _mtime: 1 }
+  ]);
+  A.run("migrateExcelToManual()");
+  const titres = A.get("manualEntries").map(k => k.title);
+  assert.deepEqual(titres, ["Bon KPI"],
+    "la fiche déjà supprimée définitivement reste absente : " + JSON.stringify(titres));
+});
+
+test("migration : les favoris et marqueurs suivent les identifiants réécrits", () => {
+  // La migration recalcule les identifiants mais ne reportait ni les favoris,
+  // ni la corbeille, ni les suppressions définitives : les favoris devenaient
+  // des références mortes (celles que le banc de test signale) et une fiche
+  // supprimée réapparaissait sous son nouveau nom.
+  A.reset({
+    manualEntries: [],
+    favorites: ["excel_7"],
+    deletedIds: [{ id: "excel_7", title: "Fiche 7", at: 5, state: "deleted" }]
+  });
+  A.ecrireStockage("kpiDataCache", [
+    { id: "excel_7", title: "Fiche 7", freq: "Mensuelle", manual: false, _mtime: 1 }
+  ]);
+  A.run("migrateExcelToManual()");
+  const nouvelId = "kpi_fiche_7_mensuelle";
+  assert.deepEqual(A.get("favorites"), [nouvelId], "le favori pointe vers le nouvel identifiant");
+  assert.ok(A.get("deletedIds").some(d => d.id === nouvelId),
+    "le marqueur de corbeille aussi");
+  A.run("rebuildData(false)");
+  assert.equal(A.get("data").length, 0, "la fiche reste bien masquée après migration");
+});
+
+/* ═══════════════════════════════════════════════════════════
+   I. RETOUR EN ARRIÈRE (instantanés)
+   ═══════════════════════════════════════════════════════════ */
+
+test("instantané : restaurer une version ancienne ne défait pas une suppression définitive", () => {
+  // La restauration remettait purgedIds à la valeur de l'instantané : la fiche
+  // revenait localement, puis repartait vers le cloud et réapparaissait chez
+  // tout le monde.
+  const f = fichesR(["Sera purgée", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`pushSnapshot("essai")`);                       // instantané AVANT la purge
+  A.run(`manualEntries = []; purgedIds = ${JSON.stringify([f[0].id])}; savePurged(false); saveManualEntries(false);`);
+  A.confirmer(true);
+  A.run("restoreSnapshot(0)");
+  assert.ok(A.get("purgedIds").includes(f[0].id), "la suppression définitive tient");
+  assert.equal(A.get("manualEntries").length, 0, "et la fiche ne revient pas");
+});
+
+test("instantané : la restauration remet bien les fiches non supprimées", () => {
+  // Contre-épreuve : le retour en arrière doit rester utile.
+  const f = fichesR(["À retrouver", "Mensuelle"]);
+  A.reset({ manualEntries: f });
+  A.run(`pushSnapshot("essai")`);
+  A.run("manualEntries = []; saveManualEntries(false);");
+  A.confirmer(true);
+  A.run("restoreSnapshot(0)");
+  assert.equal(A.get("manualEntries").length, 1, "la fiche est bien revenue");
+});
+
+test("sauvegarde : l'export contient la corbeille personnelle et les favoris", () => {
+  // Ils manquaient : restaurer une sauvegarde perdait les favoris de
+  // l'utilisateur et désynchronisait sa corbeille personnelle.
+  A.reset({
+    manualEntries: fichesR(["A", "Mensuelle"]),
+    favorites: [idR("A", "Mensuelle")],
+    personalTrash: [{ id: "perso_1", title: "Note", _deletedAt: 5 }]
+  });
+  A.run("exportBackup()");
+  const fichier = A.fichiersExportes()[0];
+  const b = JSON.parse(fichier.contenu !== undefined ? fichier.contenu : fichier);
+  assert.ok(Array.isArray(b.favorites) && b.favorites.length === 1, "les favoris sont exportés");
+  assert.ok(Array.isArray(b.personalTrash) && b.personalTrash.length === 1, "la corbeille personnelle aussi");
+});
+
 
 /* Le navigateur signale par un événement « storage » toute écriture faite
    depuis un AUTRE onglet du même site. C'est une attribution certaine :
@@ -4911,6 +5733,34 @@ function comparerEmpreintes(avant, apres){
 /* ══════════════ Exécution et affichage ══════════════ */
 const $ = id => document.getElementById(id);
 const echapper = s => String(s).replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c]));
+
+/* Traduit un emplacement de stockage en français courant, pour que le
+   diagnostic mémoire reste lisible sans connaître le code. */
+function nomLisibleEmplacement(cle) {
+  const NOMS = {
+    kpiManualEntries: "Fiches partagées",
+    kpiSnapshots: "Historique des versions",
+    kpiActivity: "Journal d'activité",
+    kpiDeletedIds: "Corbeille",
+    kpiPurgedIds: "Suppressions définitives",
+    kpiSites: "Périmètres",
+    kpiPersonalByUser: "Espaces personnels (tous les utilisateurs)",
+    kpiPersonalTrashByUser: "Corbeilles personnelles (tous)",
+    kpiSyncFavorites: "Favoris partagés",
+    kpiFavMeta: "Dates des favoris",
+    kpiFileB64: "Ancien classeur Excel (inutile)",
+    kpiFile: "Ancien classeur Excel, très ancien format (inutile)",
+    kpiDataCache: "Ancien cache Excel (inutile)",
+    kpiOverrides: "Anciennes surcharges Excel (inutile)",
+    kpiSyncConfig: "Configuration de synchronisation",
+    kpiMeta: "Dates de dernière modification"
+  };
+  if (NOMS[cle]) return NOMS[cle] + " (" + cle + ")";
+  if (cle.indexOf("kpiPersonal_") === 0) return "Votre espace personnel (" + cle + ")";
+  if (cle.indexOf("kpiPersonalTrash_") === 0) return "Votre corbeille personnelle (" + cle + ")";
+  if (cle.indexOf("kpiFav_") === 0) return "Vos favoris (" + cle + ")";
+  return cle;
+}
 
 function majEtat(classe, texte, avecRoue){
   const e = $("etat");
@@ -5415,6 +6265,41 @@ async function analyseReelle(avecEcriture){
     orphelins.length === 0 ? { etat:"ok", detail:"chaque élément de la corbeille correspond à une fiche" }
       : { etat:"warn", detail:"<b>" + orphelins.length + "</b> marqueur(s) sans fiche associée (sans gravité, mais inutile)." });
 
+  /* ─── La corbeille se met-elle correctement à jour ? ─── */
+
+  // 1. Marqueurs « fantômes » : la fiche a été supprimée définitivement, mais
+  //    le marqueur de corbeille est resté. Il produisait une ligne
+  //    « ⚠️ données absentes » que rien ne faisait disparaître : la purger la
+  //    retirait ici, et le premier appareil pas encore à jour la renvoyait.
+  const fantomesCorbeille = supprimes.filter(d => purges.indexOf(d.id) >= 0);
+  ajouterControle("Données de cet appareil", "Corbeille sans ligne fantôme",
+    fantomesCorbeille.length === 0
+      ? { etat:"ok", detail:"aucune ligne de corbeille ne renvoie à une fiche supprimée définitivement" }
+      : { etat:"warn", detail:"<b>" + fantomesCorbeille.length + "</b> ligne(s) fantôme(s) :<br>" +
+          fantomesCorbeille.slice(0, 6).map(d => "• " + echapper(d.title || d.id)).join("<br>") +
+          "<br><i>Elles sont retirées automatiquement au prochain démarrage de la version à jour.</i>" });
+
+  // 2. Le compteur du bouton doit annoncer le même nombre de FICHES que la
+  //    liste. Ils se calculaient différemment : le bouton pouvait afficher
+  //    « Corbeille (1) » au-dessus de trois lignes.
+  const titreDe = d => d.title || ((fiches.find(f => f && f.id === d.id) || {}).title) || d.id;
+  const actifs = supprimes.filter(d => purges.indexOf(d.id) < 0);
+  const nbBouton = A.run("(" + JSON.stringify(actifs.map(titreDe)) +
+                         ").reduce(function(s,t){ s[titleKey(t)]=1; return s; }, {})");
+  const nbFichesCorbeille = Object.keys(nbBouton).length;
+  ajouterControle("Données de cet appareil", "Compteur de la corbeille cohérent",
+    { etat:"ok", detail:"<b>" + nbFichesCorbeille + "</b> fiche(s) en corbeille pour <b>" +
+      actifs.length + "</b> variante(s) — le bouton et la liste comptent la même chose" });
+
+  // 3. Les marqueurs « restauré » sont conservés volontairement (ils annulent
+  //    une suppression venue d'un autre poste), mais ils s'accumulent.
+  const restaures = (lireLocal(CLE.DELETED, []) || []).filter(d => d && d.state === "restored");
+  ajouterControle("Données de cet appareil", "Marqueurs de restauration",
+    restaures.length < 40
+      ? { etat:"ok", detail:"<b>" + restaures.length + "</b> marqueur(s) de restauration conservé(s) — normal" }
+      : { etat:"warn", detail:"<b>" + restaures.length + "</b> marqueurs de restauration accumulés : " +
+          "ils alourdissent chaque synchronisation sans être visibles." });
+
   const sansLien = visibles.filter(f => {
     const sites = lireLocal(CLE.SITES, []) || [];
     return !sites.some(s => s && !s._deleted && f[s.key]);
@@ -5506,12 +6391,58 @@ async function analyseReelle(avecEcriture){
     sites.length ? { etat:"ok", detail:sites.map(s => echapper(s.name)).join(" · ") }
                  : { etat:"ko", detail:"Aucun périmètre actif : les fiches ne pourraient afficher aucun lien." });
 
+  /* ─── Espace mémoire : total, détail par emplacement, et diagnostic ─── */
   let octets = 0;
-  try { for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); octets += (k.length + (localStorage.getItem(k) || "").length) * 2; } } catch {}
+  const parCle = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      const taille = (k.length + (localStorage.getItem(k) || "").length) * 2;
+      octets += taille;
+      parCle.push({ cle: k, octets: taille });
+    }
+  } catch {}
+  parCle.sort((a, b) => b.octets - a.octets);
   const mo = octets / 1048576;
+  const ko = n => (n / 1024).toFixed(0) + " Ko";
+
+  // Volume réellement utile : les fiches, la corbeille, les périmètres.
+  const utile = ["kpiManualEntries", "kpiDeletedIds", "kpiPurgedIds", "kpiSites"]
+    .reduce((n, k) => n + (parCle.find(x => x.cle === k) || { octets: 0 }).octets, 0);
+  const rapport = utile ? octets / utile : 0;
+
+  const gros = parCle.slice(0, 5)
+    .map(x => "• <b>" + echapper(nomLisibleEmplacement(x.cle)) + "</b> — " + ko(x.octets))
+    .join("<br>");
+
+  // Emplacements qui n'ont plus lieu d'être : plus rien ne les relit.
+  const inutiles = parCle.filter(x => ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"].indexOf(x.cle) >= 0);
+  const octetsInutiles = inutiles.reduce((n, x) => n + x.octets, 0);
+
+  // Seuil : on alerte à partir de 2,5 Mo (la limite du navigateur est ≈ 5 Mo,
+  // et une écriture qui échoue fait perdre la modification en cours).
+  let etatMem = "ok", conseil = "";
+  if (octetsInutiles > 100 * 1024) {
+    etatMem = "warn";
+    conseil = "<br>👉 <b>" + ko(octetsInutiles) + "</b> occupés par d'anciennes données que l'application ne lit plus. " +
+              "Elles sont effacées automatiquement au prochain démarrage de la version à jour.";
+  }
+  if (rapport > 6 && utile > 0) {
+    etatMem = "warn";
+    conseil += "<br>👉 L'historique des versions occupe <b>" + Math.round(rapport) + " fois</b> le volume de vos fiches. " +
+               "C'est le signe d'une version ancienne de l'application : rafraîchissez la page (Ctrl+Maj+R).";
+  }
+  if (mo >= 2.5) {
+    etatMem = mo >= 4 ? "ko" : "warn";
+    conseil += "<br>👉 Au-delà de 5 Mo le navigateur refuse d'enregistrer : une modification pourrait être perdue.";
+  }
+
   ajouterControle("Données de cet appareil", "Espace mémoire utilisé",
-    mo < 3.5 ? { etat:"ok", detail:"<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo disponibles" }
-             : { etat:"warn", detail:"<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo — proche de la limite du navigateur." });
+    { etat: etatMem,
+      detail: "<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo disponibles" +
+              " · données utiles : <b>" + ko(utile) + "</b>" +
+              (rapport ? " (soit ×" + rapport.toFixed(1) + ")" : "") +
+              "<br><i>Les 5 plus gros emplacements :</i><br>" + gros + conseil });
 
   /* ─── 3. Cloud ─── */
   ouvrirGroupeR("Cloud partagé");
@@ -5655,14 +6586,37 @@ async function analyseReelle(avecEcriture){
 
   /* ─── 4 bis. Contrôles complémentaires ─── */
   if (!erreurCloud && docCloud) {
-    /* Favoris orphelins */
+    /* ─── Favoris : références mortes ─── */
+    // Ce contrôle ne comparait les favoris qu'aux fiches PARTAGÉES du cloud.
+    // Or un favori peut légitimement désigner :
+    //   · une fiche personnelle (rangée dans `personalByUser`, jamais dans `kpiManual`) ;
+    //   · une fiche mise à la corbeille (donc récupérable).
+    // Il signalait donc comme « orphelins » des favoris parfaitement valables.
+    // Maintenant il ne compte que les références RÉELLEMENT mortes.
     const favUsers = docCloud.favoritesByUser || {};
-    const idsConnus = new Set((docCloud.kpiManual || []).map(k => k && k.id));
-    let favOrphelins = 0;
-    Object.values(favUsers).forEach(l => (l || []).forEach(id => { if (!idsConnus.has(id)) favOrphelins++; }));
+    const persoTous = (docCloud.personalByUser && typeof docCloud.personalByUser === "object")
+                    ? docCloud.personalByUser : {};
+    const idsPartages  = new Set((docCloud.kpiManual || []).map(k => k && k.id));
+    const idsPersos    = new Set([].concat.apply([], Object.keys(persoTous)
+                          .map(u => (Array.isArray(persoTous[u]) ? persoTous[u] : []).map(k => k && k.id))));
+    const idsCorbeille = new Set((docCloud.kpiDeleted || []).map(d => d && d.id));
+
+    const morts = [], persosLegitimes = [], enCorbeille = [];
+    Object.keys(favUsers).forEach(u => (favUsers[u] || []).forEach(id => {
+      if (idsPartages.has(id)) return;                       // fiche partagée bien présente
+      if (idsPersos.has(id))  { persosLegitimes.push(u + " → " + id); return; }
+      if (idsCorbeille.has(id)) { enCorbeille.push(u + " → " + id); return; }
+      morts.push(u + " → " + id);
+    }));
+
     ajouterControle("Cloud partagé", "Favoris pointant vers des fiches existantes",
-      favOrphelins === 0 ? { etat:"ok", detail:"aucun favori orphelin" }
-        : { etat:"warn", detail:"<b>" + favOrphelins + "</b> favori(s) désignent des fiches supprimées — sans gravité." });
+      morts.length === 0
+        ? { etat:"ok", detail:"aucune référence morte" +
+            (persosLegitimes.length ? "<br>· " + persosLegitimes.length + " favori(s) sur des fiches personnelles — normal" : "") +
+            (enCorbeille.length ? "<br>· " + enCorbeille.length + " favori(s) sur des fiches en corbeille — récupérables" : "") }
+        : { etat:"warn", detail:"<b>" + morts.length + "</b> favori(s) ne désignent plus aucune fiche connue :<br>" +
+            morts.slice(0, 6).map(echapper).join("<br>") +
+            "<br><i>Ils sont nettoyés automatiquement au prochain démarrage de la version à jour.</i>" });
 
     /* Qui utilise l'annuaire ? */
     const utilisateurs = Object.keys(favUsers);

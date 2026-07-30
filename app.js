@@ -3,7 +3,7 @@
 ============================================ */
 // Version de l'application. À comparer entre appareils via le diagnostic :
 // si deux appareils affichent des versions différentes, l'un a un cache périmé.
-const APP_VERSION = "2026.07.23";
+const APP_VERSION = "2026.07.30";
 let data = [];          // Liste affichée = fiches partagées visibles (manualEntries)
 let excelData = [];     // Vestige (toujours vide) : l'Excel n'est plus une source de données
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
@@ -33,7 +33,7 @@ function loadPurged() {
   catch { purgedIds = []; }
 }
 function savePurged(sync = true) {
-  localStorage.setItem("kpiPurgedIds", JSON.stringify(purgedIds));
+  ecrireDonnees("kpiPurgedIds", purgedIds);
   if (sync) scheduleAutoSync();
 }
 function isPurged(id) { return purgedIds.includes(id); }
@@ -50,7 +50,7 @@ function loadActivity() {
   catch { activityLog = []; }
 }
 function saveActivity(sync = true) {
-  localStorage.setItem(LS_ACTIVITY, JSON.stringify(activityLog));
+  ecrireDonnees(LS_ACTIVITY, activityLog);
   if (sync) scheduleAutoSync();
 }
 // action : "create" | "update" | "delete" | "restore"
@@ -90,7 +90,7 @@ function loadSites() {
   if (!Array.isArray(sites) || !sites.length) sites = JSON.parse(JSON.stringify(DEFAULT_SITES));
 }
 function saveSites(sync = true) {
-  localStorage.setItem("kpiSites", JSON.stringify(sites));
+  ecrireDonnees("kpiSites", sites);
   if (sync) scheduleAutoSync();
 }
 function siteBadgeLabel(s) { return (s.badge || s.name || "").toUpperCase().slice(0, 8); }
@@ -102,11 +102,133 @@ let modalCurrentFreq = "Mensuelle";
 let modalExtraVariants = []; // variantes de fréquence non-standard, préservées telles quelles
 let modalInitialIds = {};   // freq → id d'origine (pour détecter les suppressions)
 
-// Classe un id : "excel", "manual", "perso" ou null
+// Classe un id : "manual", "perso" ou null.
+// Si le même identifiant existe des deux côtés (donnée abîmée par une
+// ancienne version), c'est le PRÉFIXE de l'identifiant qui tranche : lui seul
+// est stable. Sans cette règle, une fiche partagée dupliquée dans l'espace
+// personnel était classée « perso » et devenait impossible à supprimer de
+// l'annuaire partagé.
 function classifyId(id) {
-  if (personalEntries.some(k => k.id === id)) return "perso";
-  if (manualEntries.some(k => k.id === id)) return "manual";
+  const dansPerso  = personalEntries.some(k => k.id === id);
+  const dansPartage = manualEntries.some(k => k.id === id);
+  if (dansPerso && dansPartage) return String(id).startsWith("perso_") ? "perso" : "manual";
+  if (dansPerso) return "perso";
+  if (dansPartage) return "manual";
   return null;
+}
+
+/**
+ * Répare les identifiants présents à la fois dans l'annuaire partagé et dans
+ * l'espace personnel. Le préfixe de l'identifiant fait foi ; la copie en trop
+ * est retirée. Sans cela la fiche s'affichait en double et repartait dans
+ * l'annuaire partagé à chaque synchronisation.
+ * @returns {number} nombre de doublons corrigés
+ */
+function reparerCollisionsEspaces() {
+  if (!manualEntries.length || !personalEntries.length) return 0;
+  const idsPerso = new Set(personalEntries.map(k => k && k.id));
+  const collisions = manualEntries.filter(k => k && idsPerso.has(k.id)).map(k => k.id);
+  if (!collisions.length) return 0;
+
+  collisions.forEach(id => {
+    if (String(id).startsWith("perso_")) {
+      manualEntries = manualEntries.filter(k => k.id !== id);
+    } else {
+      personalEntries = personalEntries.filter(k => k.id !== id);
+    }
+  });
+  saveManualEntries(false);
+  Store.writeJSON("kpiPersonal_" + currentUser, personalEntries);
+  console.info(`[Réparation] ${collisions.length} fiche(s) présente(s) dans les deux espaces : doublon retiré.`);
+  return collisions.length;
+}
+
+/* ============================================
+   ÉCRITURE DES DONNÉES — avec gestion du manque de place
+   ------------------------------------------------------
+   Les données métier s'écrivaient directement dans le stockage du navigateur,
+   sans filet. Quand celui-ci est saturé (limite ≈ 5 Mo), l'écriture échoue :
+   l'application affichait « ✅ enregistré », la fiche existait à l'écran…
+   et disparaissait au rechargement suivant.
+
+   Désormais : on tente d'écrire ; en cas de saturation on libère de la place
+   automatiquement, on réessaie, et si rien n'y fait on le DIT clairement.
+============================================ */
+
+/** Vrai si l'échec d'écriture vient d'un manque de place. */
+function estErreurQuota(err) {
+  return !!err && (err.name === "QuotaExceededError" ||
+                   err.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+                   err.code === 22 || err.code === 1014);
+}
+
+/**
+ * Libère de la place en urgence, du moins précieux au plus précieux.
+ * @returns {boolean} true si quelque chose a pu être libéré
+ */
+function libererEspaceEnUrgence() {
+  let libere = false;
+  // 1. Anciennes données que plus rien ne lit (classeur Excel recopié, caches)
+  if (libererEspaceInutile() > 0) libere = true;
+  // 2. Historique des versions : on ne garde que les 2 plus récentes
+  try {
+    const list = JSON.parse(localStorage.getItem("kpiSnapshots") || "[]");
+    if (Array.isArray(list) && list.length > 2) {
+      localStorage.setItem("kpiSnapshots", JSON.stringify(list.slice(0, 2)));
+      libere = true;
+    }
+  } catch { /* illisible : on tente carrément de le retirer */ }
+  if (!libere) {
+    try { localStorage.removeItem("kpiSnapshots"); libere = true; } catch { /* rien à faire */ }
+  }
+  // 3. Journal d'activité : on le ramène à 100 entrées
+  try {
+    const j = JSON.parse(localStorage.getItem("kpiActivity") || "[]");
+    if (Array.isArray(j) && j.length > 100) {
+      localStorage.setItem("kpiActivity", JSON.stringify(j.slice(0, 100)));
+      if (typeof activityLog !== "undefined" && Array.isArray(activityLog)) activityLog = activityLog.slice(0, 100);
+      libere = true;
+    }
+  } catch { /* sans conséquence */ }
+  return libere;
+}
+
+let dernierAvertissementQuota = 0;
+
+/**
+ * Enregistre une donnée métier. Point de passage UNIQUE : c'est ici, et
+ * nulle part ailleurs, que le manque de place est traité.
+ * @param {string} cle
+ * @param {*} valeur   sérialisée en JSON
+ * @returns {boolean}  true si l'enregistrement a réussi
+ */
+function ecrireDonnees(cle, valeur) {
+  const texte = JSON.stringify(valeur);
+  try {
+    localStorage.setItem(cle, texte);
+    return true;
+  } catch (err) {
+    if (!estErreurQuota(err)) {
+      console.error(`[Stockage] Échec d'écriture pour « ${cle} ».`, err);
+      return false;
+    }
+    // Deuxième chance : on fait de la place puis on réessaie
+    if (libererEspaceEnUrgence()) {
+      try { localStorage.setItem(cle, texte);
+            console.warn(`[Stockage] Place libérée automatiquement pour enregistrer « ${cle} ».`);
+            return true; }
+      catch { /* toujours pas : on prévient franchement */ }
+    }
+    console.error(`[Stockage] Mémoire du navigateur saturée : « ${cle} » n'a PAS été enregistré.`, err);
+    if (Date.now() - dernierAvertissementQuota > 30000) {
+      dernierAvertissementQuota = Date.now();
+      if (typeof showToast === "function") {
+        showToast("⛔ Mémoire du navigateur pleine : votre dernière modification N'A PAS été enregistrée. " +
+                  "Videz l'historique des versions, puis recommencez.", 8000);
+      }
+    }
+    return false;
+  }
 }
 
 // Échappe le HTML pour un affichage sûr dans les cartes
@@ -198,7 +320,20 @@ usernameInput.addEventListener("keydown", e => {
   if (e.key === "Enter") loginBtn.click();
 });
 
-logoutBtn.addEventListener("click", () => {
+// Déconnexion. Extraite dans une fonction nommée pour être vérifiable par le
+// banc de test : tant qu'elle vivait dans l'écouteur du bouton, aucun test ne
+// pouvait la déclencher — et c'est le chemin qui pouvait vider le cloud.
+function deconnecter() {
+  // ⚠️ ORDRE IMPORTANT : on coupe d'abord tout envoi en cours ou en attente.
+  // Les listes sont vidées juste après ; un envoi déclenché ensuite (retour
+  // sur l'onglet, reprise du réseau) écrivait un document VIDE dans le cloud
+  // et effaçait l'annuaire de toute l'équipe.
+  clearTimeout(syncDebounceHandle);
+  syncDebounceHandle = null;
+  pendingPush = false;
+  pendingRemotePayload = null;
+  currentUser = null;
+
   localStorage.removeItem("kpiUser");
   data = [];
   excelData = [];
@@ -216,13 +351,16 @@ logoutBtn.addEventListener("click", () => {
   initialSyncDone = false;
   syncBusy = false;
   currentView = "all";
+  updateRestoreDeletedBtn();   // sinon le bouton gardait le compteur du précédent utilisateur
   container.innerHTML = "";
   container.appendChild(emptyState);
   emptyState.style.display = "";
   appShell.style.display = "none";
   loginScreen.style.display = "flex";
   usernameInput.value = "";
-});
+}
+
+logoutBtn.addEventListener("click", deconnecter);
 
 /* ============================================
    VUES (all / fav)
@@ -258,11 +396,31 @@ sidebarOverlay?.addEventListener("click", () => {
    FAVORIS
 ============================================ */
 function loadFavorites() {
-  favorites = JSON.parse(localStorage.getItem("kpiFav_" + currentUser)) || [];
+  favorites = Store.readJSON("kpiFav_" + currentUser, []) || [];
+}
+
+/**
+ * Recopie IMMÉDIATEMENT la liste de favoris de l'utilisateur courant dans le
+ * bloc partagé (`kpiSyncFavorites` + `kpiFavMeta`).
+ *
+ * Pourquoi tout de suite : ces deux emplacements ne s'écrivaient qu'au moment
+ * de l'envoi au cloud, 1,5 s plus tard. Une synchro reçue dans cet intervalle
+ * relisait la version d'AVANT le clic et annulait le favori qu'on venait
+ * d'ajouter (ou ressuscitait celui qu'on venait de retirer).
+ */
+function saveFavorisPartages() {
+  if (!currentUser) return;
+  const map  = Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {};
+  const meta = Store.readJSON(Store.KEYS.FAV_META, {}) || {};
+  map[currentUser]  = favorites;
+  meta[currentUser] = getMeta().favAt || now();
+  Store.writeJSON(Store.KEYS.SYNC_FAV, map);
+  Store.writeJSON(Store.KEYS.FAV_META, meta);
 }
 
 function saveFavorites() {
-  localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
+  Store.writeJSON("kpiFav_" + currentUser, favorites);
+  saveFavorisPartages();
   scheduleAutoSync();
 }
 
@@ -270,7 +428,37 @@ function saveFavorites() {
 // Utilisée quand la synchro est gérée séparément (réception cloud, suppression
 // de fiche) pour éviter une double synchro ou une boucle.
 function saveFavoritesLocalOnly() {
-  localStorage.setItem("kpiFav_" + currentUser, JSON.stringify(favorites));
+  Store.writeJSON("kpiFav_" + currentUser, favorites);
+  saveFavorisPartages();
+}
+
+/**
+ * Retire un identifiant des favoris en HORODATANT le changement.
+ *
+ * Indispensable : sans `touchMeta("favAt")`, la liste raccourcie partait avec
+ * l'ancien horodatage. L'appareil d'en face, qui avait le même horodatage mais
+ * la liste complète, la renvoyait — et le favori d'une fiche supprimée
+ * réapparaissait indéfiniment.
+ * @param {string[]} ids identifiants à retirer
+ */
+function retirerDesFavoris(ids) {
+  const morts = new Set(ids || []);
+  if (!morts.size) return 0;
+  const avant = favorites.length;
+  favorites = favorites.filter(f => !morts.has(f));
+  const retires = avant - favorites.length;
+  if (retires) touchMeta("favAt");
+  return retires;
+}
+
+/** Reporte un favori d'un ancien identifiant vers le nouveau (fiche réécrite). */
+function reporterFavori(ancienId, nouvelId) {
+  if (!ancienId || !nouvelId || ancienId === nouvelId) return false;
+  if (!favorites.includes(ancienId)) return false;
+  favorites = favorites.filter(f => f !== ancienId);
+  if (!favorites.includes(nouvelId)) favorites.push(nouvelId);
+  touchMeta("favAt");
+  return true;
 }
 
 function toggleFavorite(id) {
@@ -299,15 +487,12 @@ fileInput.addEventListener("change", e => {
   const reader = new FileReader();
   reader.onload = evt => {
     const buf = evt.target.result;
-    try {
-      const u8 = new Uint8Array(buf);
-      let bin = ""; const CH = 0x8000;
-      for (let i = 0; i < u8.length; i += CH) bin += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
-      localStorage.setItem("kpiFileB64", btoa(bin));
-      localStorage.removeItem("kpiFile"); // ancien format volumineux
-    } catch (err) {
-      showToast("⚠️ Fichier trop volumineux pour être conservé localement", 3500);
-    }
+    // Le classeur n'est PLUS recopié dans le stockage du navigateur.
+    // Il y était écrit en entier (en base64, soit +33 %, puis stocké sur
+    // 16 bits par caractère : un fichier de 180 Ko en occupait 480) alors
+    // qu'aucune ligne de l'application ne le relisait. C'était la deuxième
+    // cause d'encombrement de la mémoire locale.
+    libererEspaceInutile();
     touchMeta("excelAt");            // ce bloc Excel devient le plus récent
     loadWorkbook(buf);
     showToast("✅ Fichier importé");
@@ -318,7 +503,10 @@ fileInput.addEventListener("change", e => {
 function loadSavedFile() {
   migrateExcelToManual();
   nettoyerPurgees();
+  nettoyerMarqueursPurges();
+  reparerCollisionsEspaces();
   nettoyerFavoris();
+  libererEspaceInutile();
   rebuildData(false);
 }
 
@@ -335,11 +523,34 @@ function loadSavedFile() {
  * @returns {number} nombre de favoris retirés
  */
 function nettoyerFavoris() {
-  if (!favorites.length || !purgedIds.length) return 0;
+  if (!favorites.length) return 0;
   const avant = favorites.length;
+
+  // 1. Toujours : les fiches supprimées définitivement ne reviendront jamais.
   favorites = favorites.filter(id => !purgedIds.includes(id));
+
+  // 2. Après un premier échange complet avec le cloud seulement : un favori
+  //    qui ne désigne AUCUNE fiche connue (ni partagée, ni personnelle, ni en
+  //    corbeille) est une référence morte — typiquement un identifiant hérité
+  //    d'une ancienne version dont la fiche a été réécrite sous un autre nom.
+  //    Avant la première synchro on ne nettoie pas : la fiche pourrait
+  //    simplement ne pas être encore arrivée sur cet appareil.
+  if (initialSyncDone) {
+    const connus = new Set([
+      ...manualEntries.map(k => k && k.id),
+      ...personalEntries.map(k => k && k.id),
+      ...deletedIds.map(d => d && d.id),
+      ...personalTrash.map(v => v && v.id)
+    ]);
+    favorites = favorites.filter(id => connus.has(id));
+  }
+
   const retires = avant - favorites.length;
-  if (retires) saveFavoritesLocalOnly();
+  if (retires) {
+    touchMeta("favAt");          // sinon un autre appareil ressusciterait le favori
+    saveFavorisPartages();
+    saveFavoritesLocalOnly();
+  }
   return retires;
 }
 
@@ -355,18 +566,63 @@ function nettoyerPurgees() {
   return retirees;
 }
 
+/**
+ * Retire de la corbeille les marqueurs dont la fiche a été supprimée
+ * DÉFINITIVEMENT ailleurs. Sans ce nettoyage la corbeille affichait une ligne
+ * « ⚠️ données absentes » que rien ne faisait disparaître : la supprimer
+ * définitivement retirait bien le marqueur ici, mais le premier appareil
+ * n'ayant pas encore rejoué l'opération le renvoyait aussitôt.
+ * @returns {number} nombre de marqueurs retirés
+ */
+function nettoyerMarqueursPurges() {
+  if (!deletedIds.length || !purgedIds.length) return 0;
+  const avant = deletedIds.length;
+  deletedIds = sansMarqueursPurges(deletedIds, purgedIds);
+  const retires = avant - deletedIds.length;
+  if (retires) saveDeletedIds(false);
+  return retires;
+}
+
 // Migration unique : convertit les anciennes données Excel + surcharges en
 // vraies fiches manuelles, puis efface les traces de l'ancien système.
 // L'Excel n'est plus une source de données vivante, juste un import/export.
+// Emplacements de l'ancien système, devenus inutiles. Ils ne sont plus jamais
+// relus par l'application mais pouvaient rester stockés indéfiniment.
+const CLES_OBSOLETES = ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"];
+
+/**
+ * Libère les emplacements de stockage que plus rien ne lit.
+ * `kpiFileB64` (le classeur Excel recopié en entier) pouvait à lui seul
+ * occuper plusieurs centaines de kilo-octets : il n'était effacé que par la
+ * migration, laquelle sort immédiatement une fois qu'elle a eu lieu — donc un
+ * import Excel postérieur restait stocké pour toujours.
+ * @returns {number} octets libérés (approximation UTF-16)
+ */
+function libererEspaceInutile() {
+  let liberes = 0;
+  CLES_OBSOLETES.forEach(k => {
+    try {
+      const v = localStorage.getItem(k);
+      if (v === null) return;
+      liberes += (k.length + v.length) * 2;
+      localStorage.removeItem(k);
+    } catch { /* emplacement inaccessible : sans conséquence */ }
+  });
+  if (liberes > 0) console.info(`[Nettoyage] ${(liberes / 1024).toFixed(0)} Ko d'anciennes données libérés.`);
+  return liberes;
+}
+
 function migrateExcelToManual() {
   // Migration déjà faite ? On ne la rejoue jamais (sinon risque de doublons/écrasement).
   if (localStorage.getItem("kpiMigratedV2") === "1") {
     excelData = [];
     overrides = {};
+    libererEspaceInutile();   // ← s'exécute désormais dans TOUS les cas
     return;
   }
 
   let migrated = 0;
+  const renommages = [];      // [ancienId, nouvelId] pour reporter les références
   const cached = localStorage.getItem("kpiDataCache");
   if (cached) {
     try {
@@ -376,7 +632,13 @@ function migrateExcelToManual() {
       oldExcel.forEach(d => {
         const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
         const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+        if (d.id !== newId) renommages.push([d.id, newId]);
         if (manualEntries.some(m => m.id === newId)) return;
+        // La migration réécrit les identifiants : une fiche déjà supprimée
+        // définitivement doit le rester, sous son ancien comme sous son
+        // nouvel identifiant. Sans ce test, un vieux poste réinjectait dans
+        // l'annuaire partagé des fiches que l'équipe avait effacées.
+        if (isPurged(newId) || isPurged(d.id)) return;
         manualEntries.push({
           ...merged,
           id: newId,
@@ -394,10 +656,27 @@ function migrateExcelToManual() {
     }
   }
 
+  // Report des références vers les nouveaux identifiants.
+  // Auparavant, favoris, marqueurs de corbeille et suppressions définitives
+  // continuaient de désigner l'ancien identifiant : les favoris devenaient des
+  // références mortes (signalées par le banc de test) et une fiche supprimée
+  // réapparaissait sous son nouveau nom.
+  if (renommages.length) {
+    const table = new Map(renommages);
+    let refs = 0;
+    favorites = favorites.map(id => { if (table.has(id)) { refs++; return table.get(id); } return id; });
+    deletedIds = deletedIds.map(d => (d && table.has(d.id)) ? (refs++, { ...d, id: table.get(d.id) }) : d);
+    purgedIds  = purgedIds.map(id => { if (table.has(id)) { refs++; return table.get(id); } return id; });
+    if (refs) {
+      saveFavoritesLocalOnly(); saveDeletedIds(false); savePurged(false);
+      console.info(`[Migration] ${refs} référence(s) reportée(s) vers les nouveaux identifiants.`);
+    }
+  }
+
   if (migrated) saveManualEntries(false);
 
   // Efface les vestiges de l'ancien système et marque la migration comme faite
-  ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"].forEach(k => localStorage.removeItem(k));
+  libererEspaceInutile();
   localStorage.setItem("kpiMigratedV2", "1");
   excelData = [];
   overrides = {};
@@ -559,7 +838,7 @@ function loadManualEntries() {
 }
 
 function saveManualEntries(sync = true) {
-  localStorage.setItem("kpiManualEntries", JSON.stringify(manualEntries));
+  ecrireDonnees("kpiManualEntries", manualEntries);
   if (sync) scheduleAutoSync();
 }
 
@@ -606,14 +885,14 @@ function loadPersonalEntries() {
       personalEntries = distant;
       const corbeille = lireMapPerso(LS_PERSO_TRASH)[currentUser];
       if (Array.isArray(corbeille)) personalTrash = corbeille;
-      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
-      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+      ecrireDonnees("kpiPersonal_" + currentUser, personalEntries);
+      ecrireDonnees("kpiPersonalTrash_" + currentUser, personalTrash);
     }
   }
 }
 
 function savePersonalEntries() {
-  localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
+  ecrireDonnees("kpiPersonal_" + currentUser, personalEntries);
   if (isPersonalSyncOn()) scheduleAutoSync();
 }
 
@@ -625,7 +904,7 @@ function loadPersonalTrash() {
   } catch { personalTrash = []; }
 }
 function savePersonalTrash() {
-  localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+  ecrireDonnees("kpiPersonalTrash_" + currentUser, personalTrash);
   if (isPersonalSyncOn()) scheduleAutoSync();
 }
 
@@ -684,7 +963,7 @@ function loadDeletedIds() {
 }
 
 function saveDeletedIds(sync = true) {
-  localStorage.setItem("kpiDeletedIds", JSON.stringify(deletedIds));
+  ecrireDonnees("kpiDeletedIds", deletedIds);
   if (sync) scheduleAutoSync();
 }
 
@@ -724,7 +1003,7 @@ function deleteKPI(id) {
       markDeleted(v.id, v);
       touchedShared = true;
     }
-    favorites = favorites.filter(f => f !== v.id);
+    retirerDesFavoris([v.id]);
   });
 
   saveFavoritesLocalOnly();
@@ -735,16 +1014,42 @@ function deleteKPI(id) {
   showToast(nbTemp > 1 ? `🗑 Fiche supprimée (${nbTemp} temporalités)` : "🗑 Fiche supprimée");
 }
 
+/**
+ * Marqueurs de corbeille réellement actifs : ni « restaurés », ni supprimés
+ * définitivement (ceux-là ne sont plus récupérables et ne doivent donc plus
+ * être ni comptés, ni affichés).
+ */
+function marqueursCorbeilleActifs() {
+  return deletedIds.filter(d => d && d.state !== "restored" && !isPurged(d.id));
+}
+
+/**
+ * Intitulé sous lequel un marqueur est regroupé.
+ * Le bouton et la liste DOIVENT utiliser la même règle : ils comptaient
+ * autrement des choses différentes (« Corbeille (1) » au-dessus d'une liste
+ * de trois lignes) dès qu'un marqueur n'avait pas d'intitulé enregistré.
+ */
+function titreMarqueurCorbeille(d) {
+  const orig = manualEntries.find(k => k && k.id === d.id);
+  return d.title || (orig ? orig.title : d.id);
+}
+
 function updateRestoreDeletedBtn() {
   const btn = document.getElementById("restoreDeletedBtn");
   const label = document.getElementById("restoreDeletedLabel");
   if (!btn) return;
-  const active = deletedIds.filter(d => d.state !== "restored");
-  const sharedFiches = new Set(active.map(d => titleKey(d.title))).size;
+  const active = marqueursCorbeilleActifs();
+  const sharedFiches = new Set(active.map(d => titleKey(titreMarqueurCorbeille(d)))).size;
   const persoFiches  = new Set(personalTrash.map(v => titleKey(v.title))).size;
   const nbFiches = sharedFiches + persoFiches;
   btn.style.display = nbFiches ? "" : "none";
   if (label) label.textContent = `Corbeille (${nbFiches})`;
+  // Si la corbeille est ouverte, sa liste doit suivre : une synchronisation
+  // reçue pendant la consultation la laissait périmée, et l'utilisateur
+  // pouvait supprimer définitivement une fiche qu'un collègue venait de
+  // restaurer — et qui était donc redevenue visible pour tout le monde.
+  const modale = document.getElementById("trashModal");
+  if (modale && !modale.classList.contains("hidden")) renderTrashList();
 }
 
 /* ============================================
@@ -759,7 +1064,7 @@ function fmtDate(ts) {
 function renderTrashList() {
   const el = document.getElementById("trashList");
   if (!el) return;
-  const active = deletedIds.filter(d => d.state !== "restored");
+  const active = marqueursCorbeilleActifs();
   if (!active.length && !personalTrash.length) {
     el.innerHTML = `<p class="modal-hint" style="margin:0">La corbeille est vide.</p>`;
     return;
@@ -770,7 +1075,7 @@ function renderTrashList() {
   // Fiches partagées (annuaire)
   active.forEach(d => {
     const orig = manualEntries.find(k => k.id === d.id);
-    const title = d.title || (orig ? orig.title : d.id);
+    const title = titreMarqueurCorbeille(d);
     const key = "shared:" + titleKey(title);
     if (!groups.has(key)) groups.set(key, { title, ids: [], freqs: [], at: 0, by: "", perso: false });
     const g = groups.get(key);
@@ -847,6 +1152,8 @@ function restoreSelectedTrash() {
     back.forEach(v => {
       titres.add(v.title);
       const { _deletedAt, ...clean } = v;
+      // Sans ce test, restaurer deux fois la même fiche la dupliquait
+      if (personalEntries.some(k => k && k.id === clean.id)) return;
       personalEntries.push(clean);
     });
     personalTrash = personalTrash.filter(v => !personalIds.includes(v.id));
@@ -870,7 +1177,7 @@ function restoreSelectedTrash() {
   if (nbVides) {
     showToast(`⚠️ ${nbVides} fiche${nbVides > 1 ? "s" : ""} sans données : rien à réafficher`, 4000);
   }
-  const stillShared = deletedIds.some(d => d.state !== "restored");
+  const stillShared = marqueursCorbeilleActifs().length > 0;
   if (!stillShared && !personalTrash.length) closeTrashModal();
 }
 
@@ -880,7 +1187,15 @@ function getTrashSelection() {
   document.querySelectorAll("#trashList .trash-check:checked").forEach(c => {
     (c.dataset.ids || "").split(",").filter(Boolean).forEach(id => ids.push(id));
   });
-  return ids;
+  // Défense en profondeur : on ne retient que les identifiants qui sont
+  // RÉELLEMENT en corbeille à l'instant du clic. Si une synchronisation a
+  // restauré une fiche entre l'affichage de la liste et le clic, la ligne
+  // affichée est périmée — agir dessus détruirait une fiche redevenue active.
+  const enCorbeille = new Set([
+    ...marqueursCorbeilleActifs().map(d => d.id),
+    ...personalTrash.map(v => v && v.id)
+  ]);
+  return ids.filter(id => enCorbeille.has(id));
 }
 
 // Suppression définitive : la fiche disparaît de la corbeille et ne reviendra plus,
@@ -895,11 +1210,17 @@ function purgeSelectedTrash() {
   const targetsShared = deletedIds.filter(d => sharedIds.includes(d.id));
   const targetsPerso  = personalTrash.filter(v => personalIds.includes(v.id));
   const allTargets = [...targetsShared, ...targetsPerso];
-  const noms = allTargets.slice(0, 5).map(d => "• " + (d.title || d.id)).join("\n");
+  // On annonce des FICHES, pas des temporalités : la ligne cochée disait
+  // « 1 fiche (3 temporalités) » et la confirmation « 3 éléments », en
+  // répétant trois fois le même intitulé.
+  const nomsUniques = [...new Set(allTargets.map(d => d.title || d.id))];
+  const nb = nomsUniques.length;
+  const noms = nomsUniques.slice(0, 5).map(t => "• " + t).join("\n");
+  const detailTemp = allTargets.length > nb ? ` (${allTargets.length} temporalités au total)` : "";
   if (!confirm(
-    `Supprimer DÉFINITIVEMENT ${allTargets.length} élément${allTargets.length > 1 ? "s" : ""} ?\n\n` +
-    noms + (allTargets.length > 5 ? `\n… et ${allTargets.length - 5} autre(s)` : "") +
-    "\n\nIls quitteront la corbeille et ne réapparaîtront plus, même après un ré-import Excel. " +
+    `Supprimer DÉFINITIVEMENT ${nb} fiche${nb > 1 ? "s" : ""}${detailTemp} ?\n\n` +
+    noms + (nb > 5 ? `\n… et ${nb - 5} autre(s)` : "") +
+    "\n\nElles quitteront la corbeille et ne réapparaîtront plus, même après un ré-import Excel. " +
     "Cette action est irréversible."
   )) return;
 
@@ -910,7 +1231,7 @@ function purgeSelectedTrash() {
     // Suppression définitive : la fiche quitte aussi la mémoire, sinon elle
     // resterait stockée et repartirait vers le cloud à chaque envoi.
     manualEntries = manualEntries.filter(k => !sharedIds.includes(k.id));
-    favorites = favorites.filter(f => !sharedIds.includes(f));
+    retirerDesFavoris(sharedIds);
     savePurged(false);
     saveDeletedIds(false);
     saveManualEntries(false);
@@ -922,11 +1243,11 @@ function purgeSelectedTrash() {
   }
 
   saveFavoritesLocalOnly();
-  allTargets.forEach(d => logActivity("purge", d.title || d.id, "suppression définitive"));
+  nomsUniques.forEach(t => logActivity("purge", t, "suppression définitive"));
   rebuildData(true);
   renderTrashList();
-  showToast(`🔥 ${allTargets.length} élément${allTargets.length > 1 ? "s" : ""} définitivement supprimé${allTargets.length > 1 ? "s" : ""}`, 3000);
-  if (!deletedIds.some(d => d.state !== "restored") && !personalTrash.length) closeTrashModal();
+  showToast(`🔥 ${nb} fiche${nb > 1 ? "s" : ""} définitivement supprimée${nb > 1 ? "s" : ""}`, 3000);
+  if (!marqueursCorbeilleActifs().length && !personalTrash.length) closeTrashModal();
 }
 
 document.getElementById("restoreDeletedBtn")?.addEventListener("click", openTrashModal);
@@ -1247,21 +1568,54 @@ function upsertTemporality(freq, slot, initialId, kind, shared, space) {
   activeSites().forEach(s => { fields[s.key] = (slot.links && slot.links[s.key]) || ""; });
 
   const targetPerso = space === "perso";
-  // Réutilise l'ID existant si on modifie, sinon en crée un stable
+  const prefixe = targetPerso ? "perso_" : "kpi_";
+
+  // Un identifiant ne doit JAMAIS changer d'espace.
+  // Avant : la fiche gardait son id en passant de « partagé » à « personnel ».
+  // Elle disparaissait de la liste partagée sans laisser de marqueur, donc un
+  // collègue la renvoyait à la synchro suivante — et l'utilisateur se
+  // retrouvait avec la même fiche des deux côtés, impossible à supprimer.
+  const changeEspace = !!initialId && !!kind && ((kind === "perso") !== targetPerso);
+  const id = (initialId && !changeEspace)
+    ? initialId
+    : prefixe + slugifyId(shared.title) + "_" + slugifyId(freq) + "_" + Date.now().toString(36);
+
   const entry = {
-    id: initialId || ((targetPerso ? "perso_" : "kpi_") + slugifyId(shared.title) + "_" + slugifyId(freq) + "_" + Date.now().toString(36)),
+    id,
     manual: true,
     ...(targetPerso ? { personal: true } : {}),
     ...fields
   };
   stamp(entry);
-  // Retire l'ancienne occurrence des deux espaces (gère le déplacement perso ↔ partagé)
+
+  let quitteLePartage = false, quitteLePerso = false;
+  if (changeEspace) {
+    if (kind === "perso") {
+      personalEntries = personalEntries.filter(k => k.id !== initialId);
+      quitteLePerso = true;
+    } else {
+      // La fiche quitte l'annuaire partagé : marqueur daté, comme une
+      // suppression normale. Elle reste stockée (donc récupérable depuis la
+      // corbeille) et l'information circule vers les autres appareils.
+      markDeleted(initialId, manualEntries.find(k => k.id === initialId));
+      quitteLePartage = true;
+    }
+    reporterFavori(initialId, id);
+  }
+
+  // Retire l'ancienne occurrence des deux espaces (sécurité si un id a déjà
+  // été dupliqué par une version antérieure de l'application)
   manualEntries   = manualEntries.filter(k => k.id !== entry.id);
   personalEntries = personalEntries.filter(k => k.id !== entry.id);
   if (targetPerso) personalEntries.push(entry);
   else             manualEntries.push(entry);
 
-  return { shared: !targetPerso, perso: targetPerso, isNew: !initialId };
+  return {
+    shared: !targetPerso || quitteLePartage,
+    perso:  targetPerso  || quitteLePerso,
+    isNew: !initialId,
+    id
+  };
 }
 
 /**
@@ -1278,6 +1632,8 @@ function saveKpiForm() {
   const space = document.getElementById("kpiSpaceInput").value; // "shared" | "perso"
 
   const done = { created: [], updated: [], removed: [] };
+  const favorisARetirer = [];   // temporalités retirées qui étaient en favori
+  const idsActifs = [];         // identifiants des temporalités conservées
   let touchesShared = false, touchesPerso = false;
 
   STD_FREQS.forEach(freq => {
@@ -1291,15 +1647,29 @@ function saveKpiForm() {
       const t = removeTemporality(initialId, kind);
       touchesShared = touchesShared || t.shared;
       touchesPerso  = touchesPerso  || t.perso;
-      favorites = favorites.filter(f => f !== initialId);
-      saveFavoritesLocalOnly();
+      // Le favori n'est retiré que si la fiche disparaît réellement. Quand
+      // l'utilisateur change seulement de temporalité (Mensuelle décochée,
+      // Hebdomadaire cochée), il sera reporté plus bas sur le nouvel
+      // identifiant au lieu d'être perdu sans explication.
+      favorisARetirer.push(initialId);
       return;
     }
 
     const t = upsertTemporality(freq, slot, initialId, kind, shared, space);
     touchesShared = touchesShared || t.shared;
     touchesPerso  = touchesPerso  || t.perso;
+    idsActifs.push(t.id);
     (t.isNew ? done.created : done.updated).push(freq);
+  });
+
+  // Favori d'une temporalité retirée : s'il reste au moins une temporalité à
+  // cette fiche (cas d'un simple changement Mensuelle → Hebdomadaire), on le
+  // reporte au lieu de le perdre en silence. Sinon la fiche entière s'en va et
+  // le favori est retiré proprement, avec horodatage.
+  favorisARetirer.forEach(ancien => {
+    if (!favorites.includes(ancien)) return;
+    if (idsActifs.length) reporterFavori(ancien, idsActifs[0]);
+    else retirerDesFavoris([ancien]);
   });
 
   persistKpiChanges(touchesShared, touchesPerso, shared.title, space, done);
@@ -1308,8 +1678,16 @@ function saveKpiForm() {
 
 /** Persiste les espaces modifiés, journalise et notifie. */
 function persistKpiChanges(touchesShared, touchesPerso, title, space, done) {
-  if (touchesPerso)  savePersonalEntries();
-  if (touchesShared) { saveManualEntries(false); saveOverrides(false); saveDeletedIds(false); }
+  // Les DEUX espaces sont toujours réécrits.
+  // Un déplacement « partagé ↔ personnel » modifie les deux listes en mémoire ;
+  // n'enregistrer que celle d'arrivée laissait l'autre périmée sur le disque.
+  // Au rechargement suivant la fiche existait dans les deux espaces, puis
+  // repartait dans l'annuaire partagé de toute l'équipe.
+  savePersonalEntries();
+  saveManualEntries(false);
+  saveOverrides(false);
+  saveDeletedIds(false);
+  saveFavoritesLocalOnly();
 
   const spaceLabel = space === "perso" ? "perso" : "shared";
   const plural = n => n > 1 ? "s" : "";
@@ -1894,6 +2272,11 @@ let connectedSyncCode = null;
 let applyingRemoteSync = false;
 let syncBusy = false;       // verrou : une seule opération de synchro (fusion/envoi) à la fois
 let initialSyncDone = false; // l'écoute temps réel n'agit qu'après la fusion initiale
+// Dernière mise à jour reçue pendant que le verrou était pris. Elle était
+// auparavant purement et simplement JETÉE : l'appareil gardait une vue périmée,
+// puis son envoi suivant réécrivait le document partagé et annulait la
+// modification du collègue. On la met désormais de côté pour la rejouer.
+let pendingRemotePayload = null;
 let localUpdatedAt = +(localStorage.getItem("kpiLocalUpdatedAt") || 0); // dernière modif locale
 let isBooting = true;   // pendant le chargement initial : aucune modification "réelle", donc aucun envoi
 let clockOffset = +(localStorage.getItem("kpiClockOffset") || 0); // écart horloge poste ↔ serveur
@@ -1923,7 +2306,7 @@ function stamp(entry) {
 function getMeta() {
   try { return JSON.parse(localStorage.getItem("kpiMeta")) || {}; } catch { return {}; }
 }
-function setMeta(m) { localStorage.setItem("kpiMeta", JSON.stringify(m)); }
+function setMeta(m) { ecrireDonnees("kpiMeta", m); }
 function touchMeta(key) { const m = getMeta(); m[key] = now(); setMeta(m); return m; }
 let pendingPush = false;    // un envoi n'a pas pu aboutir (hors-ligne) et devra être rejoué
 let netHandlersBound = false;
@@ -1964,8 +2347,8 @@ function syncDocRef(code) {
 
 function buildSyncPayload() {
   const meta = getMeta();
-  const favoritesByUser = JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}");
-  const favoritesMeta   = JSON.parse(localStorage.getItem("kpiFavMeta") || "{}");
+  const favoritesByUser = Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {};
+  const favoritesMeta   = Store.readJSON(Store.KEYS.FAV_META, {}) || {};
   favoritesByUser[currentUser] = favorites;
   favoritesMeta[currentUser]   = meta.favAt || now();
   // Une fiche supprimée définitivement ne reviendra jamais : les favoris qui
@@ -1979,8 +2362,36 @@ function buildSyncPayload() {
     });
     favorites = favoritesByUser[currentUser] || favorites;
   }
-  localStorage.setItem("kpiSyncFavorites", JSON.stringify(favoritesByUser));
-  localStorage.setItem("kpiFavMeta", JSON.stringify(favoritesMeta));
+
+  // Références mortes des AUTRES utilisateurs : personne ne les nettoyait.
+  // Un favori dont la fiche n'existe plus nulle part (identifiant réécrit par
+  // une ancienne migration, fiche remplacée) restait publié indéfiniment et
+  // était signalé par le banc de test. On ne le fait qu'APRÈS un premier
+  // échange complet avec le cloud, pour ne pas retirer un favori dont la fiche
+  // ne serait simplement pas encore arrivée sur cet appareil.
+  if (initialSyncDone) {
+    const cartePerso = lireMapPerso(LS_PERSO_MAP);
+    const connus = new Set([
+      ...manualEntries.map(k => k && k.id),
+      ...personalEntries.map(k => k && k.id),
+      ...deletedIds.map(d => d && d.id),
+      ...personalTrash.map(v => v && v.id),
+      ...Object.keys(cartePerso).reduce((acc, u) => acc.concat(
+        (Array.isArray(cartePerso[u]) ? cartePerso[u] : []).map(k => k && k.id)), [])
+    ]);
+    Object.keys(favoritesByUser).forEach(u => {
+      const liste = favoritesByUser[u];
+      if (!Array.isArray(liste)) return;
+      const propre = liste.filter(id => connus.has(id));
+      if (propre.length !== liste.length) {
+        favoritesByUser[u] = propre;
+        favoritesMeta[u] = now();      // sinon un autre appareil les renverrait
+      }
+    });
+    favorites = favoritesByUser[currentUser] || favorites;
+  }
+  Store.writeJSON(Store.KEYS.SYNC_FAV, favoritesByUser);
+  Store.writeJSON(Store.KEYS.FAV_META, favoritesMeta);
 
   // Espace personnel : on remplace UNIQUEMENT son propre bloc et on
   // retransmet ceux des autres utilisateurs sans y toucher.
@@ -1994,11 +2405,17 @@ function buildSyncPayload() {
     delete personalByUser[currentUser];
     delete personalTrashByUser[currentUser];
   }
-  localStorage.setItem(LS_PERSO_MAP, JSON.stringify(personalByUser));
-  localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(personalTrashByUser));
+  Store.writeJSON(LS_PERSO_MAP, personalByUser);
+  Store.writeJSON(LS_PERSO_TRASH, personalTrashByUser);
+
+  // Dernier filet avant l'envoi : aucune fiche supprimée définitivement ne
+  // doit repartir vers le cloud, même si un chemin d'importation ou de
+  // restauration l'avait réintroduite localement.
+  const morts = new Set(purgedIds || []);
+  const fichesPartagees = morts.size ? manualEntries.filter(k => k && !morts.has(k.id)) : manualEntries;
 
   return {
-    kpiManual: manualEntries,     // toutes les fiches partagées, fusionnées par élément
+    kpiManual: fichesPartagees,   // toutes les fiches partagées, fusionnées par élément
     kpiDeleted: deletedIds,
     kpiSites: sites,
     kpiPurged: purgedIds,
@@ -2021,12 +2438,44 @@ function scheduleAutoSync() {
   syncDebounceHandle = setTimeout(() => pushToCloud(false), 1500);
 }
 
-async function pushToCloud(manual) {
+/**
+ * Envoie l'état local vers le document partagé.
+ * @param {boolean} manual  déclenché par un clic (affiche des messages)
+ * @param {boolean} forcer  « Cet appareil fait référence » : écrase sans
+ *                          refusionner au préalable. Réservé au bouton dédié.
+ */
+async function pushToCloud(manual, forcer) {
   const cfg = getSyncConfig();
   if (!cfg || !fbDb) { pendingPush = true; return; }
   if (!navigator.onLine) { pendingPush = true; setSyncStatusUI("offline"); return; }
+  // Garde-fou : après une déconnexion, toutes les listes sont vides. Un envoi
+  // déclenché à ce moment-là (modification restée en attente, retour sur
+  // l'onglet) écrivait un document VIDE et effaçait l'annuaire de toute
+  // l'équipe. Sans utilisateur connecté, on n'envoie rien.
+  if (!currentUser) { pendingPush = false; return; }
   setSyncStatusUI("syncing");
   try {
+    // ── RELIRE AVANT D'ÉCRIRE ──
+    // L'envoi remplace le document partagé en entier. Si cet appareil avait
+    // manqué une modification (onglet en arrière-plan, verrou de synchro,
+    // travail hors-ligne), son envoi effaçait le travail des autres. On
+    // refusionne donc systématiquement l'état distant juste avant d'écrire.
+    const avant = forcer ? null : await syncDocRef(cfg.code).get();
+    if (avant && avant.exists) {
+      const distant = avant.data();
+      const dejaVu = distant && (distant.updatedAt === lastSyncPushAt || distant.updatedAt === lastAppliedSyncAt);
+      if (distant && distant.updatedAt && !dejaVu) {
+        applyingRemoteSync = true;
+        try {
+          mergeRemoteContent(distant);
+          mergeRemoteSites(distant);
+          mergeRemoteFavorites(distant);
+        } finally { applyingRemoteSync = false; }
+        lastAppliedSyncAt = distant.updatedAt;
+        rebuildData(false);
+      }
+    }
+
     const payload = buildSyncPayload();
     lastSyncPushAt = payload.updatedAt;
     await syncDocRef(cfg.code).set(payload);
@@ -2050,18 +2499,27 @@ function mergeRemoteContent(payload) {
   let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
 
-  // Compatibilité ancien format : kpiExcel + kpiOverrides → fiches manuelles
-  const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
-                 : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : []);
-  if (oldExcel.length) {
-    const overr = (payload.kpiOverrides && typeof payload.kpiOverrides === "object") ? payload.kpiOverrides : {};
-    oldExcel.forEach(d => {
-      const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
-      const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
-      if (!remoteManual.some(m => m.id === newId)) {
-        remoteManual.push({ ...merged, id: newId, manual: true, _mtime: merged._mtime || 0 });
-      }
-    });
+  // ── Compatibilité ancien format : kpiExcel + kpiOverrides → fiches ──
+  // Ce chemin ne s'exécute QUE si le document ne contient pas déjà la liste
+  // moderne `kpiManual`. Auparavant il tournait aussi quand `kpiManual`
+  // faisait autorité : un résidu `kpiExcel`/`kpiData` oublié dans le document
+  // réinjectait ses lignes dans l'annuaire de tout le monde, à chaque fusion.
+  if (!Array.isArray(payload.kpiManual)) {
+    const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel
+                   : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => !d.manual) : []);
+    if (oldExcel.length) {
+      const overr = (payload.kpiOverrides && typeof payload.kpiOverrides === "object") ? payload.kpiOverrides : {};
+      oldExcel.forEach(d => {
+        const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
+        const newId = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+        // Une conversion ne doit jamais ramener une fiche déjà supprimée
+        // définitivement, ni une fiche mise à la corbeille ici.
+        if (isPurged(newId) || isDeleted(newId)) return;
+        if (!remoteManual.some(m => m.id === newId)) {
+          remoteManual.push({ ...merged, id: newId, manual: true, _mtime: merged._mtime || 0 });
+        }
+      });
+    }
   }
 
   if (remoteManual.length || Array.isArray(payload.kpiManual)) {
@@ -2075,11 +2533,19 @@ function mergeRemoteContent(payload) {
   if (Array.isArray(payload.kpiPurged)) {
     purgedIds = [...new Set([...(purgedIds || []), ...payload.kpiPurged])];
     savePurged(false);
-    // Une purge décidée sur un autre appareil libère aussi la mémoire ici
-    const avant = manualEntries.length;
-    manualEntries = manualEntries.filter(k => !purgedIds.includes(k.id));
-    if (manualEntries.length !== avant) saveManualEntries(false);
   }
+  // ⚠️ HORS du `if` ci-dessus, volontairement.
+  // Les suppressions définitives connues de CET appareil doivent être
+  // appliquées aux fiches qui viennent d'arriver, même si le document reçu
+  // ne contient aucun champ `kpiPurged` (document ancien, partiel ou
+  // corrompu). Sinon la fiche purgée revenait dans la liste locale… puis
+  // repartait vers le cloud au premier envoi : c'est le mécanisme central
+  // des « KPI qui reviennent alors qu'on les a supprimés ».
+  nettoyerPurgees();
+  // Un marqueur de corbeille dont la fiche a été purgée n'a plus d'objet :
+  // il produirait une ligne fantôme, non récupérable et indestructible.
+  nettoyerMarqueursPurges();
+
   if (Array.isArray(payload.kpiActivity)) {
     activityLog = mergeActivity(activityLog, payload.kpiActivity, MAX_ACTIVITY);
     saveActivity(false);
@@ -2087,24 +2553,29 @@ function mergeRemoteContent(payload) {
 
   // ── Espace personnel, rangé par utilisateur ──
   if (payload.personalByUser && typeof payload.personalByUser === "object") {
-    const distant      = payload.personalByUser;
     const distantTrash = (payload.personalTrashByUser && typeof payload.personalTrashByUser === "object")
                        ? payload.personalTrashByUser : {};
-    // On conserve les blocs de TOUS les utilisateurs pour pouvoir les
-    // retransmettre intacts, mais on n'en lit qu'un seul : le sien.
-    localStorage.setItem(LS_PERSO_MAP, JSON.stringify(distant));
-    localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(distantTrash));
+    // Fusion clé par clé, jamais remplacement en bloc : un appareil dont le
+    // document était périmé effaçait sinon du stockage local (puis du cloud)
+    // le bloc personnel de ses collègues.
+    const distant = mergeParUtilisateur(lireMapPerso(LS_PERSO_MAP), payload.personalByUser, currentUser);
+    const fusionTrash = mergeParUtilisateur(lireMapPerso(LS_PERSO_TRASH), distantTrash, currentUser);
+    Store.writeJSON(LS_PERSO_MAP, distant);
+    Store.writeJSON(LS_PERSO_TRASH, fusionTrash);
 
     if (isPersonalSyncOn()) {
-      const mien = Array.isArray(distant[currentUser]) ? distant[currentUser] : [];
+      const mien = Array.isArray(payload.personalByUser[currentUser]) ? payload.personalByUser[currentUser] : [];
       const mienneTrash = Array.isArray(distantTrash[currentUser]) ? distantTrash[currentUser] : [];
       personalEntries = mergeEntries(personalEntries, mien);
       personalTrash   = mergePersonalTrash(personalTrash, mienneTrash);
       appliquerCorbeillePerso();
-      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
-      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+      Store.writeJSON("kpiPersonal_" + currentUser, personalEntries);
+      Store.writeJSON("kpiPersonalTrash_" + currentUser, personalTrash);
     }
   }
+
+  // Favoris devenus orphelins après cette fusion (fiche purgée ailleurs).
+  nettoyerFavoris();
 }
 
 /**
@@ -2190,50 +2661,76 @@ async function pullFromCloud(manual, replace) {
   } finally {
     syncBusy = false;
   }
+  rejouerSyncEnAttente();
 }
 
 // REMPLACE réellement les données locales par celles du cloud (pas de fusion).
 // Sert à sortir d'une divergence : le cloud fait autorité, le local est écrasé.
 function replaceLocalWithRemote(payload) {
-  pushSnapshot("avant remplacement par le cloud");
-  applyingRemoteSync = true;
-
   // Fiches partagées : on prend celles du cloud telles quelles
   let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
-  // Compat ancien format : convertit kpiExcel + overrides en fiches
-  const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel : [];
-  if (oldExcel.length) {
+  // Compat ancien format : convertit kpiExcel + overrides en fiches,
+  // uniquement si le document ne contient pas déjà la liste moderne.
+  if (!Array.isArray(payload.kpiManual)) {
+    const oldExcel = Array.isArray(payload.kpiExcel) ? payload.kpiExcel : [];
     const overr = (payload.kpiOverrides && typeof payload.kpiOverrides === "object") ? payload.kpiOverrides : {};
     oldExcel.forEach(d => {
       const merged = overr[d.id] ? { ...d, ...overr[d.id] } : d;
       const id = "kpi_" + slugifyId(merged.title) + "_" + slugifyId(merged.freq);
+      if (isPurged(id)) return;   // ne jamais ramener une suppression définitive
       if (!remoteManual.some(m => m.id === id)) remoteManual.push({ ...merged, id, manual: true, _mtime: merged._mtime || 1 });
     });
   }
+
+  // Filet de sécurité : « Remplacer par le cloud » est destiné à sortir d'une
+  // divergence, pas à vider l'annuaire. Un document cloud vide (ou dont les
+  // fiches n'ont pas encore été écrites) effaçait tout sans prévenir.
+  if (!remoteManual.length && manualEntries.length) {
+    if (!confirm(
+      `Le cloud ne contient AUCUNE fiche, alors que cet appareil en a ${manualEntries.length}.\n\n` +
+      "Continuer effacerait toutes les fiches de cet appareil.\n\n" +
+      "Voulez-vous vraiment remplacer vos données par un annuaire vide ?"
+    )) { showToast("Remplacement annulé — vos fiches sont conservées", 3500); return; }
+  }
+
+  pushSnapshot("avant remplacement par le cloud");
+  applyingRemoteSync = true;
+
   manualEntries = remoteManual;
   saveManualEntries(false);
 
-  deletedIds = Array.isArray(payload.kpiDeleted) ? normalizeDeleted(payload.kpiDeleted) : [];
-  saveDeletedIds(false);
-  purgedIds = Array.isArray(payload.kpiPurged) ? payload.kpiPurged : [];
-  savePurged(false);
+  // Champ absent ≠ liste vide.
+  // Un document ancien ou partiel n'a ni `kpiDeleted` ni `kpiPurged` : les
+  // remettre à zéro faisait réapparaître toutes les fiches supprimées, y
+  // compris celles supprimées définitivement, qui repartaient ensuite au cloud.
+  if (Array.isArray(payload.kpiDeleted)) {
+    deletedIds = normalizeDeleted(payload.kpiDeleted);
+    saveDeletedIds(false);
+  }
+  if (Array.isArray(payload.kpiPurged)) {
+    // Union : une suppression définitive décidée ici reste valable.
+    purgedIds = [...new Set([...(purgedIds || []), ...payload.kpiPurged])];
+    savePurged(false);
+  }
+  nettoyerPurgees();
+  nettoyerMarqueursPurges();
   if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) { sites = payload.kpiSites; saveSites(false); }
   if (Array.isArray(payload.kpiActivity)) { activityLog = payload.kpiActivity; saveActivity(false); }
   if (payload.favoritesByUser) {
-    localStorage.setItem("kpiSyncFavorites", JSON.stringify(payload.favoritesByUser));
+    ecrireDonnees("kpiSyncFavorites", payload.favoritesByUser);
     if (payload.favoritesByUser[currentUser]) { favorites = payload.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
   }
   if (payload.personalByUser && typeof payload.personalByUser === "object") {
-    localStorage.setItem(LS_PERSO_MAP, JSON.stringify(payload.personalByUser));
-    localStorage.setItem(LS_PERSO_TRASH, JSON.stringify(payload.personalTrashByUser || {}));
+    ecrireDonnees(LS_PERSO_MAP, payload.personalByUser);
+    ecrireDonnees(LS_PERSO_TRASH, payload.personalTrashByUser || {});
     if (isPersonalSyncOn()) {
       personalEntries = Array.isArray(payload.personalByUser[currentUser])
                       ? payload.personalByUser[currentUser] : [];
       personalTrash = Array.isArray((payload.personalTrashByUser || {})[currentUser])
                     ? payload.personalTrashByUser[currentUser] : [];
-      localStorage.setItem("kpiPersonal_" + currentUser, JSON.stringify(personalEntries));
-      localStorage.setItem("kpiPersonalTrash_" + currentUser, JSON.stringify(personalTrash));
+      ecrireDonnees("kpiPersonal_" + currentUser, personalEntries);
+      ecrireDonnees("kpiPersonalTrash_" + currentUser, personalTrash);
     }
   }
 
@@ -2247,6 +2744,25 @@ function replaceLocalWithRemote(payload) {
   showToast("✅ Données remplacées par celles du cloud", 3000);
 }
 
+/**
+ * Rejoue la dernière mise à jour distante mise de côté pendant que le verrou
+ * de synchronisation était pris. À appeler dès que le verrou est relâché.
+ */
+function rejouerSyncEnAttente() {
+  const p = pendingRemotePayload;
+  pendingRemotePayload = null;
+  if (!p || !p.updatedAt) return;
+  if (!initialSyncDone || syncBusy) { pendingRemotePayload = p; return; }
+  if (p.updatedAt === lastSyncPushAt || p.updatedAt === lastAppliedSyncAt) return;
+  syncBusy = true;
+  try {
+    lastAppliedSyncAt = p.updatedAt;
+    applyRemoteData(p, true);
+  } finally {
+    syncBusy = false;
+  }
+}
+
 function listenForRemoteChanges(code) {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
   fbUnsub = syncDocRef(code).onSnapshot(
@@ -2257,8 +2773,8 @@ function listenForRemoteChanges(code) {
       // Ne rien traiter tant que la fusion initiale n'est pas finie,
       // ni pendant qu'une autre opération de synchro est en cours (verrou),
       // ni si c'est l'écho de notre propre écriture.
-      if (!initialSyncDone || syncBusy) return;
       if (payload.updatedAt === lastSyncPushAt || payload.updatedAt === lastAppliedSyncAt) return;
+      if (!initialSyncDone || syncBusy) { pendingRemotePayload = payload; return; }
       syncBusy = true;
       try {
         lastAppliedSyncAt = payload.updatedAt;
@@ -2267,6 +2783,7 @@ function listenForRemoteChanges(code) {
       } finally {
         syncBusy = false;
       }
+      rejouerSyncEnAttente();
     },
     err => setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message)
   );
@@ -2321,6 +2838,9 @@ async function initialSync(code, manual) {
       if (canPush && hasLocalDataNewerThan(remote)) await pushToCloud(false);
     }
     initialSyncDone = true;
+    // Maintenant seulement on sait ce que le cloud contient réellement : c'est
+    // le bon moment pour retirer les favoris qui ne désignent plus rien.
+    if (nettoyerFavoris()) saveFavoritesLocalOnly();
     setSyncStatusUI("connected");
   } catch (err) {
     setSyncStatusUI(navigator.onLine ? "error" : "offline", err.message);
@@ -2328,6 +2848,7 @@ async function initialSync(code, manual) {
   } finally {
     syncBusy = false;
   }
+  rejouerSyncEnAttente();
 }
 
 // Notre état local contient-il une fiche plus récente que ce que le cloud connaît ?
@@ -2587,7 +3108,7 @@ function cleanDuplicateVariants() {
       markDeleted(v.id, v);
       touchedShared = true;
     }
-    favorites = favorites.filter(f => f !== v.id);
+    retirerDesFavoris([v.id]);
   });
 
   saveFavoritesLocalOnly();
@@ -2707,7 +3228,13 @@ document.getElementById("disconnectSyncBtn")?.addEventListener("click", () => {
    destructive (réception cloud, import, reset).
 ============================================ */
 const LS_SNAPSHOTS = "kpiSnapshots";
-const MAX_SNAPSHOTS = 12;
+const MAX_SNAPSHOTS = 10;
+// Espacement minimal entre deux instantanés portant le même motif.
+// Il était de 5 SECONDES : comme un instantané est pris avant chaque réception
+// cloud, un collègue modifiant une fiche toutes les 6 secondes remplissait
+// les 12 emplacements en une minute et demie. Les « 12 versions de sécurité »
+// ne couvraient donc que ~66 secondes d'historique, pour 2,6 Mo de stockage.
+const ESPACEMENT_SNAPSHOT_MS = 10 * 60 * 1000;   // 10 minutes
 
 // Étiquette « N KPIs · M variantes · P perso » pour un instantané.
 // Gère les anciens formats : partagees, ou excel+manual, ou seulement manual.
@@ -2743,12 +3270,21 @@ function pushSnapshot(reason) {
       },
       manualEntries, personalEntries,
       deletedIds, sites,
-      purgedIds, activityLog, meta: getMeta(),
-      favorites
+      purgedIds, meta: getMeta(),
+      favorites,
+      favoritesByUser: Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {},
+      favoritesMeta:   Store.readJSON(Store.KEYS.FAV_META, {}) || {}
+      // `activityLog` n'est volontairement PAS recopié ici : le journal pèse
+      // jusqu'à 140 Ko et se retrouvait dupliqué dans chacun des 12
+      // instantanés, soit près de la MOITIÉ de toute la mémoire occupée par
+      // l'application. Il se reconstitue de toute façon par fusion avec les
+      // autres appareils, et une restauration ne doit pas effacer l'historique
+      // des actions faites entre-temps.
     };
     const list = getSnapshots();
-    // Évite les doublons rapprochés (moins de 5 s avec le même motif)
-    if (list.length && list[0].reason === snap.reason && snap.at - list[0].at < 5000) return;
+    // Espacement : au plus un instantané par tranche de 10 minutes pour un
+    // même motif (voir ESPACEMENT_SNAPSHOT_MS).
+    if (list.length && list[0].reason === snap.reason && snap.at - list[0].at < ESPACEMENT_SNAPSHOT_MS) return;
     list.unshift(snap);
     while (list.length > MAX_SNAPSHOTS) list.pop();
     try {
@@ -2774,13 +3310,17 @@ function restoreSnapshot(index) {
   if (!confirm(
     `Restaurer la version du ${d.toLocaleDateString("fr-FR")} à ${d.toLocaleTimeString("fr-FR").slice(0,5)} ?\n` +
     `(${snapCountLabel(s.counts)})\n\n` +
-    "L'état actuel sera lui-même sauvegardé avant restauration."
+    "L'état actuel sera lui-même sauvegardé avant restauration.\n\n" +
+    "⚠️ Cette restauration s'applique à CET APPAREIL. Les fiches partagées que " +
+    "vos collègues ont modifiées depuis garderont leur version la plus récente. " +
+    "Pour imposer cette version à tout le monde, utilisez ensuite « ⭐ Cet appareil fait référence »."
   )) return;
 
   pushSnapshot("avant restauration");
 
   if (Array.isArray(s.manualEntries))   manualEntries = s.manualEntries;
   if (Array.isArray(s.personalEntries)) personalEntries = s.personalEntries;
+  if (Array.isArray(s.personalTrash))   personalTrash = s.personalTrash;
   // Compat : ancien instantané avec excelData/overrides → converti en fiches
   if (Array.isArray(s.excelData) && s.excelData.length) {
     const overr = (s.overrides && typeof s.overrides === "object") ? s.overrides : {};
@@ -2794,18 +3334,36 @@ function restoreSnapshot(index) {
   }
   if (Array.isArray(s.deletedIds))      deletedIds = normalizeDeleted(s.deletedIds);
   if (Array.isArray(s.sites) && s.sites.length) sites = s.sites;
-  if (Array.isArray(s.purgedIds))       { purgedIds = s.purgedIds; savePurged(false); }
+  // UNION, jamais remplacement : une suppression définitive ne se « défait »
+  // pas par un retour en arrière local. Sinon la fiche revenait ici, puis
+  // repartait vers le cloud et réapparaissait chez tout le monde.
+  if (Array.isArray(s.purgedIds)) {
+    purgedIds = [...new Set([...(purgedIds || []), ...s.purgedIds])];
+    savePurged(false);
+  }
+  // Le journal d'activité n'est plus recopié dans les instantanés (voir
+  // pushSnapshot) ; les anciens instantanés en contiennent encore un.
   if (Array.isArray(s.activityLog))     { activityLog = s.activityLog; saveActivity(false); }
   if (s.meta && typeof s.meta === "object") setMeta(s.meta);
-  if (Array.isArray(s.favorites))       { favorites = s.favorites; saveFavoritesLocalOnly(); }
+  if (Array.isArray(s.favorites))       { favorites = s.favorites; }
+  // Favoris des AUTRES utilisateurs : sans ça, le bloc partagé continuait de
+  // désigner des fiches que la restauration venait de faire disparaître.
+  if (s.favoritesByUser && typeof s.favoritesByUser === "object") {
+    Store.writeJSON(Store.KEYS.SYNC_FAV, s.favoritesByUser);
+    if (s.favoritesMeta && typeof s.favoritesMeta === "object") Store.writeJSON(Store.KEYS.FAV_META, s.favoritesMeta);
+  }
 
-  saveManualEntries(false); savePersonalEntries();
+  nettoyerPurgees();
+  nettoyerMarqueursPurges();
+  reparerCollisionsEspaces();
+  saveManualEntries(false); savePersonalEntries(); savePersonalTrash();
   saveDeletedIds(false); saveSites(false);
+  saveFavoritesLocalOnly();
   markLocalChange();     // cette version devient la plus récente
   rebuildData(true);     // et repart vers le cloud si la synchro est active
   renderSnapshotList();
   renderSyncDiag();
-  showToast("↩ Version restaurée", 3000);
+  showToast("↩ Version restaurée sur cet appareil", 3000);
 }
 
 function renderSnapshotList() {
@@ -2870,9 +3428,11 @@ function exportBackup() {
     exportedFrom: isFileProtocol() ? "file://" : location.origin,
     user: currentUser,
     manualEntries, deletedIds, sites,
-    personalEntries, purgedIds, activityLog, meta: getMeta(),
-    favoritesMeta: JSON.parse(localStorage.getItem("kpiFavMeta") || "{}"),
-    favoritesByUser: JSON.parse(localStorage.getItem("kpiSyncFavorites") || "{}")
+    personalEntries, personalTrash,   // la corbeille personnelle manquait à l'export
+    purgedIds, activityLog, meta: getMeta(),
+    favorites,                        // la liste de l'utilisateur courant manquait aussi
+    favoritesMeta: Store.readJSON(Store.KEYS.FAV_META, {}) || {},
+    favoritesByUser: Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {}
   };
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -2941,13 +3501,23 @@ function importBackup(file) {
     if (!confirm(
       `Restaurer la sauvegarde du ${(b.exportedAt || "").slice(0, 10)} ` +
       `(${(b.manualEntries?.length || 0)} fiche(s)) ?\n\n` +
-      "Les données actuelles de cet appareil seront remplacées."
+      "Le contenu de la sauvegarde est FUSIONNÉ avec les données actuelles :\n" +
+      "• les fiches de la sauvegarde absentes ici sont ajoutées ;\n" +
+      "• pour une fiche présente des deux côtés, la version la plus récente est gardée ;\n" +
+      "• les suppressions définitives restent définitives.\n\n" +
+      "Rien de ce que vos collègues ont fait depuis ne sera effacé."
     )) return;
 
     pushSnapshot("avant import de sauvegarde");
 
-    if (Array.isArray(b.manualEntries))   manualEntries = b.manualEntries;
-    if (Array.isArray(b.personalEntries)) personalEntries = b.personalEntries;
+    // FUSION et non remplacement.
+    // Avant, l'import écrasait les fiches, la corbeille ET les suppressions
+    // définitives, puis renvoyait le tout au cloud : les fiches supprimées
+    // depuis la sauvegarde ressuscitaient pour toute l'équipe, et les fiches
+    // créées entre-temps disparaissaient.
+    if (Array.isArray(b.manualEntries))   manualEntries = mergeEntries(manualEntries, b.manualEntries);
+    if (Array.isArray(b.personalEntries)) personalEntries = mergeEntries(personalEntries, b.personalEntries);
+    if (Array.isArray(b.personalTrash))   personalTrash = mergePersonalTrash(personalTrash, b.personalTrash);
     // Compat : ancienne sauvegarde avec excelData/overrides → fiches
     if (Array.isArray(b.excelData) && b.excelData.length) {
       const overr = (b.overrides && typeof b.overrides === "object") ? b.overrides : {};
@@ -2959,22 +3529,32 @@ function importBackup(file) {
         }
       });
     }
-    if (Array.isArray(b.deletedIds))      deletedIds = normalizeDeleted(b.deletedIds);
-    if (Array.isArray(b.purgedIds))       { purgedIds = b.purgedIds; savePurged(false); }
-    if (Array.isArray(b.activityLog))     { activityLog = b.activityLog; saveActivity(false); }
+    if (Array.isArray(b.deletedIds))      deletedIds = mergeDeleted(deletedIds, normalizeDeleted(b.deletedIds));
+    // Union : une suppression définitive ne se défait jamais par un import.
+    if (Array.isArray(b.purgedIds))       { purgedIds = [...new Set([...(purgedIds || []), ...b.purgedIds])]; savePurged(false); }
+    if (Array.isArray(b.activityLog))     { activityLog = mergeActivity(activityLog, b.activityLog, MAX_ACTIVITY); saveActivity(false); }
     if (b.meta && typeof b.meta === "object") setMeta(b.meta);
-    if (b.favoritesMeta) localStorage.setItem("kpiFavMeta", JSON.stringify(b.favoritesMeta));
+    if (b.favoritesMeta) Store.writeJSON(Store.KEYS.FAV_META, b.favoritesMeta);
     if (Array.isArray(b.sites) && b.sites.length) sites = b.sites;
     if (b.favoritesByUser) {
-      localStorage.setItem("kpiSyncFavorites", JSON.stringify(b.favoritesByUser));
-      if (b.favoritesByUser[currentUser]) { favorites = b.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
+      Store.writeJSON(Store.KEYS.SYNC_FAV, b.favoritesByUser);
+      if (b.favoritesByUser[currentUser]) favorites = b.favoritesByUser[currentUser];
     }
-    saveManualEntries(false); savePersonalEntries();
-    saveDeletedIds(false); saveSites(false);
+    // `favorites` a longtemps été absent des sauvegardes (seul le bloc partagé
+    // était exporté, et il reste vide tant qu'aucun envoi n'a eu lieu).
+    if (Array.isArray(b.favorites) && b.favorites.length) favorites = b.favorites;
+
+    nettoyerPurgees();
+    nettoyerMarqueursPurges();
+    reparerCollisionsEspaces();
+    appliquerCorbeillePerso();
+    nettoyerFavoris();
+    saveManualEntries(false); savePersonalEntries(); savePersonalTrash();
+    saveDeletedIds(false); saveSites(false); saveFavoritesLocalOnly();
     markLocalChange();          // la restauration devient la version la plus récente
     rebuildData(true);          // ré-envoie vers le cloud si la synchro est active
     renderSyncDiag();
-    showToast("✅ Sauvegarde restaurée", 3000);
+    showToast("✅ Sauvegarde fusionnée avec vos données", 3000);
   };
   reader.readAsText(file);
 }
@@ -3143,7 +3723,7 @@ document.getElementById("forceMasterBtn")?.addEventListener("click", async () =>
   saveManualEntries(false);
   saveSites(false);
   try {
-    await pushToCloud(true);
+    await pushToCloud(true, true);   // forcer : c'est le seul chemin qui écrase sans refusionner
     showToast("⭐ Cloud écrasé avec les données de cet appareil", 3500);
   } catch (err) {
     showToast("❌ Échec de l'envoi", 3000);
