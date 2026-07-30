@@ -26,10 +26,19 @@
   function emporte(candidat, enPlace, champDate) {
     const tc = candidat[champDate] || 0, te = enPlace[champDate] || 0;
     if (tc !== te) return tc > te;
-    // Égalité : arbitrage identique sur tous les appareils
-    const ac = String(candidat._by || ""), ae = String(enPlace._by || "");
+    // Égalité : arbitrage identique sur tous les appareils.
+    // Les fiches portent l'auteur dans `_by`, les marqueurs de corbeille dans
+    // `by` : on accepte les deux, sinon l'arbitrage par auteur ne servait jamais
+    // pour les marqueurs et retombait directement sur la comparaison JSON.
+    const ac = auteur(candidat), ae = auteur(enPlace);
     if (ac !== ae) return ac > ae;
     return JSON.stringify(candidat) > JSON.stringify(enPlace);
+  }
+
+  /** Auteur d'un élément, quel que soit le nom du champ utilisé. */
+  function auteur(x) {
+    if (!x) return "";
+    return String(x._by != null ? x._by : (x.by != null ? x.by : ""));
   }
 
   /**
@@ -110,9 +119,43 @@
     Object.keys(localMap || {}).forEach(u => {
       const lt = (localMeta || {})[u] || 0;
       const rt = (remoteMeta || {})[u] || 0;
-      if (lt >= rt) { map[u] = localMap[u]; meta[u] = lt; }
+      if (lt > rt) { map[u] = localMap[u]; meta[u] = lt; return; }
+      if (lt < rt) return;
+      // ÉGALITÉ PARFAITE d'horodatage : il faut un arbitrage déterministe,
+      // sinon chaque appareil garde sa propre liste et se la renvoie
+      // indéfiniment (un favori retiré ici réapparaît depuis là-bas).
+      // Règle : la liste la PLUS COURTE gagne — un retrait n'est jamais annulé
+      // par un appareil qui n'a pas encore reçu l'information.
+      const l = Array.isArray(localMap[u]) ? localMap[u] : [];
+      const r = Array.isArray(map[u]) ? map[u] : [];
+      if (l.length < r.length || (l.length === r.length && JSON.stringify(l) < JSON.stringify(r))) {
+        map[u] = l; meta[u] = lt;
+      }
     });
     return { map, meta };
+  }
+
+  /**
+   * Fusionne deux dictionnaires « un bloc par utilisateur »
+   * (espaces personnels, corbeilles personnelles) SANS jamais perdre le bloc
+   * d'un collègue. Seul le bloc de l'utilisateur courant est remplacé par
+   * la version locale ; les autres sont conservés tels qu'ils arrivent, et
+   * ceux que le distant ne connaît pas encore sont préservés.
+   *
+   * Sans cela, un appareil au document périmé effaçait du cloud le bloc
+   * personnel des autres utilisateurs.
+   *
+   * @param {Object<string,Array>} local
+   * @param {Object<string,Array>} distant
+   * @param {string} moi  utilisateur dont le bloc local fait autorité
+   * @returns {Object<string,Array>}
+   */
+  function mergeParUtilisateur(local, distant, moi) {
+    const out = { ...(local && typeof local === "object" ? local : {}) };
+    const d = (distant && typeof distant === "object") ? distant : {};
+    Object.keys(d).forEach(u => { if (u !== moi) out[u] = d[u]; });
+    if (moi && d[moi] !== undefined && out[moi] === undefined) out[moi] = d[moi];
+    return out;
   }
 
   /**
@@ -149,9 +192,31 @@
     if (!Array.isArray(arr)) return [];
     return arr
       .map(d => typeof d === "string"
-        ? { id: d, title: "", freq: "", at: null, by: "", state: "deleted" }
-        : { state: "deleted", ...d })
+        // `at: 1` et non `null` : une date absente valait 0 dans l'arbitrage,
+        // si bien qu'un marqueur « restauré » daté 1 (venu d'une autre
+        // normalisation) annulait la suppression. Un plancher commun met les
+        // deux à égalité, et l'arbitrage déterministe tranche.
+        ? { id: d, title: "", freq: "", at: 1, by: "", state: "deleted" }
+        : { state: "deleted", ...d, at: (d && d.at) || 1 })
       .filter(d => d && d.id);
+  }
+
+  /**
+   * Retire les marqueurs de corbeille devenus inutiles parce que la fiche a
+   * été supprimée DÉFINITIVEMENT. Sans ce nettoyage, la corbeille affiche une
+   * ligne « données absentes » que rien ne peut faire disparaître : la purger
+   * retire le marqueur ici, mais le premier appareil qui n'a pas encore rejoué
+   * l'opération le renvoie aussitôt.
+   *
+   * @param {Array} deletedList
+   * @param {Array<string>} purgedList
+   * @returns {Array} marqueurs restants
+   */
+  function sansMarqueursPurges(deletedList, purgedList) {
+    if (!Array.isArray(deletedList) || !deletedList.length) return deletedList || [];
+    const morts = new Set(purgedList || []);
+    if (!morts.size) return deletedList;
+    return deletedList.filter(d => d && !morts.has(d.id));
   }
 
   /**
@@ -166,7 +231,8 @@
 
   const API = {
     mergeEntries, mergeOverrides, mergeDeleted, mergeFavorites,
-    mergeActivity, normalizeDeleted, isDeletedIn, emporte
+    mergeActivity, normalizeDeleted, isDeletedIn, emporte,
+    mergeParUtilisateur, sansMarqueursPurges
   };
 
   // Node (tests) : export CommonJS — Navigateur : fonctions globales
