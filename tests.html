@@ -5494,6 +5494,136 @@ test("mémoire : un instantané est bien pris après un délai suffisant", () =>
   assert.equal(A.run("getSnapshots().length"), 2, "au-delà de 10 minutes, on garde bien une nouvelle version");
 });
 
+/* Reproduit la situation constatée sur l'appareil de Clément le 30/07/2026 :
+   118 Ko de fiches, mais 1 969 Ko d'historique — soit 18 fois le volume utile.
+   Empêcher l'historique de REGROSSIR ne suffisait pas : les instantanés déjà
+   enregistrés par les versions précédentes restaient tels quels, chacun
+   transportant une copie complète du journal d'activité. */
+// Calibré sur le volume réel : 39 variantes, six liens Power BI chacune,
+// soit environ 118 Ko de fiches — exactement ce qu'affiche son diagnostic.
+const gros_annuaire = () => Array.from({ length: 39 }, (_, i) => {
+  const f = {
+    id: "kpi_indicateur_" + i + "_mensuelle", manual: true,
+    title: "Indicateur de performance " + i, freq: "Mensuelle", _mtime: 100 + i, _by: "clement",
+    type: "Pilotage", process: "Distribution", ritual: "Revue mensuelle",
+    desc: "Mode de calcul détaillé de l'indicateur " + i
+  };
+  ["logistiport", "armement", "armateur", "global", "site5", "site6"].forEach((s, j) => {
+    f[s] = "https://app.powerbi.com/groups/me/reports/" + String.fromCharCode(97 + j).repeat(160) +
+           "/ReportSection" + i;
+  });
+  return f;
+});
+
+const vieil_historique = (fiches) => Array.from({ length: 12 }, (_, i) => ({
+  at: 1700000000000 - i * 6000, reason: "avant réception cloud", user: "clement",
+  counts: { kpis: 13, variantes: 39 },
+  manualEntries: fiches, personalEntries: [], deletedIds: [], sites: [], purgedIds: [],
+  favorites: [],
+  // Le champ fautif : présent dans les instantanés des anciennes versions
+  activityLog: Array.from({ length: 400 }, (_, j) => ({
+    at: j, by: "clement", action: "update", title: "Indicateur " + j, detail: "z".repeat(60)
+  }))
+}));
+
+test("mémoire : l'historique déjà enregistré est allégé au démarrage", () => {
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches });
+  A.run("saveManualEntries(false);");
+  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
+
+  const avant = A.run("poidsSnapshots()");
+  const utile = (A.stockage()["kpiManualEntries"] || "").length * 2;
+  assert.ok(avant > utile * 10, "au départ, l'historique pèse plus de dix fois les fiches");
+
+  const libere = A.run("alegerInstantanes()");
+  const apres = A.run("poidsSnapshots()");
+  assert.ok(libere > 0, "de la place a été libérée");
+  assert.ok(apres <= 520 * 1024,
+    `l'historique respecte son budget : ${(avant / 1024).toFixed(0)} Ko → ${(apres / 1024).toFixed(0)} Ko`);
+  assert.ok(apres < avant / 3, `soit au moins trois fois moins (${avant} → ${apres})`);
+  assert.ok(A.run("getSnapshots()").length >= 2, "il reste de quoi revenir en arrière");
+});
+
+test("mémoire : l'allègement a bien lieu au DÉMARRAGE de l'application", () => {
+  // Le test précédent appelle la fonction directement. Celui-ci vérifie
+  // qu'elle est réellement branchée sur le chemin de démarrage : sans cela,
+  // la correction n'aurait aucun effet pour l'utilisateur.
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches });
+  A.run("saveManualEntries(false);");
+  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
+  A.ecrireStockage("kpiMigratedV2", "1");
+
+  const avant = A.run("poidsSnapshots()");
+  A.run("loadSavedFile()");           // ce que fait l'application à l'ouverture
+  const apres = A.run("poidsSnapshots()");
+  assert.ok(apres <= 520 * 1024,
+    `au démarrage, l'historique est ramené sous son budget : ` +
+    `${(avant / 1024).toFixed(0)} Ko → ${(apres / 1024).toFixed(0)} Ko`);
+});
+
+test("mémoire : le journal recopié par les anciennes versions est retiré", () => {
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches });
+  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
+  A.run("alegerInstantanes()");
+  const restants = A.run("getSnapshots()");
+  assert.ok(restants.length > 0);
+  assert.ok(restants.every(s => s.activityLog === undefined),
+    "plus aucun instantané ne transporte le journal d'activité");
+  assert.ok(restants.every(s => Array.isArray(s.manualEntries)),
+    "les fiches, elles, sont bien conservées : le retour en arrière reste possible");
+});
+
+test("mémoire : l'historique reste sous son budget même sur un gros annuaire", () => {
+  // Un plafond exprimé en NOMBRE d'instantanés ne suffit pas : chaque
+  // instantané est une copie complète, son poids grandit avec l'annuaire.
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches, autoriserSync: true });
+  A.run("saveManualEntries(false);");
+  for (let i = 0; i < 30; i++) {
+    A.run(`pushSnapshot("essai ${i}")`);   // motifs différents : aucun n'est fusionné
+  }
+  const total = Object.entries(A.stockage())
+    .reduce((n, [k, v]) => n + (k.length + String(v).length) * 2, 0);
+  assert.ok(A.run("poidsSnapshots()") <= 520 * 1024,
+    "l'historique respecte son budget : " + (A.run("poidsSnapshots()") / 1024).toFixed(0) + " Ko");
+  assert.ok(total < 1.2 * 1024 * 1024,
+    "et le stockage total reste bien en dessous de la limite du navigateur : " +
+    (total / 1048576).toFixed(2) + " Mo");
+});
+
+test("mémoire : un petit annuaire garde un historique profond", () => {
+  // Contre-épreuve : le budget ne doit pas priver de retour en arrière quand
+  // l'annuaire est léger.
+  A.reset({ manualEntries: fichesR(["Petite", "Mensuelle"]) });
+  for (let i = 0; i < 20; i++) A.run(`pushSnapshot("essai ${i}")`);
+  assert.equal(A.run("getSnapshots()").length, 10, "les 10 emplacements sont utilisés");
+});
+
+test("mémoire : vider l'historique ne touche pas aux fiches", () => {
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches, favorites: [fiches[0].id] });
+  A.run("saveManualEntries(false); saveFavoritesLocalOnly();");
+  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
+  A.confirmer(true);
+  const libere = A.run("viderInstantanes()");
+  assert.ok(libere > 0);
+  assert.equal(A.run("getSnapshots()").length, 0, "l'historique est vide");
+  assert.equal(A.get("manualEntries").length, 39, "les fiches sont intactes");
+  assert.equal(A.get("favorites").length, 1, "les favoris aussi");
+});
+
+test("mémoire : vider l'historique demande confirmation", () => {
+  const fiches = gros_annuaire();
+  A.reset({ manualEntries: fiches });
+  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
+  A.confirmer(false);
+  assert.equal(A.run("viderInstantanes()"), 0);
+  assert.equal(A.run("getSnapshots()").length, 12, "rien n'a été effacé");
+});
+
 test("mémoire : le classeur Excel n'est plus recopié dans le stockage", () => {
   // `kpiFileB64` pouvait peser plusieurs centaines de kilo-octets alors
   // qu'aucune ligne de l'application ne le relisait.
@@ -6421,17 +6551,31 @@ async function analyseReelle(avecEcriture){
 
   // Seuil : on alerte à partir de 2,5 Mo (la limite du navigateur est ≈ 5 Mo,
   // et une écriture qui échoue fait perdre la modification en cours).
+  const octetsHisto = (parCle.find(x => x.cle === "kpiSnapshots") || { octets: 0 }).octets;
   let etatMem = "ok", conseil = "";
+
   if (octetsInutiles > 100 * 1024) {
     etatMem = "warn";
     conseil = "<br>👉 <b>" + ko(octetsInutiles) + "</b> occupés par d'anciennes données que l'application ne lit plus. " +
-              "Elles sont effacées automatiquement au prochain démarrage de la version à jour.";
+              "Elles sont effacées automatiquement au prochain démarrage de l'application à jour " +
+              "(ouvrez l'annuaire, pas seulement cette page).";
   }
-  if (rapport > 6 && utile > 0) {
+
+  // L'historique des versions est le premier poste de mémoire de l'application :
+  // chaque instantané est une copie complète de l'annuaire. Une version à jour
+  // le ramène automatiquement sous son budget au démarrage — mais c'est
+  // l'ANNUAIRE qui fait ce ménage, pas cette page de test.
+  if (octetsHisto > 600 * 1024) {
     etatMem = "warn";
-    conseil += "<br>👉 L'historique des versions occupe <b>" + Math.round(rapport) + " fois</b> le volume de vos fiches. " +
-               "C'est le signe d'une version ancienne de l'application : rafraîchissez la page (Ctrl+Maj+R).";
+    conseil += "<br>👉 L'historique des versions occupe <b>" + ko(octetsHisto) + "</b>" +
+               (utile ? " (soit " + Math.round(octetsHisto / utile) + " fois le volume de vos fiches)" : "") +
+               ". Chaque version enregistrée est une copie complète de l'annuaire.<br>" +
+               "&nbsp;&nbsp;&nbsp;<b>Que faire :</b> ouvrez l'<b>annuaire</b> (pas cette page) après un " +
+               "rafraîchissement forcé — Ctrl+Maj+R. L'application allège l'historique toute seule au " +
+               "démarrage. Pour le vider immédiatement : fenêtre <b>Synchronisation</b> → " +
+               "« 🧹 Vider l'historique des versions ».";
   }
+
   if (mo >= 2.5) {
     etatMem = mo >= 4 ? "ko" : "warn";
     conseil += "<br>👉 Au-delà de 5 Mo le navigateur refuse d'enregistrer : une modification pourrait être perdue.";

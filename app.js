@@ -3,7 +3,7 @@
 ============================================ */
 // Version de l'application. À comparer entre appareils via le diagnostic :
 // si deux appareils affichent des versions différentes, l'un a un cache périmé.
-const APP_VERSION = "2026.07.30";
+const APP_VERSION = "2026.07.31";
 let data = [];          // Liste affichée = fiches partagées visibles (manualEntries)
 let excelData = [];     // Vestige (toujours vide) : l'Excel n'est plus une source de données
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
@@ -507,6 +507,7 @@ function loadSavedFile() {
   reparerCollisionsEspaces();
   nettoyerFavoris();
   libererEspaceInutile();
+  alegerInstantanes();   // allège l'historique laissé par les versions précédentes
   rebuildData(false);
 }
 
@@ -3236,6 +3237,21 @@ const MAX_SNAPSHOTS = 10;
 // ne couvraient donc que ~66 secondes d'historique, pour 2,6 Mo de stockage.
 const ESPACEMENT_SNAPSHOT_MS = 10 * 60 * 1000;   // 10 minutes
 
+// Place maximale, en caractères, que l'ensemble de l'historique peut occuper.
+// Un nombre fixe d'instantanés ne suffit pas : chaque instantané est une copie
+// COMPLÈTE de l'annuaire, donc son poids grandit avec l'annuaire. Sur un
+// annuaire de 56 000 caractères, 12 instantanés pèsent 1,3 Mo à eux seuls —
+// soit un quart de toute la mémoire autorisée par le navigateur.
+// Avec un budget, l'historique reste profond quand l'annuaire est petit et se
+// resserre automatiquement quand il grossit.
+const BUDGET_SNAPSHOTS = 250000;   // ≈ 500 Ko dans le navigateur (2 octets/caractère)
+const MIN_SNAPSHOTS = 2;           // on garde toujours de quoi revenir en arrière
+
+// Champs que les anciennes versions recopiaient dans chaque instantané et qui
+// n'y ont plus leur place. `activityLog` à lui seul pouvait peser 140 Ko par
+// instantané.
+const CHAMPS_SNAPSHOT_OBSOLETES = ["activityLog", "excelData", "overrides", "kpiDataCache"];
+
 // Étiquette « N KPIs · M variantes · P perso » pour un instantané.
 // Gère les anciens formats : partagees, ou excel+manual, ou seulement manual.
 function snapCountLabel(c) {
@@ -3253,6 +3269,79 @@ function snapCountLabel(c) {
 
 function getSnapshots() {
   try { return JSON.parse(localStorage.getItem(LS_SNAPSHOTS)) || []; } catch { return []; }
+}
+
+/** Poids de l'historique tel qu'il occupe la mémoire du navigateur, en octets. */
+function poidsSnapshots() {
+  try { return (localStorage.getItem(LS_SNAPSHOTS) || "").length * 2; } catch { return 0; }
+}
+
+/**
+ * ALLÈGE L'HISTORIQUE DÉJÀ STOCKÉ.
+ *
+ * Empêcher l'historique de regrossir ne suffisait pas : les instantanés
+ * enregistrés par les versions précédentes restaient tels quels, chacun
+ * transportant une copie complète du journal d'activité. Un appareil pouvait
+ * donc conserver près de 2 Mo d'historique indéfiniment, puisqu'il faut
+ * désormais plusieurs heures pour que dix nouveaux instantanés les remplacent.
+ *
+ * Trois passes, de la moins destructive à la plus :
+ *   1. on retire les champs que plus rien ne lit (journal, vestiges Excel) ;
+ *   2. on ramène le nombre d'instantanés au maximum autorisé ;
+ *   3. on retire les plus anciens tant que le budget de place est dépassé,
+ *      sans jamais descendre sous MIN_SNAPSHOTS.
+ *
+ * @returns {number} octets libérés
+ */
+function alegerInstantanes() {
+  const avant = poidsSnapshots();
+  if (!avant) return 0;
+
+  let list = getSnapshots();
+  if (!Array.isArray(list) || !list.length) return 0;
+
+  // 1. Champs devenus inutiles dans chaque instantané
+  list = list.map(s => {
+    if (!s || typeof s !== "object") return s;
+    const copie = { ...s };
+    CHAMPS_SNAPSHOT_OBSOLETES.forEach(c => delete copie[c]);
+    return copie;
+  });
+
+  // 2. Nombre maximum
+  list = list.slice(0, MAX_SNAPSHOTS);
+
+  // 3. Budget de place : on retire les plus anciens
+  while (list.length > MIN_SNAPSHOTS && JSON.stringify(list).length > BUDGET_SNAPSHOTS) {
+    list.pop();
+  }
+
+  try { localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list)); }
+  catch { return 0; }
+
+  const libere = avant - poidsSnapshots();
+  if (libere > 0) {
+    console.info(`[Nettoyage] Historique des versions allégé de ${(libere / 1024).toFixed(0)} Ko ` +
+                 `(${list.length} version(s) conservée(s)).`);
+  }
+  return Math.max(0, libere);
+}
+
+/** Efface tout l'historique des versions, à la demande de l'utilisateur. */
+function viderInstantanes() {
+  const poids = poidsSnapshots();
+  const nb = getSnapshots().length;
+  if (!nb) { showToast("L'historique est déjà vide", 2400); return 0; }
+  if (!confirm(
+    `Vider l'historique des versions ?\n\n` +
+    `${nb} version(s) enregistrée(s), ${(poids / 1024).toFixed(0)} Ko de mémoire.\n\n` +
+    "Vos fiches, votre corbeille et vos favoris ne sont PAS touchés : seule la " +
+    "possibilité de revenir à un état antérieur est perdue."
+  )) return 0;
+  try { localStorage.removeItem(LS_SNAPSHOTS); } catch { /* rien à faire */ }
+  renderSnapshotList();
+  showToast(`🧹 Historique vidé — ${(poids / 1024).toFixed(0)} Ko libérés`, 3000);
+  return poids;
 }
 
 function pushSnapshot(reason) {
@@ -3287,6 +3376,9 @@ function pushSnapshot(reason) {
     if (list.length && list[0].reason === snap.reason && snap.at - list[0].at < ESPACEMENT_SNAPSHOT_MS) return;
     list.unshift(snap);
     while (list.length > MAX_SNAPSHOTS) list.pop();
+    // Budget de place : chaque instantané pèse le poids de l'annuaire entier,
+    // un simple plafond de NOMBRE laisserait l'historique grossir avec lui.
+    while (list.length > MIN_SNAPSHOTS && JSON.stringify(list).length > BUDGET_SNAPSHOTS) list.pop();
     try {
       localStorage.setItem(LS_SNAPSHOTS, JSON.stringify(list));
     } catch (e) {
@@ -3370,6 +3462,17 @@ function renderSnapshotList() {
   const el = document.getElementById("snapshotList");
   if (!el) return;
   const list = getSnapshots();
+  // Poids affiché sous la liste : l'historique est le premier poste de mémoire
+  // de l'application, autant que ce soit visible sans ouvrir le banc de test.
+  const poids = document.getElementById("snapshotPoids");
+  if (poids) {
+    const ko = poidsSnapshots() / 1024;
+    poids.textContent = list.length
+      ? `${list.length} version(s) · ${ko.toFixed(0)} Ko de mémoire occupée.`
+      : "";
+  }
+  const bouton = document.getElementById("viderSnapshotsBtn");
+  if (bouton) bouton.style.display = list.length ? "" : "none";
   if (!list.length) {
     el.innerHTML = `<p class="modal-hint" style="margin:0">Aucune version enregistrée pour l'instant.</p>`;
     return;
@@ -3706,6 +3809,8 @@ document.getElementById("testCloudBtn")?.addEventListener("click", async () => {
 // « Cet appareil fait référence » : écrase le cloud avec l'état local.
 // Sert à trancher quand les appareils divergent. Toutes les fiches locales
 // sont réestampillées « maintenant » pour gagner tout arbitrage futur.
+document.getElementById("viderSnapshotsBtn")?.addEventListener("click", viderInstantanes);
+
 document.getElementById("forceMasterBtn")?.addEventListener("click", async () => {
   const cfg = getSyncConfig();
   if (!cfg || !fbDb) { showToast("⚠️ Synchronisation non connectée", 3000); return; }
