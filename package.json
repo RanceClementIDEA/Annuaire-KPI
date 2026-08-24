@@ -22,7 +22,8 @@
     "verifier:liens": "node outils/verifier-liens.js",
     "verifier:deck": "node outils/verifier-deck.js",
     "build:essai": "node outils/construire-annuaire-test.js",
-    "smoke:essai": "node smoke-essai.js"
+    "smoke:essai": "node smoke-essai.js",
+    "diagnostic": "node outils/diagnostic-complement.js"
   },
   "license": "UNLICENSED"
 }

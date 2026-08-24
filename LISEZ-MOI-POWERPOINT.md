@@ -41,6 +41,23 @@ Prérequis côté lecteur : PowerPoint 365 avec WebView2, connecté au **même c
 professionnel** que Power BI. Si le complément est bloqué par la stratégie du tenant,
 c'est la branche `Fallback` qui s'affiche.
 
+#### L'adresse donnée au complément : verbatim, et rien d'autre
+
+Le complément ne tolère aucun ajout dans `reportUrl`. Relevé sur une insertion faite à la
+main dans PowerPoint — la seule qui affiche réellement le visuel — il conserve le lien de
+partage **exactement** tel qu'il est collé, seulement privé de son hôte :
+
+```
+/groups/me/reports/{rapport}/{page}?ctid=…&pbi_source=shareVisual
+&visual=…&height=…&width=…&bookmarkGuid=…
+```
+
+Y glisser `bookmarkUsage=1` et `fromEntryPoint=export` — qui appartiennent au format
+d'export d'une PAGE — le fait échouer à résoudre le visuel **et** la page : il retombe
+alors sur la première page du rapport. De même, lui imposer `pageName` ou `reportName`
+n'apporte rien : il les résout depuis l'adresse, et écrit lui-même `artifactName`,
+`pageDisplayName`, `datasetId` et l'état sérialisé à la première ouverture.
+
 #### Le signet, ou pourquoi le bon visuel peut montrer les mauvaises données
 
 Dans cet annuaire, plusieurs KPI partagent le même visuel Power BI : ce qui les distingue
@@ -48,11 +65,9 @@ est le **signet** (`bookmarkGuid`), qui applique le filtre — périmètre, temp
 même graphique devient « Volumétrie Distribution Logistiport hebdomadaire » ou
 « … MG Armement mensuelle » selon le signet appliqué.
 
-Le complément n'applique le signet que si l'adresse porte **`bookmarkUsage=1`**. C'est ce
-que Power BI écrit lui-même quand c'est lui qui fabrique le fichier ; le générateur le pose
-donc systématiquement dès qu'un `bookmarkGuid` est présent. Sans lui, toutes les
-diapositives affichaient le visuel dans son état par défaut : le bon graphique, les
-mauvaises données.
+Le signet voyage dans l'adresse, dans le `bookmarkGuid` du lien de partage — et il suffit
+de transmettre ce lien intact. C'est le complément qui l'applique et sérialise l'état à la
+première ouverture.
 
 Le contrôle affiche le signet de chaque diapositive, et signale deux diapositives qui
 viseraient le même visuel **avec le même signet** — elles montreraient rigoureusement la
@@ -160,8 +175,9 @@ rituel avant d'avoir les données.
 | `testeur-powerpoint.html` | banc d'essai : générer puis relire le support, hors ligne |
 | `js/inspecter-deck.js` | lecture d'un .pptx produit (partagée page web / ligne de commande) |
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
+| `outils/diagnostic-complement.js` | support à cinq variantes pour isoler ce que lit le complément |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `deck.test.js`, `outils.test.js` | 226 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `deck.test.js`, `outils.test.js` | 233 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -173,6 +189,29 @@ Il contient le masque, le thème, les six dispositions et la diapositive de couv
 dont trois jetons sont substitués à la génération : `{{TITRE}}`, `{{SOUS_TITRE}}`,
 `{{PERIODE}}`. Pour changer la charte, ouvrez-le dans PowerPoint, modifiez le masque
 ou la couverture, enregistrez — **en conservant les trois jetons**.
+
+## Quand le visuel affiché n'est pas celui attendu
+
+Le complément est une boîte noire : on ne peut pas savoir de l'extérieur comment il
+interprète l'adresse qu'on lui donne. `outils/diagnostic-complement.js` fabrique donc un
+support où **chaque diapositive teste une hypothèse**, à ouvrir une fois dans PowerPoint :
+
+| | |
+|---|---|
+| **A** | l'état actuel du générateur — visuel désigné, signet marqué comme à appliquer |
+| **B** | sans `visual=` : la page entière, même signet |
+| **C** | A, plus l'état sérialisé copié d'un fichier produit par Power BI |
+| **D** | témoin — le complément de référence, intact |
+| **E** | témoin — le visuel sans aucun signet, donc son état par défaut |
+
+```bash
+node outils/diagnostic-complement.js --lien "<url du KPI>" \
+     --reference MicrosoftPowerBIStorytelling.pptx
+```
+
+Lecture : **A identique à E** → le signet n'est pas appliqué. **A identique à B** → le
+paramètre `visual=` est ignoré. **C correct** → il faut embarquer l'état sérialisé.
+**D incorrect** → le fichier de référence ne porte pas sur le bon visuel.
 
 ## Essayer sans toucher à l'annuaire réel
 
@@ -203,7 +242,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 675 tests (dont 226 pour cette fonctionnalité)
+node --test              # 687 tests (dont 233 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)

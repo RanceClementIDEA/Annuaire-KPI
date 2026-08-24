@@ -378,19 +378,21 @@ function cadreComplement(xml) {
   return m;
 }
 
-test("le cadre du complément reprend les proportions du visuel", async () => {
+test("sous la barre du complément, la place laissée épouse les proportions du visuel", async () => {
   const large = LIEN_PBI + "&width=1253.02&height=527.91";
   const { txt } = await lireP(await deckP([{ titre: "A", lien: large, vivant: true }]));
   const m = cadreComplement(txt("ppt/slides/slide2.xml"));
-  const ratio = Number(m[1]) / Number(m[2]);
+  const contenu = Number(m[2]) - P.BARRE_COMPLEMENT;
+  const ratio = Number(m[1]) / contenu;
   assert.ok(Math.abs(ratio - 1253.02 / 527.91) < 0.02, "ratio obtenu : " + ratio.toFixed(2));
 });
 
-test("un visuel très plat reste plat : il n'est pas étiré sur toute la hauteur", async () => {
+test("un visuel très plat reste discret sans devenir invisible", async () => {
   const plat = LIEN_PBI + "&width=1140.87&height=51.48";
   const { txt } = await lireP(await deckP([{ titre: "A", lien: plat, vivant: true }]));
   const m = cadreComplement(txt("ppt/slides/slide2.xml"));
-  assert.ok(Number(m[2]) < P.ZONE.h / 3, "hauteur obtenue : " + m[2]);
+  assert.ok(Number(m[2]) < P.ZONE.h / 2, "il ne prend pas toute la zone : " + m[2]);
+  assert.ok(Number(m[2]) >= P.HAUTEUR_MINI_COMPLEMENT, "mais reste lisible : " + m[2]);
   assert.equal(Number(m[1]), P.ZONE.l, "toute la largeur disponible est utilisée");
 });
 
@@ -401,10 +403,11 @@ test("sans dimensions dans le lien, le cadre occupe toute la zone", async () => 
   assert.equal(Number(m[2]), P.ZONE.h);
 });
 
-test("le graphique est affiché seul : la barre d'outils du visuel est masquée", async () => {
+test("les réglages d'affichage sont ceux d'une insertion manuelle qui fonctionne", async () => {
+  // Relevés sur le fichier où le visuel s'affiche réellement : les deux à false.
   const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
   const we = txt("ppt/webextensions/webextension1.xml");
-  assert.ok(we.includes('name="isVisualContainerHeaderHidden" value="true"'));
+  assert.ok(we.includes('name="isVisualContainerHeaderHidden" value="false"'));
   assert.ok(we.includes('name="isFiltersActionButtonVisible" value="false"'));
 });
 
@@ -442,21 +445,34 @@ test("analyserLien ne s'effondre pas sur une adresse absente", () => {
 
 const AVEC_SIGNET = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=5e2d502b-8642";
 
-test("le signet est effectivement APPLIQUÉ : sans cela, le visuel reste dans son état par défaut", async () => {
+test("le signet est transmis tel qu'il figure dans le lien", async () => {
   const { txt } = await lireP(await deckP([{ titre: "A", lien: AVEC_SIGNET, vivant: true }]));
-  const url = txt("ppt/webextensions/webextension1.xml");
-  assert.ok(url.includes("bookmarkGuid=5e2d502b-8642"), "le signet doit être transmis");
-  assert.ok(url.includes("bookmarkUsage=1"), "et surtout être marqué comme à appliquer");
+  assert.ok(txt("ppt/webextensions/webextension1.xml").includes("bookmarkGuid=5e2d502b-8642"));
 });
 
-test("le contexte d'ouverture est posé comme le fait l'export natif", async () => {
+test("RIEN n'est ajouté à l'adresse : c'est ce qui cassait la résolution du visuel", async () => {
   const { txt } = await lireP(await deckP([{ titre: "A", lien: AVEC_SIGNET, vivant: true }]));
-  assert.ok(txt("ppt/webextensions/webextension1.xml").includes("fromEntryPoint=export"));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(!we.includes("bookmarkUsage"), "bookmarkUsage appartient à l'export d'une page");
+  assert.ok(!we.includes("fromEntryPoint"), "fromEntryPoint aussi");
 });
 
-test("sans signet dans l'adresse, aucun bookmarkUsage n'est inventé", async () => {
+test("l'adresse retenue est le lien de partage, à l'hôte près", () => {
+  const lien = "https://app.powerbi.com/groups/me/reports/r1/p1?ctid=c8&pbi_source=shareVisual&visual=v1&height=550.75&width=1254.63&bookmarkGuid=b1e";
+  assert.equal(P.urlPourComplement(lien),
+    "/groups/me/reports/r1/p1?ctid=c8&pbi_source=shareVisual&visual=v1&height=550.75&width=1254.63&bookmarkGuid=b1e");
+});
+
+test("ni pageName ni reportName ne sont imposés au complément", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "Mon KPI", lien: LIEN_PBI, vivant: true }]));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(!we.includes('name="pageName"'), "le complément résout la page depuis l'adresse");
+  assert.ok(!we.includes('name="reportName"'), "et le nom du rapport aussi");
+});
+
+test("une adresse sans signet reste sans signet", async () => {
   const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
-  assert.ok(!txt("ppt/webextensions/webextension1.xml").includes("bookmarkUsage"));
+  assert.ok(!txt("ppt/webextensions/webextension1.xml").includes("bookmark"));
 });
 
 test("deux KPI sur le même visuel gardent chacun SON signet", async () => {
@@ -472,12 +488,94 @@ test("deux KPI sur le même visuel gardent chacun SON signet", async () => {
     "le signet du voisin ne doit jamais déborder");
 });
 
-test("un paramètre déjà présent n'est pas dupliqué", () => {
-  const url = P.urlPourComplement(AVEC_SIGNET + "&bookmarkUsage=1&fromEntryPoint=export");
+test("un lien déjà porteur de ces paramètres n'est pas altéré non plus", () => {
+  const url = P.urlPourComplement(AVEC_SIGNET + "&bookmarkUsage=1");
   assert.equal((url.match(/bookmarkUsage=/g) || []).length, 1);
-  assert.equal((url.match(/fromEntryPoint=/g) || []).length, 1);
 });
 
 test("une adresse vide ne produit pas d'adresse bancale", () => {
   assert.equal(P.urlPourComplement(""), "");
+});
+
+/* ─── Propriétés de complément personnalisées ───────────────── */
+
+test("une propriété fournie remplace celle du générateur, sans doublon", async () => {
+  const { txt } = await lireP(await deckP([{
+    titre: "A", lien: LIEN_PBI, vivant: true,
+    proprietesComplement: { reportState: "&quot;AUTRE&quot;" }
+  }]));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.equal((we.match(/name="reportState"/g) || []).length, 1, "une seule fois");
+  assert.ok(we.includes("AUTRE"));
+  assert.ok(!we.includes("CONNECTED"));
+});
+
+test("une propriété nulle est purement retirée", async () => {
+  const { txt } = await lireP(await deckP([{
+    titre: "A", lien: LIEN_PBI, vivant: true,
+    proprietesComplement: { embedUrl: null }
+  }]));
+  assert.ok(!txt("ppt/webextensions/webextension1.xml").includes('name="embedUrl"'));
+});
+
+test("une propriété inconnue est ajoutée telle quelle", async () => {
+  const { txt } = await lireP(await deckP([{
+    titre: "A", lien: LIEN_PBI, vivant: true,
+    proprietesComplement: { bookmark: "&quot;H4sIAAA&quot;" }
+  }]));
+  assert.ok(txt("ppt/webextensions/webextension1.xml").includes('name="bookmark"'));
+});
+
+test("aucune propriété n'apparaît deux fois, quel que soit le remplacement", async () => {
+  const remplacements = {};
+  P.PROPRIETES_PAR_DEFAUT.forEach(n => { remplacements[n] = "&quot;x&quot;"; });
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true,
+    proprietesComplement: remplacements }]));
+  const noms = (txt("ppt/webextensions/webextension1.xml").match(/name="([^"]+)"/g) || []);
+  assert.equal(noms.length, new Set(noms).size, "doublons : " + noms.join(","));
+});
+
+test("une adresse de complément imposée court-circuite la reconstruction", async () => {
+  const { txt } = await lireP(await deckP([{
+    titre: "A", lien: LIEN_PBI, vivant: true, urlComplement: "/chemin/impose?x=1"
+  }]));
+  assert.ok(txt("ppt/webextensions/webextension1.xml").includes("/chemin/impose?x=1"));
+});
+
+/* ─── Le complément a besoin de place ───────────────────────── */
+
+test("le cadre réserve la hauteur de la barre du complément", () => {
+  const image = P.cadrer(P.ZONE, { l: 1253, h: 528 });
+  const addin = P.cadreComplement(image);
+  assert.equal(addin.h, image.h + P.BARRE_COMPLEMENT);
+});
+
+test("un visuel très plat obtient quand même une hauteur lisible", () => {
+  // Le cas qui ne montrait QUE la barre : cadre de 0,4 pouce pour une barre de 0,45.
+  const addin = P.cadreComplement(P.cadrer(P.ZONE, { l: 1140.87, h: 51.48 }));
+  assert.ok(addin.h >= P.HAUTEUR_MINI_COMPLEMENT, "hauteur obtenue : " + addin.h);
+  assert.ok(addin.h - P.BARRE_COMPLEMENT > 1200000, "il doit rester de la place sous la barre");
+});
+
+test("le cadre ne déborde jamais de la zone réservée", () => {
+  [[1, 100], [100, 1], [1141, 51], [1920, 1080], [3, 4]].forEach(([l, h]) => {
+    const c = P.cadreComplement(P.cadrer(P.ZONE, { l, h }));
+    assert.ok(c.h <= P.ZONE.h, l + "×" + h + " → " + c.h);
+    assert.ok(c.y >= P.ZONE.y);
+    assert.ok(c.y + c.h <= P.ZONE.y + P.ZONE.h + 1);
+  });
+});
+
+test("le cadre reste centré verticalement après l'agrandissement", () => {
+  const c = P.cadreComplement(P.cadrer(P.ZONE, { l: 1141, h: 51 }));
+  const hautEnHaut = c.y - P.ZONE.y;
+  const basEnBas = (P.ZONE.y + P.ZONE.h) - (c.y + c.h);
+  assert.ok(Math.abs(hautEnHaut - basEnBas) <= 1, "écart : " + (hautEnHaut - basEnBas));
+});
+
+test("dans le support, un visuel plat n'est plus réduit à sa barre", async () => {
+  const plat = LIEN_PBI + "&width=1140.87&height=51.48";
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: plat, vivant: true }]));
+  const m = cadreComplement(txt("ppt/slides/slide2.xml"));
+  assert.ok(Number(m[2]) >= P.HAUTEUR_MINI_COMPLEMENT, "hauteur du cadre : " + m[2]);
 });

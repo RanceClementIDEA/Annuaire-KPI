@@ -328,11 +328,13 @@ test("la couverture est reconnue comme telle", async () => {
   assert.equal(r.diapos.filter(d => d.contenu === "couverture").length, 1);
 });
 
-test("le cadre annoncé correspond au format du visuel", async () => {
+test("le cadre annoncé laisse la place au visuel, barre du complément comprise", async () => {
+  const Pptx = require("./js/pptx.js");
   const { octets } = await G.construire(selDe([{ titre: "Un", lien: V_BON }]), null, null, true);
   const d = (await D.analyserDeck(octets)).diapos.find(x => x.contenu === "visuel vivant");
   const [l, h] = d.cadre.split(" × ").map(parseFloat);
-  assert.ok(Math.abs(l / h - 1253.02 / 527.91) < 0.05, "cadre : " + d.cadre);
+  const contenu = h - Pptx.BARRE_COMPLEMENT / 914400;
+  assert.ok(Math.abs(l / contenu - 1253.02 / 527.91) < 0.05, "cadre : " + d.cadre);
 });
 
 test("le contrôle distingue une diapositive en image d'une diapositive vivante", async () => {
