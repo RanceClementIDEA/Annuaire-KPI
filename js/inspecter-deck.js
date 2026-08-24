@@ -69,11 +69,10 @@
         d.rapport = info.reportId;
         d.page = info.pageName;
         d.signet = info.bookmark;
-        // Le signet porte le filtre du KPI. S'il est présent dans l'adresse
-        // mais pas appliqué, le visuel s'affiche dans son état par défaut :
-        // le bon graphique, les mauvaises données.
-        if (d.signet && !/[?&]bookmarkUsage=1/.test(url)) {
-          d.alertes.push("signet présent mais non appliqué — le visuel s'affichera dans son état par défaut");
+        // L'adresse doit rester celle du lien de partage, sans ajout :
+        // le complément échoue dès qu'on y glisse des paramètres d'export.
+        if (/[?&](bookmarkUsage|fromEntryPoint)=/.test(url)) {
+          d.alertes.push("adresse enrichie de paramètres d'export — le complément retombera sur la première page");
         }
         if (info.largeur) d.format = Math.round(info.largeur) + "×" + Math.round(info.hauteur) + " px";
   

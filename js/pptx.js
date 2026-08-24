@@ -164,6 +164,15 @@
 
   const COMPLEMENT = { id: "WA200003233", version: "2.0.0.3", store: "fr-FR", storeType: "OMEX" };
 
+  /* Le complément dessine sa propre barre — nom du rapport, « Données
+     actives », date de rafraîchissement — AU-DESSUS du visuel. Un cadre
+     ajusté au seul format du visuel se retrouve donc entièrement occupé
+     par cette barre : on ne voit qu'elle, et rien du graphique.
+     Un lien annonçant un visuel 1141 × 51 px donnait un cadre de 0,4
+     pouce de haut : la barre faisait 0,45. */
+  const BARRE_COMPLEMENT = 411480;      // 0,45 pouce
+  const HAUTEUR_MINI_COMPLEMENT = 2194560;  // 2,4 pouces : la barre, et de quoi voir le graphique
+
   /* Adresse d'incorporation, telle que Power BI la fabrique lui-même.
      `config` encode la région du locataire ; la valeur ci-dessous provient
      d'un export « Incorporer des données actives » réalisé sur le locataire
@@ -172,6 +181,14 @@
      n'importe quel fichier produit par Power BI, propriété `embedUrl`). */
   const CONFIG_INCORPORATION =
     "eyJjbHVzdGVyVXJsIjoiaHR0cHM6Ly9XQUJJLUZSQU5DRS1DRU5UUkFMLUEtUFJJTUFSWS1yZWRpcmVjdC5hbmFseXNpcy53aW5kb3dzLm5ldCIsImVtYmVkRmVhdHVyZXMiOnsidXNhZ2VNZXRyaWNzVk5leHQiOnRydWV9fQ%3D%3D";
+
+  /* Les propriétés que le générateur pose de lui-même. Les nommer permet
+     de les retirer une à une (valeur null) quand on veut reprendre
+     intégralement un complément fabriqué par Power BI. */
+  const PROPRIETES_PAR_DEFAUT = [
+    "reportUrl", "embedUrl", "reportState", "artifactViewState",
+    "isVisualContainerHeaderHidden", "isFiltersActionButtonVisible", "backgroundColor"
+  ];
 
   /** Adresse d'incorporation d'un rapport, quand son identifiant est connu. */
   function adresseIncorporation(reportId) {
@@ -228,30 +245,24 @@
   }
 
   /**
-   * Adresse telle que le complément l'attend.
+   * Adresse telle que le complément l'attend : le lien de partage
+   * VERBATIM, seulement privé de son hôte.
    *
-   * Deux paramètres font toute la différence, et Power BI les écrit
-   * lui-même quand c'est lui qui fabrique le fichier :
+   * Relevé sur une insertion faite à la main dans PowerPoint — la seule
+   * qui affiche réellement le visuel — le complément conserve l'adresse
+   * exactement comme elle est collée :
    *
-   *   • `bookmarkUsage=1` — SANS lui, le signet est ignoré et le visuel
-   *     s'affiche dans son état par défaut. C'est le signet qui porte le
-   *     filtre : un même graphique devient « Volumétrie Distribution
-   *     Logistiport hebdomadaire » ou « … MG Armement mensuelle » selon
-   *     le signet appliqué. L'oublier, c'est afficher le bon visuel avec
-   *     les mauvaises données.
-   *   • `fromEntryPoint=export` — contexte d'ouverture, posé de la même
-   *     façon par l'export natif.
+   *   /groups/me/reports/{rapport}/{page}?ctid=…&pbi_source=shareVisual
+   *   &visual=…&height=…&width=…&bookmarkGuid=…
+   *
+   * Y ajouter quoi que ce soit le fait échouer : avec `bookmarkUsage=1`
+   * et `fromEntryPoint=export`, il n'arrivait plus à résoudre ni le
+   * visuel ni même la page, et retombait sur la première page du
+   * rapport. Ces deux paramètres appartiennent au format d'export d'une
+   * PAGE ; ils n'ont rien à faire dans un lien de visuel.
    */
   function urlPourComplement(lien) {
-    let url = cheminRapport(lien);
-    if (!url) return "";
-    const a = (nom, valeur) => {
-      if (new RegExp("[?&]" + nom + "=").test(url)) return;
-      url += (url.indexOf("?") < 0 ? "?" : "&") + nom + "=" + valeur;
-    };
-    if (/[?&]bookmarkGuid=/.test(url)) a("bookmarkUsage", "1");
-    a("fromEntryPoint", "export");
-    return url;
+    return cheminRapport(lien);
   }
 
   /** Chemin relatif attendu par le complément (l'hôte est implicite). */
@@ -274,23 +285,37 @@
   }
 
   function xmlWebextension(index, diapo) {
-    const url = urlPourComplement(diapo.lien);
+    const url = diapo.urlComplement || urlPourComplement(diapo.lien);
     const info = analyserLien(diapo.lien);
-    const page = info.pageName;
     const incorporation = adresseIncorporation(info.reportId);
+
+    /* Propriétés supplémentaires, telles quelles. Sert au diagnostic et
+       à la reprise d'un complément fabriqué par Power BI lui-même :
+       { nom: "valeur déjà encodée" }. Une valeur nulle retire la propriété. */
+    const sup = diapo.proprietesComplement && typeof diapo.proprietesComplement === "object"
+      ? diapo.proprietesComplement : {};
+    /* Une propriété fournie ici REMPLACE celle que le générateur poserait :
+       sans cela les deux cohabiteraient, et le complément n'en lirait
+       qu'une, au hasard. La valeur null retire la propriété. */
+    const remplacee = nom => Object.prototype.hasOwnProperty.call(sup, nom);
+
     const props = [
-      propriete("Microsoft.Office.CampaignId", "none"),
       propriete("reportUrl", url),
       incorporation ? propriete("embedUrl", incorporation) : "",
       propriete("reportState", "CONNECTED"),
       propriete("artifactViewState", "live"),
-      page ? propriete("pageName", page) : "",
-      diapo.titre ? propriete("reportName", diapo.titre) : "",
-      // Le graphique seul : ni barre d'outils du visuel, ni bouton de filtres.
-      propriete("isVisualContainerHeaderHidden", "true", true),
+      // Ni pageName ni reportName : le complément les résout depuis
+      // l'adresse, et les lui imposer l'a déjà fait dérailler.
+      propriete("isVisualContainerHeaderHidden", "false", true),
       propriete("isFiltersActionButtonVisible", "false", true),
       propriete("backgroundColor", "#FFFFFF")
-    ].join("");
+    ].filter(bloc => {
+      const m = bloc && bloc.match(/name="([^"]+)"/);
+      return bloc && !(m && remplacee(m[1]));
+    }).concat(
+      Object.keys(sup).filter(n => sup[n] !== null)
+        .map(n => `<we:property name="${esc(n)}" value="${sup[n]}"/>`)
+    ).join("");
 
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
       + `<we:webextension xmlns:we="http://schemas.microsoft.com/office/webextensions/webextension/2010/11"`
@@ -305,6 +330,17 @@
   }
 
   /**
+   * Réserve la place de la barre du complément, et impose une hauteur
+   * minimale lisible. Sans cela, un visuel très allongé produit un cadre
+   * où seule la barre tient — c'est exactement ce qu'on voyait.
+   */
+  function cadreComplement(cadre) {
+    const voulue = cadre.h + BARRE_COMPLEMENT;
+    const h = Math.min(ZONE.h, Math.max(HAUTEUR_MINI_COMPLEMENT, voulue));
+    return { x: cadre.x, y: ZONE.y + Math.round((ZONE.h - h) / 2), l: cadre.l, h };
+  }
+
+  /**
    * Cadre du complément dans la diapositive.
    * `mc:AlternateContent` : les versions de PowerPoint qui savent
    * afficher un complément prennent la branche `Choice`, les autres
@@ -316,7 +352,7 @@
     // reste large et bas, il n'est ni étiré ni noyé dans une zone vide.
     const info = analyserLien(lien);
     const c = info.largeur && info.hauteur
-      ? cadrer(ZONE, { l: info.largeur, h: info.hauteur })
+      ? cadreComplement(cadrer(ZONE, { l: info.largeur, h: info.hauteur }))
       : { x: ZONE.x, y: ZONE.y, l: ZONE.l, h: ZONE.h };
     const cadre = `<p:xfrm><a:off x="${c.x}" y="${c.y}"/><a:ext cx="${c.l}" cy="${c.h}"/></p:xfrm>`;
     return `<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">`
@@ -483,7 +519,9 @@
 
   const API = {
     construireDeck, dimensionsImage, cadrer, esc, extensionImage,
-    cheminRapport, nomPage, analyserLien, urlPourComplement, adresseIncorporation, COMPLEMENT,
+    cheminRapport, nomPage, analyserLien, urlPourComplement, adresseIncorporation,
+    COMPLEMENT, PROPRIETES_PAR_DEFAUT, cadreComplement,
+    BARRE_COMPLEMENT, HAUTEUR_MINI_COMPLEMENT,
     ZONE, TITRE, COMMENT, LARGEUR_DIAPO, HAUTEUR_DIAPO, POUCE
   };
 
