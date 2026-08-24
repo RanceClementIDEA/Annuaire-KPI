@@ -241,8 +241,32 @@ const assert = {
   notEqual(a,b,m){ if(a==b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
-  deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); }
+  deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
+  async rejects(fn, re, m){
+    let erreur = null;
+    try { await (typeof fn === "function" ? fn() : fn); }
+    catch(e){ erreur = e; }
+    if (!erreur) throw new Error(m || "la promesse aurait dû échouer");
+    if (re && !re.test(String(erreur.message))) {
+      throw new Error(m || `l'erreur "${erreur.message}" ne correspond pas à ${re}`);
+    }
+  }
 };
+
+/* Accès différé aux modules du bac à sable : ZipMini, PptxDeck et Selection
+   ne sont posés sur window qu'une fois app.js chargé, bien après l'évaluation
+   du script de cette page. */
+function __module(nom){
+  return new Proxy({}, {
+    get(_, cle){
+      const m = window[nom];
+      if (!m) throw new Error("Module " + nom + " non chargé");
+      const v = m[cle];
+      return typeof v === "function" ? v.bind(m) : v;
+    }
+  });
+}
 
 /* ══════════════ Bac à sable partagé avec les tests locaux ══════════════ */
 /* Cœur du harnais de test — utilisable à l'identique sous Node et dans le navigateur.
@@ -276,39 +300,28 @@ const assert = {
       querySelector() { return creerElement("sous-élément"); }, querySelectorAll() { return []; },
       scrollTo() {}, closest() { return null; }
     };
+    // Une liste déroulante réelle change de VALEUR quand on change son index :
+    // sans cela, resetFilters() remettait l'index à zéro en laissant l'ancienne
+    // valeur en place, et les tests de filtre ne reflétaient pas le navigateur.
+    let _selIdx = 0;
+    Object.defineProperty(el, "selectedIndex", {
+      get: () => _selIdx,
+      set(i) {
+        _selIdx = Number(i) || 0;
+        const opt = el.options[_selIdx];
+        if (opt) el.value = opt.value !== undefined ? opt.value : opt.textContent;
+      }
+    });
+
     // Comme dans la vraie page, une fenêtre modale démarre fermée
     if (/Modal$/.test(String(id))) el._classes.add("hidden");
-    // Comme dans un vrai menu déroulant, changer la position change la valeur
-    let _sel = 0;
-    Object.defineProperty(el, "selectedIndex", {
-      get: () => _sel,
-      set(i) { _sel = i; const o = el.options[i]; el.value = o ? (o.value !== undefined ? o.value : "") : ""; }
-    });
-    // Écrire innerHTML REMPLACE tout le contenu, comme dans un vrai navigateur.
-    // Le simulateur ne vidait les enfants que pour innerHTML = "" : un
-    // affichage réécrit avec du texte laissait les anciennes lignes en place,
-    // et un test pouvait croire qu'une liste périmée était toujours à l'écran.
+    // innerHTML = "" doit réellement vider le contenu (options comprises)
     let _html = "";
     Object.defineProperty(el, "innerHTML", {
       get: () => _html,
-      set(v) { _html = String(v); el.children.length = 0; el.options.length = 0; }
+      set(v) { _html = String(v); if (_html === "") { el.children.length = 0; el.options.length = 0; } }
     });
     return el;
-  }
-
-  /** Remet un élément simulé dans son état de départ, sans changer son identité. */
-  function reinitialiserElement(el) {
-    if (!el) return;
-    el.textContent = ""; el.value = ""; el.checked = false;
-    el.innerHTML = "";
-    el.options.length = 0;
-    el.options.push({ tagName: "OPTION", value: "", textContent: "Tous" });
-    el.selectedIndex = 0;
-    el.children.length = 0;
-    el._classes.clear();
-    if (/Modal$/.test(String(el.id))) el._classes.add("hidden");
-    Object.keys(el.dataset).forEach(k => delete el.dataset[k]);
-    Object.keys(el.style).forEach(k => delete el.style[k]);
   }
 
   /**
@@ -320,10 +333,6 @@ const assert = {
     const requetes = new Map();          // sélecteur → liste d'éléments
     const memoire = {};                  // localStorage simulé
     const captures = { ouvertures: [], alertes: [], fichiers: [] };
-    const contenusBlob = new Map();      // url simulée → texte du fichier
-    let compteurBlob = 0;
-    const minuteries = [];               // rappels programmés par setTimeout
-    let prochaineMinuterie = 1;
     let reponseConfirm = false;
 
     const elementPourId = id => {
@@ -335,15 +344,7 @@ const assert = {
       getElementById: id => elementPourId(id),
       querySelector: sel => (requetes.get(sel) || [null])[0] || null,
       querySelectorAll: sel => requetes.get(sel) || [],
-      createElement: tag => {
-        const e = creerElement("créé:" + tag);
-        e.tagName = String(tag).toUpperCase();
-        // Un lien de téléchargement (exportBackup) est capturé au clic, avec
-        // son CONTENU : sans cela, seul le nom du fichier était observable et
-        // aucun test ne pouvait vérifier ce qu'on exportait réellement.
-        e.click = () => { if (e.download) captures.fichiers.push({ nom: e.download, contenu: contenusBlob.get(e.href) || "" }); };
-        return e;
-      },
+      createElement: tag => { const e = creerElement("créé:" + tag); e.tagName = String(tag).toUpperCase(); return e; },
       addEventListener() {},
       body: creerElement("body"),
       documentElement: creerElement("html")
@@ -399,33 +400,12 @@ const assert = {
       () => reponseConfirm,
       m => captures.alertes.push(String(m)),
       () => null,
-      // Lecteur de fichier RÉELLEMENT fonctionnel : il déclenche onload.
-      // Auparavant c'était une coquille vide, si bien que TOUT le code
-      // d'import (sauvegarde JSON, classeur Excel) était inatteignable par
-      // les tests — un angle mort de plusieurs dizaines de lignes.
-      function () {
-        const lecteur = this;
-        lecteur.result = null;
-        lecteur.readAsText = f => {
-          lecteur.result = (f && (f.__contenu !== undefined ? f.__contenu : f.contenu)) || "";
-          if (typeof lecteur.onload === "function") lecteur.onload({ target: lecteur });
-        };
-        lecteur.readAsArrayBuffer = f => {
-          lecteur.result = (f && f.__buffer) || new ArrayBuffer(0);
-          if (typeof lecteur.onload === "function") lecteur.onload({ target: lecteur });
-        };
-      },
-      function (parties) { this.__texte = (parties || []).map(String).join(""); this.size = this.__texte.length; },
-      { createObjectURL: (b) => { const u = "blob:" + (++compteurBlob); contenusBlob.set(u, (b && b.__texte) || ""); return u; },
-        revokeObjectURL() {} },
+      function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
+      function () {},
+      { createObjectURL: () => "blob:x", revokeObjectURL() {} },
       () => Promise.resolve({ ok: true, json: () => ({}), text: () => "" }),
       () => {}, () => {}, () => ({ matches: false, addListener() {}, addEventListener() {} }),
-      // setTimeout PILOTABLE : le rappel n'était jamais exécuté, si bien que
-      // l'envoi différé de 1,5 s (scheduleAutoSync) n'était testable par aucun
-      // test. Ici on met le rappel en file ; A.avancerHorloge(ms) le déclenche.
-      (fn, delai) => { const id = prochaineMinuterie++; minuteries.push({ id, fn, quand: delai || 0 }); return id; },
-      () => 0,
-      (id) => { const i = minuteries.findIndex(m => m.id === id); if (i >= 0) minuteries.splice(i, 1); },
+      () => 0, () => 0, () => {},
       { log() {}, warn() {}, error() {}, info() {} }
     );
 
@@ -463,38 +443,14 @@ const assert = {
           data = []; groupSel = {}; groupReport = {};
           currentView = "all";                       // on repart toujours de la vue « Tous »
           if (typeof searchInput === "object" && searchInput) searchInput.value = "";
-          // Tous les filtres reviennent à « Tous » : valeur ET position
-          [typeof typeFilter    !== "undefined" ? typeFilter    : null,
-           typeof processFilter !== "undefined" ? processFilter : null,
-           typeof ritualFilter  !== "undefined" ? ritualFilter  : null]
-            .forEach(function (f) { if (f) { f.value = ""; f.selectedIndex = 0; } });
+          if (typeof typeFilter === "object" && typeFilter) typeFilter.selectedIndex = 0;
+          if (typeof processFilter === "object" && processFilter) processFilter.selectedIndex = 0;
+          if (typeof ritualFilter === "object" && ritualFilter) ritualFilter.selectedIndex = 0;
           applyingRemoteSync = ${opts.autoriserSync ? "false" : "true"};
           isBooting = ${opts.autoriserSync ? "false" : "true"};
           globalThis.__msg = [];
         `);
-        // ── Remise à zéro des variables globales que reset() oubliait ──
-        // 23 d'entre elles survivaient d'un test à l'autre : un test pouvait
-        // hériter d'une modale à moitié ouverte, d'un verrou de synchro resté
-        // pris ou d'un identifiant en cours d'édition. Le risque était latent,
-        // pas encore visible ; il le serait devenu au premier test ajouté.
-        run(`
-          editingKpiId = null; modalSlots = {}; modalCurrentFreq = "Mensuelle";
-          modalInitialIds = {}; modalExtraVariants = []; sitesDraft = [];
-          syncBusy = false; initialSyncDone = false; pendingPush = false;
-          pendingRemotePayload = null; lastSyncPushAt = 0; lastAppliedSyncAt = 0;
-          connectedSyncCode = null; localUpdatedAt = 0; clockOffset = 0;
-          netHandlersBound = false; lastSyncState = null; fbApp = null;
-          animateNextRender = false; excelData = []; overrides = {};
-          syncDebounceHandle = null; kpiGroups = [];
-        `);
         captures.ouvertures.length = 0; captures.alertes.length = 0; captures.fichiers.length = 0;
-        contenusBlob.clear(); minuteries.length = 0;
-        // Le contenu des éléments de page était CONSERVÉ d'un test à l'autre :
-        // un champ de saisie gardait la valeur laissée par le test précédent.
-        // On les remet à neuf SANS les remplacer : app.js garde des références
-        // directes vers ces objets, les recréer les rendrait inatteignables.
-        registre.forEach(reinitialiserElement);
-        requetes.clear();
         // Mémoire du navigateur remise à neuf : les tests ne se contaminent pas
         if (!opts.conserverStockage) Object.keys(memoire).forEach(k => delete memoire[k]);
         // Un test a pu détourner setItem (simulation de mémoire saturée) : on rétablit
@@ -514,13 +470,12 @@ const assert = {
       texte: id => { const v = elementPourId(id).textContent; return v === undefined || v === null ? "" : String(v); },
       html: id => { const v = elementPourId(id).innerHTML; return v === undefined || v === null ? "" : String(v); },
       saisir(id, valeur) { elementPourId(id).value = valeur; return this; },
-      /** Choisit une valeur dans un menu déroulant (valeur ET position, comme un vrai clic). */
+      /* Choisit une option d'une liste déroulante : positionne l'index ET la
+         valeur, exactement comme un clic dans le navigateur. */
       selectionner(id, valeur) {
         const el = elementPourId(id);
-        let i = el.options.findIndex(o => (o.value !== undefined ? o.value : o.textContent) === valeur);
-        if (i < 0) { el.options.push({ tagName: "OPTION", value: valeur, textContent: valeur }); i = el.options.length - 1; }
-        el.selectedIndex = i;
-        el.value = valeur;
+        const i = el.options.findIndex(o => (o.value !== undefined ? o.value : o.textContent) === valeur);
+        if (i >= 0) el.selectedIndex = i; else el.value = valeur;
         return this;
       },
       cocher(id, v) { elementPourId(id).checked = !!v; return this; },
@@ -588,22 +543,7 @@ const assert = {
       ouvertures: () => captures.ouvertures.slice(),
       fichiersExportes: () => captures.fichiers.slice(),
       stockage: () => Object.assign({}, memoire),
-      ecrireStockage(cle, valeur) { memoire[cle] = typeof valeur === "string" ? valeur : JSON.stringify(valeur); return this; },
-
-      /* --- horloge simulée : exécute les rappels différés (setTimeout) --- */
-      /** Nombre de rappels différés encore en attente. */
-      minuteriesEnAttente: () => minuteries.length,
-      /**
-       * Fait « avancer le temps » : exécute tous les rappels dont le délai est
-       * atteint. Permet enfin de tester l'envoi différé de 1,5 s.
-       * @param {number} ms
-       */
-      avancerHorloge(ms) {
-        const du = minuteries.filter(m => m.quand <= (ms === undefined ? Infinity : ms));
-        du.forEach(m => { const i = minuteries.indexOf(m); if (i >= 0) minuteries.splice(i, 1); });
-        du.sort((a, b) => a.quand - b.quand).forEach(m => { try { m.fn(); } catch (e) { captures.alertes.push("minuterie: " + e.message); } });
-        return du.length;
-      }
+      ecrireStockage(cle, valeur) { memoire[cle] = typeof valeur === "string" ? valeur : JSON.stringify(valeur); return this; }
     };
 
     // A.titleKey("x") appelle directement la fonction dans le bac à sable
@@ -623,7 +563,9 @@ const assert = {
 })(typeof globalThis !== "undefined" ? globalThis : this);
 
 
-const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js", "app.js"];
+const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
+                  "js/zip.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/selection.js", "app.js"];
 const journalFichiers = [];
 
 async function loadApp(surProgression){
@@ -639,6 +581,18 @@ async function loadApp(surProgression){
     journalFichiers.push({ f, ok:true, info:(t.length/1024).toFixed(1) + " Ko" });
     sources.push(t);
   }
+  // Modèle PowerPoint : nécessaire aux tests de la fabrique de deck.
+  try {
+    const rm = await fetch("modele-deck.pptx?anticache=" + Date.now());
+    if (rm.ok) {
+      window.__modeleDeck = new Uint8Array(await rm.arrayBuffer());
+      journalFichiers.push({ f:"modele-deck.pptx", ok:true,
+                             info:(window.__modeleDeck.length/1024).toFixed(1) + " Ko" });
+    } else {
+      journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:"HTTP " + rm.status });
+    }
+  } catch(e){ journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:e.message }); }
+
   if (surProgression) surProgression(1, "initialisation du bac à sable");
   window.__sources = sources;      // permet de créer d'autres appareils simulés
   return creerHarnais(sources);
@@ -933,13 +887,12 @@ test("sur un même KPI, la version la plus récente l'emporte", () => {
   assert.equal(r[0].title, "récent");
 });
 
-test("à égalité parfaite de date, l'arbitrage est identique sur tous les appareils", () => {
-  const vA = { id: "k1", title: "version A", _mtime: 100, _by: "appareil-A" };
-  const vB = { id: "k1", title: "version B", _mtime: 100, _by: "appareil-B" };
-  const chezA = mergeEntries([vA], [vB])[0].title;
-  const chezB = mergeEntries([vB], [vA])[0].title;
-  assert.equal(chezA, chezB,
-    "sans arbitrage déterministe, les deux appareils resteraient divergents pour toujours");
+test("à égalité de date, la version locale est conservée (évite les allers-retours)", () => {
+  const r = mergeEntries(
+    [{ id: "k1", title: "local",  _mtime: 100 }],
+    [{ id: "k1", title: "distant", _mtime: 100 }]
+  );
+  assert.equal(r[0].title, "local");
 });
 
 test("une fiche sans date est traitée comme la plus ancienne", () => {
@@ -1118,50 +1071,6 @@ test("les surcharges tolèrent des valeurs nulles", () => {
 test("normalizeDeleted conserve l'ordre des identifiants", () => {
   const r = normalizeDeleted(["z", "a", "m"]);
   assert.deepEqual(r.map(d => d.id), ["z", "a", "m"]);
-});
-
-/* ═══ Arbitrage déterministe en cas d'égalité ═══ */
-
-test("égalité de date : le même gagnant est choisi quel que soit le sens de la fusion", () => {
-  const a = { id: "k", v: "A", _mtime: 500, _by: "poste-1" };
-  const b = { id: "k", v: "B", _mtime: 500, _by: "poste-2" };
-  assert.equal(mergeEntries([a], [b])[0].v, mergeEntries([b], [a])[0].v);
-});
-
-test("égalité de date et même auteur : l'arbitrage reste déterministe", () => {
-  const a = { id: "k", v: "premier", _mtime: 500, _by: "marie" };
-  const b = { id: "k", v: "second", _mtime: 500, _by: "marie" };
-  assert.equal(mergeEntries([a], [b])[0].v, mergeEntries([b], [a])[0].v);
-});
-
-test("une date plus récente l'emporte toujours sur l'arbitrage d'égalité", () => {
-  const ancien = { id: "k", v: "ancien", _mtime: 100, _by: "zzz" };
-  const recent = { id: "k", v: "récent", _mtime: 900, _by: "aaa" };
-  assert.equal(mergeEntries([ancien], [recent])[0].v, "récent");
-  assert.equal(mergeEntries([recent], [ancien])[0].v, "récent");
-});
-
-test("suppressions simultanées : les deux appareils retiennent le même marqueur", () => {
-  const a = { id: "k", at: 700, state: "deleted", _by: "poste-1" };
-  const b = { id: "k", at: 700, state: "restored", _by: "poste-2" };
-  const chezA = mergeDeleted([a], [b])[0];
-  const chezB = mergeDeleted([b], [a])[0];
-  assert.equal(chezA.state, chezB.state, "pas de divergence sur l'état supprimé/restauré");
-});
-
-test("surcharges simultanées : arbitrage déterministe également", () => {
-  const a = { k: { v: "A", _mtime: 300, _by: "p1" } };
-  const b = { k: { v: "B", _mtime: 300, _by: "p2" } };
-  assert.equal(mergeOverrides(a, b).k.v, mergeOverrides(b, a).k.v);
-});
-
-test("convergence garantie même avec des dates toutes identiques", () => {
-  const t = 1000;
-  const a = [{ id: "x", v: "ax", _mtime: t, _by: "A" }, { id: "y", v: "ay", _mtime: t, _by: "A" }];
-  const b = [{ id: "x", v: "bx", _mtime: t, _by: "B" }, { id: "z", v: "bz", _mtime: t, _by: "B" }];
-  const cle = l => l.map(e => e.id + "=" + e.v).sort().join(",");
-  const cloud = mergeEntries(a, b);
-  assert.equal(cle(mergeEntries(a, cloud)), cle(mergeEntries(b, cloud)));
 });
 
 __ouvrirGroupe("Synchronisation multi-appareils");
@@ -2316,39 +2225,18 @@ test("corbeille : les fiches partagées et personnelles cohabitent", () => {
   assert.equal(A.el("trashList").children.length, 2);
 });
 
-const marqueurs = (...ids) => ids.map(id => ({ id, title: id, at: 9, state: "deleted" }));
-
 test("corbeille : la sélection regroupe tous les identifiants d'une fiche", () => {
-  A.reset({ deletedIds: marqueurs("a", "b", "c") });
+  // Les identifiants doivent être réellement en corbeille : getTrashSelection
+  // écarte volontairement les lignes périmées par une synchronisation.
+  A.reset({ deletedIds: ["a", "b", "c"].map(id => ({ id, at: 9, state: "deleted" })) });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b,c" } }]);
   assert.deepEqual(A.run("getTrashSelection()"), ["a", "b", "c"]);
 });
 
 test("corbeille : plusieurs fiches cochées donnent tous leurs identifiants", () => {
-  A.reset({ deletedIds: marqueurs("a", "b", "c") });
+  A.reset({ deletedIds: ["a", "b", "c"].map(id => ({ id, at: 9, state: "deleted" })) });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }, { dataset: { ids: "c" } }]);
   assert.equal(A.run("getTrashSelection().length"), 3);
-});
-
-test("corbeille : une ligne périmée (fiche restaurée entre-temps) est ignorée", () => {
-  // Scénario réel : la corbeille est ouverte, une synchronisation restaure la
-  // fiche « b » chez un collègue. La ligne reste affichée à l'écran ; agir
-  // dessus détruirait une fiche redevenue visible pour tout le monde.
-  A.reset({ deletedIds: [
-    { id: "a", title: "a", at: 9, state: "deleted" },
-    { id: "b", title: "b", at: 20, state: "restored" }
-  ] });
-  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }]);
-  assert.deepEqual(A.run("getTrashSelection()"), ["a"], "seule la fiche encore en corbeille est retenue");
-});
-
-test("corbeille : une ligne dont la fiche a été purgée ailleurs est ignorée", () => {
-  A.reset({
-    deletedIds: marqueurs("a", "b"),
-    purgedIds: ["b"]
-  });
-  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }]);
-  assert.deepEqual(A.run("getTrashSelection()"), ["a"]);
 });
 
 test("corbeille : aucune coche donne une sélection vide", () => {
@@ -2814,31 +2702,12 @@ test("synchro : « Récupérer » remplace réellement les données locales", ()
 test("synchro : « Récupérer » prend un instantané de sécurité au préalable", () => {
   A.reset({ manualEntries: fiches(["Avant", "Mensuelle"]) });
   A.run("rebuildData(false)");
+  // Le cloud est vide : l'application demande confirmation avant d'écraser.
   A.confirmer(true);
-  A.run(`replaceLocalWithRemote(${JSON.stringify({
-    kpiManual: [{ id: "kpi_apres_mensuelle", title: "Après", freq: "Mensuelle", _mtime: 5 }],
-    kpiDeleted: [], updatedAt: 1
-  })})`);
+  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
   const snaps = A.run("getSnapshots()");
   assert.ok(snaps.length > 0, "un instantané existe");
   assert.equal(snaps[0].manualEntries[0].title, "Avant", "il contient bien l'état précédent");
-});
-
-test("synchro : un cloud VIDE n'efface pas l'annuaire sans accord explicite", () => {
-  A.reset({ manualEntries: fiches(["Précieuse", "Mensuelle"]) });
-  A.run("rebuildData(false)");
-  A.confirmer(false);                       // l'utilisateur refuse
-  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
-  assert.equal(A.get("manualEntries").length, 1, "la fiche locale est conservée");
-  assert.equal(A.get("data").length, 1, "elle reste affichée");
-});
-
-test("synchro : un cloud VIDE efface bien l'annuaire si l'utilisateur accepte", () => {
-  A.reset({ manualEntries: fiches(["Précieuse", "Mensuelle"]) });
-  A.run("rebuildData(false)");
-  A.confirmer(true);                        // l'utilisateur confirme
-  A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
-  assert.equal(A.get("manualEntries").length, 0, "le remplacement a bien eu lieu");
 });
 
 test("synchro : un ancien format Excel reçu est converti en fiches", () => {
@@ -4988,824 +4857,1488 @@ test("surcharges : le système obsolète est bien neutralisé", () => {
   assert.deepEqual(A.get("overrides"), {}, "plus aucune surcharge n'est rechargée");
 });
 
-__ouvrirGroupe("Non-régression : défauts corrigés");
-/* ============================================================
-   TESTS DE NON-RÉGRESSION — juillet 2026
-   ------------------------------------------------------------
-   Chaque test de ce fichier correspond à un défaut RÉEL trouvé
-   lors de la revue complète du système. Le commentaire décrit le
-   symptôme tel qu'il se manifestait pour l'utilisateur.
-
-   Règle : chaque test a été éprouvé « par mutation » — on a
-   remis le bug en place et vérifié que le test échouait.
-   ============================================================ */
+__ouvrirGroupe("Archive ZIP (fabrique PowerPoint)");
+/* Tests de la couche archive (js/zip.js).
+   Un .pptx est une archive ZIP : si cette couche est fausse,
+   PowerPoint refuse d'ouvrir le fichier produit.
+   Exécution : node --test  */
 
 
+const ZipZ = __module("ZipMini");
+const octetsZ = s => ZipZ.versOctets(s);
 
+/* ─── CRC-32 ───────────────────────────────────────────────── */
 
-
-/* Fabrique un jeu de fiches lisible */
-const fichesR = (...defs) => defs.map(([titre, freq, liens]) => Object.assign(
-  { id: "kpi_" + titre.toLowerCase().replace(/\W+/g, "_") + "_" + freq.toLowerCase(),
-    manual: true, title: titre, freq, _mtime: 100, _by: "marie" }, liens || {}));
-
-const idR = (titre, freq) => "kpi_" + titre.toLowerCase().replace(/\W+/g, "_") + "_" + freq.toLowerCase();
-
-/* ═══════════════════════════════════════════════════════════
-   A. RÉSURRECTION DE FICHES SUPPRIMÉES
-   « Un utilisateur se synchronise et des KPIs qui n'ont rien
-     à faire là réapparaissent dans l'annuaire de tout le monde. »
-   ═══════════════════════════════════════════════════════════ */
-
-test("résurrection : un document cloud SANS champ « suppressions définitives » ne ramène pas les fiches purgées", () => {
-  // Le filtre de purge était enfermé dans « si le document contient kpiPurged ».
-  // Un document ancien, partiel ou écrit par une version différente n'a pas ce
-  // champ : la fiche purgée revenait dans la liste locale… puis repartait vers
-  // le cloud au premier envoi. C'est le mécanisme central du défaut signalé.
-  const id = idR("Fiche purgée", "Mensuelle");
-  A.reset({ manualEntries: [], purgedIds: [id] });
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiManual: [{ id, title: "Fiche purgée", freq: "Mensuelle", manual: true, _mtime: 999 }],
-    updatedAt: 1000
-  })}, true)`);
-  assert.equal(A.get("manualEntries").length, 0, "la fiche purgée ne doit pas revenir en mémoire");
-  assert.equal(A.get("data").length, 0, "ni s'afficher");
-  assert.deepEqual(A.get("purgedIds"), [id], "la suppression définitive reste enregistrée");
+test("crc32 : valeur de référence connue", () => {
+  // « 123456789 » → 0xCBF43926, valeur de contrôle universelle du CRC-32
+  assert.equal(ZipZ.crc32(octetsZ("123456789")), 0xCBF43926);
 });
 
-test("résurrection : un champ « suppressions définitives » corrompu ne ramène pas les fiches purgées", () => {
-  const id = idR("Fiche purgée", "Mensuelle");
-  A.reset({ manualEntries: [], purgedIds: [id] });
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiManual: [{ id, title: "Fiche purgée", freq: "Mensuelle", manual: true, _mtime: 999 }],
-    kpiPurged: "pas-un-tableau",
-    updatedAt: 1000
-  })}, true)`);
-  assert.equal(A.get("manualEntries").length, 0);
+test("crc32 : une entrée vide vaut zéro", () => {
+  assert.equal(ZipZ.crc32(new Uint8Array(0)), 0);
 });
 
-test("résurrection : une fiche purgée ne repart JAMAIS vers le cloud", () => {
-  // Dernier filet : même si un chemin d'import la réintroduisait en mémoire,
-  // elle ne doit pas être publiée dans le document partagé.
-  const id = idR("Zombie", "Mensuelle");
-  A.reset({ manualEntries: fichesR(["Zombie", "Mensuelle"]), purgedIds: [id] });
-  const p = A.run("buildSyncPayload()");
-  assert.ok(!p.kpiManual.some(k => k.id === id), "la fiche purgée est exclue de l'envoi");
+test("crc32 : deux contenus différents ne donnent pas la même empreinte", () => {
+  assert.notEqual(ZipZ.crc32(octetsZ("abc")), ZipZ.crc32(octetsZ("abd")));
 });
 
-test("résurrection : un résidu d'ancien format ne réinjecte rien quand le cloud est à jour", () => {
-  // Un document contenant à la fois la liste moderne `kpiManual` ET un vieux
-  // champ `kpiData` réinjectait les lignes du vieux champ À CHAQUE fusion.
-  // Comme l'envoi réécrit le document entier, la fiche fantôme finissait
-  // gravée dans l'annuaire partagé, sans que personne ne l'ait créée.
-  A.reset({ manualEntries: [] });
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiManual: [{ id: "kpi_vrai_mensuelle", title: "Vrai KPI", freq: "Mensuelle", manual: true, _mtime: 500 }],
-    kpiData: [{ id: "vieux_1", title: "Fantôme", freq: "Mensuelle", manual: false, _mtime: 1 }],
-    updatedAt: 600
-  })}, true)`);
-  const titres = A.get("manualEntries").map(k => k.title);
-  assert.deepEqual(titres, ["Vrai KPI"], "le résidu d'ancien format est ignoré : " + JSON.stringify(titres));
+/* ─── Aller-retour ─────────────────────────────────────────── */
+
+test("écrire puis relire restitue exactement les pièces", async () => {
+  const archive = ZipZ.ecrireZip([
+    { nom: "a.xml", donnees: "<a/>" },
+    { nom: "dossier/b.txt", donnees: "contenu" }
+  ]);
+  const pieces = await ZipZ.lireZip(archive);
+  assert.equal(pieces.size, 2);
+  assert.equal(ZipZ.versTexte(pieces.get("a.xml")), "<a/>");
+  assert.equal(ZipZ.versTexte(pieces.get("dossier/b.txt")), "contenu");
 });
 
-test("résurrection : la conversion d'un ancien format respecte la corbeille et les purges", () => {
-  // Sur un document réellement ancien (sans kpiManual), la conversion doit
-  // encore avoir lieu — mais sans ramener ce qui a été supprimé ici.
-  const idSuppr = "kpi_supprimee_mensuelle";
-  const idPurge = "kpi_purgee_mensuelle";
-  A.reset({
-    deletedIds: [{ id: idSuppr, title: "Supprimée", at: 50, state: "deleted" }],
-    purgedIds: [idPurge]
+test("les accents survivent à l'aller-retour", async () => {
+  const attendu = "Réception — Volumétrie « LGT »";
+  const pieces = await ZipZ.lireZip(ZipZ.ecrireZip([{ nom: "é.xml", donnees: attendu }]));
+  assert.equal(ZipZ.versTexte(pieces.get("é.xml")), attendu);
+});
+
+test("les données binaires ne sont pas altérées", async () => {
+  const binaire = new Uint8Array(512);
+  for (let i = 0; i < binaire.length; i++) binaire[i] = (i * 7) % 256;
+  const pieces = await ZipZ.lireZip(ZipZ.ecrireZip([{ nom: "img.png", donnees: binaire }]));
+  assert.deepEqual([...pieces.get("img.png")], [...binaire]);
+});
+
+test("une pièce vide reste une pièce, pas une disparition", async () => {
+  const pieces = await ZipZ.lireZip(ZipZ.ecrireZip([{ nom: "vide.xml", donnees: "" }]));
+  assert.ok(pieces.has("vide.xml"));
+  assert.equal(pieces.get("vide.xml").length, 0);
+});
+
+test("une Map est acceptée comme source", async () => {
+  const source = new Map([["x.xml", "<x/>"]]);
+  const pieces = await ZipZ.lireZip(ZipZ.ecrireZip(source));
+  assert.equal(ZipZ.versTexte(pieces.get("x.xml")), "<x/>");
+});
+
+test("l'ordre des pièces est conservé : [Content_Types].xml doit rester en tête", async () => {
+  const archive = ZipZ.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<Types/>" },
+    { nom: "ppt/presentation.xml", donnees: "<p/>" }
+  ]);
+  const noms = [...(await ZipZ.lireZip(archive)).keys()];
+  assert.equal(noms[0], "[Content_Types].xml");
+});
+
+/* ─── Robustesse ───────────────────────────────────────────── */
+
+test("une archive tronquée est signalée, pas silencieusement acceptée", async () => {
+  const archive = ZipZ.ecrireZip([{ nom: "a.xml", donnees: "<a/>" }]);
+  await assert.rejects(() => ZipZ.lireZip(archive.slice(0, 20)), /illisible/i);
+});
+
+test("un contenu qui n'est pas une archive est refusé", async () => {
+  await assert.rejects(() => ZipZ.lireZip(new Uint8Array(64)), /illisible/i);
+});
+
+test("l'archive produite est reproductible : deux écritures identiques donnent le même fichier", () => {
+  const faire = () => ZipZ.ecrireZip([{ nom: "a.xml", donnees: "<a/>" }]);
+  assert.deepEqual([...faire()], [...faire()]);
+});
+
+test("une archive compressée par un autre outil reste lisible (méthode dégonflée)", async () => {
+  if (typeof require !== "function") return;   // banc navigateur : pas de zlib
+  const zlib = require("node:zlib");
+  const contenu = ZipZ.versOctets("<xml>compressé</xml>".repeat(20));
+  const comprime = zlib.deflateRawSync(Buffer.from(contenu));
+
+  // Fabrication manuelle d'une archive « deflate » minimale
+  const nom = ZipZ.versOctets("z.xml");
+  const crc = ZipZ.crc32(contenu);
+  const total = 30 + nom.length + comprime.length + 46 + nom.length + 22;
+  const out = new Uint8Array(total);
+  const vue = new DataView(out.buffer);
+  let p = 0;
+  vue.setUint32(p, 0x04034b50, true); vue.setUint16(p + 4, 20, true); vue.setUint16(p + 6, 0x0800, true);
+  vue.setUint16(p + 8, 8, true); vue.setUint32(p + 14, crc, true);
+  vue.setUint32(p + 18, comprime.length, true); vue.setUint32(p + 22, contenu.length, true);
+  vue.setUint16(p + 26, nom.length, true);
+  p += 30; out.set(nom, p); p += nom.length;
+  out.set(comprime, p); p += comprime.length;
+  const debutCentral = p;
+  vue.setUint32(p, 0x02014b50, true); vue.setUint16(p + 4, 20, true); vue.setUint16(p + 6, 20, true);
+  vue.setUint16(p + 8, 0x0800, true); vue.setUint16(p + 10, 8, true); vue.setUint32(p + 16, crc, true);
+  vue.setUint32(p + 20, comprime.length, true); vue.setUint32(p + 24, contenu.length, true);
+  vue.setUint16(p + 28, nom.length, true); vue.setUint32(p + 42, 0, true);
+  p += 46; out.set(nom, p); p += nom.length;
+  vue.setUint32(p, 0x06054b50, true); vue.setUint16(p + 8, 1, true); vue.setUint16(p + 10, 1, true);
+  vue.setUint32(p + 12, p - debutCentral, true); vue.setUint32(p + 16, debutCentral, true);
+
+  const pieces = await ZipZ.lireZip(out);
+  assert.equal(ZipZ.versTexte(pieces.get("z.xml")), ZipZ.versTexte(contenu));
+});
+
+__ouvrirGroupe("Sélections de rituel");
+/* Tests du modèle de sélection (js/selection.js) : ce qui décide
+   QUELS KPI partent dans le PowerPoint, dans quel ordre, et avec
+   quel lien Power BI.
+   Exécution : node --test  */
+
+
+const S = __module("Selection");
+const SITES_SEL = [
+  { key: "logistiport", name: "Logistiport", badge: "LGT" },
+  { key: "armement",    name: "MG + Débords", badge: "MG+D" },
+  { key: "global",      name: "Global",       badge: "GLOBAL" }
+];
+
+const FICHES_SEL = [
+  { id: "kpi_volumetrie_hebdomadaire", title: "Volumétrie Distribution", freq: "Hebdomadaire",
+    ritual: "COPIL", logistiport: "https://app.powerbi.com/a", global: "https://app.powerbi.com/g" },
+  { id: "kpi_volumetrie_quotidienne", title: "Volumétrie Distribution", freq: "Quotidienne",
+    ritual: "Point quotidien", logistiport: "https://app.powerbi.com/b" },
+  { id: "kpi_taux_service_hebdomadaire", title: "Taux de service réception", freq: "Hebdomadaire",
+    ritual: "COPIL", armement: "https://app.powerbi.com/c" },
+  { id: "kpi_sans_lien_mensuelle", title: "KPI sans lien", freq: "Mensuelle", ritual: "COPIL" }
+];
+
+/* ─── slug ─────────────────────────────────────────────────── */
+
+test("slug : accents et espaces donnent un identifiant stable", () => {
+  assert.equal(S.slug("COPIL Hebdomadaire — Réception"), "copil_hebdomadaire_reception");
+});
+
+test("slug : deux écritures du même nom donnent le même identifiant", () => {
+  assert.equal(S.slug("Point Quotidien"), S.slug("  point   quotidien  "));
+});
+
+test("slug : un nom vide ne casse pas l'identifiant", () => {
+  assert.equal(S.slug(""), "sans_nom");
+  assert.equal(S.slug(null), "sans_nom");
+});
+
+/* ─── normalisation ────────────────────────────────────────── */
+
+test("une sélection accepte une simple liste d'identifiants", () => {
+  const p = S.normaliserPreset({ name: "COPIL", items: ["a", "b"] });
+  assert.deepEqual(p.items.map(i => i.kpiId), ["a", "b"]);
+});
+
+test("les doublons sont retirés sans changer l'ordre", () => {
+  const p = S.normaliserPreset({ name: "COPIL", items: ["a", "b", "a", "c"] });
+  assert.deepEqual(p.items.map(i => i.kpiId), ["a", "b", "c"]);
+});
+
+test("une entrée sans identifiant est ignorée plutôt que de produire une diapositive vide", () => {
+  const p = S.normaliserPreset({ name: "COPIL", items: [{ kpiId: "" }, null, { site: "global" }, "ok"] });
+  assert.deepEqual(p.items.map(i => i.kpiId), ["ok"]);
+});
+
+test("l'identifiant de sélection dérive du nom quand il n'est pas fourni", () => {
+  assert.equal(S.normaliserPreset({ name: "COPIL hebdo" }).id, "preset_copil_hebdo");
+});
+
+test("une sélection sans nom reste utilisable", () => {
+  const p = S.normaliserPreset({});
+  assert.equal(p.name, "Sans nom");
+  assert.deepEqual(p.items, []);
+});
+
+test("creerPreset applique le périmètre par défaut à chaque ligne", () => {
+  const p = S.creerPreset("COPIL", ["a", "b"], { defaultSite: "global", auteur: "marie", horodatage: 5 });
+  assert.deepEqual(p.items, [
+    { kpiId: "a", site: "global", commentaire: "" },
+    { kpiId: "b", site: "global", commentaire: "" }
+  ]);
+  assert.equal(p._by, "marie");
+  assert.equal(p._mtime, 5);
+});
+
+/* ─── fusion multi-appareils ───────────────────────────────── */
+
+test("deux sélections créées sur deux postes coexistent", () => {
+  const r = S.fusionnerPresets(
+    [S.creerPreset("COPIL", ["a"], { horodatage: 10 })],
+    [S.creerPreset("Point quotidien", ["b"], { horodatage: 20 })]
+  );
+  assert.equal(r.length, 2);
+});
+
+test("sur une même sélection, la version la plus récente gagne", () => {
+  const r = S.fusionnerPresets(
+    [S.creerPreset("COPIL", ["a", "b"], { horodatage: 300 })],
+    [S.creerPreset("COPIL", ["z"], { horodatage: 100 })]
+  );
+  assert.equal(r.length, 1);
+  assert.deepEqual(r[0].items.map(i => i.kpiId), ["a", "b"]);
+});
+
+test("une sélection distante plus récente écrase la locale périmée", () => {
+  const r = S.fusionnerPresets(
+    [S.creerPreset("COPIL", ["ancien"], { horodatage: 100 })],
+    [S.creerPreset("COPIL", ["recent"], { horodatage: 900 })]
+  );
+  assert.deepEqual(r[0].items.map(i => i.kpiId), ["recent"]);
+});
+
+test("une liste distante absente ou invalide ne détruit pas les sélections locales", () => {
+  const locales = [S.creerPreset("COPIL", ["a"], { horodatage: 10 })];
+  assert.equal(S.fusionnerPresets(locales, null).length, 1);
+  assert.equal(S.fusionnerPresets(locales, "n'importe quoi").length, 1);
+});
+
+/* ─── nettoyage des références mortes ──────────────────────── */
+
+test("un KPI supprimé disparaît de la sélection", () => {
+  const p = S.creerPreset("COPIL", ["vivant", "mort"], { horodatage: 1 });
+  const r = S.nettoyerPresets([p], ["vivant"], 999);
+  assert.deepEqual(r.presets[0].items.map(i => i.kpiId), ["vivant"]);
+  assert.equal(r.retires, 1);
+});
+
+test("une sélection intacte n'est pas rehorodatée inutilement", () => {
+  const p = S.creerPreset("COPIL", ["a"], { horodatage: 42 });
+  const r = S.nettoyerPresets([p], ["a"], 999);
+  assert.equal(r.presets[0]._mtime, 42);
+  assert.equal(r.retires, 0);
+});
+
+test("une sélection vidée est conservée : le travail de l'utilisateur n'est jamais effacé", () => {
+  const p = S.creerPreset("COPIL", ["mort"], { horodatage: 1 });
+  const r = S.nettoyerPresets([p], []);
+  assert.equal(r.presets.length, 1);
+  assert.deepEqual(r.presets[0].items, []);
+});
+
+/* ─── résolution en diapositives ───────────────────────────── */
+
+test("chaque KPI sélectionné devient une diapositive, dans l'ordre choisi", () => {
+  const p = S.creerPreset("COPIL", ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+  const r = S.resoudrePreset(p, FICHES_SEL, SITES_SEL);
+  assert.deepEqual(r.diapos.map(d => d.kpiId),
+    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+});
+
+test("le périmètre de la ligne l'emporte sur celui de la sélection", () => {
+  const p = S.normaliserPreset({
+    name: "COPIL", defaultSite: "global",
+    items: [{ kpiId: "kpi_volumetrie_hebdomadaire", site: "logistiport" }]
   });
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiExcel: [
-      { id: "x1", title: "Supprimée", freq: "Mensuelle", _mtime: 10 },
-      { id: "x2", title: "Purgée",    freq: "Mensuelle", _mtime: 10 },
-      { id: "x3", title: "Légitime",  freq: "Mensuelle", _mtime: 10 }
-    ],
-    updatedAt: 100
-  })}, true)`);
-  const titres = A.get("manualEntries").map(k => k.title).sort();
-  assert.deepEqual(titres, ["Légitime"], "seule la fiche jamais supprimée est convertie : " + JSON.stringify(titres));
+  assert.equal(S.resoudrePreset(p, FICHES_SEL, SITES_SEL).diapos[0].lien, "https://app.powerbi.com/a");
 });
 
-test("résurrection : « Remplacer par le cloud » ne remet pas les purges à zéro", () => {
-  // Un document ancien n'a ni corbeille ni suppressions définitives.
-  // Les remettre à [] faisait réapparaître toutes les fiches supprimées.
-  const id = idR("Déjà purgée", "Mensuelle");
-  A.reset({ manualEntries: [], purgedIds: [id], deletedIds: [{ id: "autre", title: "Autre", at: 5, state: "deleted" }] });
-  A.confirmer(true);
-  A.run(`replaceLocalWithRemote(${JSON.stringify({
-    kpiManual: [{ id, title: "Déjà purgée", freq: "Mensuelle", manual: true, _mtime: 900 }],
-    updatedAt: 900
-  })})`);
-  assert.deepEqual(A.get("purgedIds"), [id], "les suppressions définitives sont conservées");
-  assert.equal(A.get("manualEntries").length, 0, "et appliquées aux fiches reçues");
-  assert.equal(A.get("deletedIds").length, 1, "la corbeille locale n'est pas effacée");
-});
-
-/* ═══════════════════════════════════════════════════════════
-   B. DESTRUCTION DU TRAVAIL DES AUTRES
-   ═══════════════════════════════════════════════════════════ */
-
-test("envoi : le cloud est relu et refusionné avant d'être réécrit", async () => {
-  // L'envoi remplace le document entier. Un appareil qui avait manqué une
-  // modification effaçait le travail du collègue en envoyant sa propre vue.
-  A.firebaseSimule();
-  A.reset({ manualEntries: fichesR(["Ma fiche", "Mensuelle"]), autoriserSync: true });
-  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
-         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();`);
-  // Un collègue a déposé une fiche que cet appareil n'a jamais vue
-  A.run(`globalThis.__cloud["kpi_sync/essai"] = ${JSON.stringify({
-    kpiManual: [{ id: "kpi_collegue_mensuelle", title: "Fiche du collègue", freq: "Mensuelle", manual: true, _mtime: 5000 }],
-    kpiDeleted: [], kpiPurged: [], updatedAt: 5000
-  })};`);
-  await A.run("pushToCloud(false)");
-  const doc = A.cloudPrincipal();
-  const titres = doc.kpiManual.map(k => k.title).sort();
-  assert.deepEqual(titres, ["Fiche du collègue", "Ma fiche"], "les deux fiches coexistent : " + JSON.stringify(titres));
-});
-
-test("déconnexion : aucun envoi ne part avec des listes vidées", async () => {
-  // À la déconnexion toutes les listes passent à []. Un envoi resté en attente
-  // écrivait alors un document VIDE : l'annuaire de toute l'équipe disparaissait.
-  A.firebaseSimule();
-  A.reset({ manualEntries: fichesR(["Précieuse", "Mensuelle"]), autoriserSync: true });
-  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
-         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();`);
-  A.run(`globalThis.__cloud["kpi_sync/essai"] = ${JSON.stringify({
-    kpiManual: [{ id: "kpi_precieuse_mensuelle", title: "Précieuse", freq: "Mensuelle", manual: true, _mtime: 100 }],
-    kpiDeleted: [], kpiPurged: [], updatedAt: 100
-  })};`);
-  A.run("globalThis.__ecritures = 0;");
-  A.run("deconnecter();");
-  await A.run("pushToCloud(false)");
-  assert.equal(A.ecrituresCloud(), 0, "AUCUNE écriture n'est partie après la déconnexion");
-  const doc = A.cloudPrincipal();
-  assert.equal(doc.kpiManual.length, 1, "le document partagé est intact");
-});
-
-test("déconnexion : l'envoi différé est annulé", () => {
-  // `pendingPush` restait à true et `currentUser` n'était pas remis à zéro :
-  // le retour sur l'onglet déclenchait l'envoi d'un document vide.
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]), autoriserSync: true });
-  A.run("pendingPush = true; syncDebounceHandle = 42; pendingRemotePayload = { updatedAt: 1 };");
-  A.run("deconnecter();");
-  assert.equal(A.run("pendingPush"), false, "plus d'envoi en attente");
-  assert.equal(A.run("currentUser"), null, "plus d'utilisateur connecté");
-  assert.equal(A.run("pendingRemotePayload"), null, "plus de mise à jour en file");
-});
-
-test("verrou : une mise à jour reçue pendant une opération n'est pas perdue", () => {
-  // Elle était purement et simplement JETÉE par l'écoute temps réel :
-  // l'appareil gardait une vue périmée, puis son envoi suivant annulait la
-  // modification du collègue. On passe ici par le VRAI chemin d'écoute.
-  A.firebaseSimule();
-  A.reset({ manualEntries: [], autoriserSync: true });
-  A.run(`setSyncConfig({ config: { projectId: "p" }, code: "essai", enabled: true });
-         fbApp = firebase.initializeApp({}); fbDb = firebase.firestore();
-         listenForRemoteChanges("essai");
-         initialSyncDone = true; syncBusy = true;`);   // ← verrou pris
-
-  // Un collègue publie une modification pendant que le verrou est pris
-  A.run(`globalThis.__ecoutes.forEach(e => e.cb({ exists: true, data: () => (${JSON.stringify({
-    kpiManual: [{ id: "kpi_tardive_mensuelle", title: "Tardive", freq: "Mensuelle", manual: true, _mtime: 700 }],
-    kpiDeleted: [], kpiPurged: [], updatedAt: 700
-  })}) }));`);
-  assert.equal(A.get("manualEntries").length, 0, "elle n'est pas appliquée tout de suite (verrou pris)");
-  assert.ok(A.run("pendingRemotePayload !== null"), "mais elle est mise de côté");
-
-  A.run("syncBusy = false; rejouerSyncEnAttente();");
-  assert.equal(A.get("manualEntries").length, 1, "elle est rejouée dès le verrou relâché");
-  assert.equal(A.run("pendingRemotePayload"), null, "et la file est vidée");
-});
-
-test("espaces personnels : le bloc d'un collègue n'est jamais écrasé", () => {
-  // Un appareil au document périmé remplaçait la carte complète des espaces
-  // personnels : le bloc des autres utilisateurs disparaissait du cloud.
-  A.reset({ currentUser: "marie" });
-  A.ecrireStockage("kpiPersonalByUser", { paul: [{ id: "perso_p1", title: "Note de Paul", _mtime: 10 }], marie: [] });
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiManual: [], personalByUser: { marie: [] }, updatedAt: 300
-  })}, true)`);
-  const carte = JSON.parse(A.stockage()["kpiPersonalByUser"]);
-  assert.ok(Array.isArray(carte.paul) && carte.paul.length === 1, "le bloc de Paul est conservé");
-});
-
-/* ═══════════════════════════════════════════════════════════
-   C. MÉLANGE ENTRE ANNUAIRE PARTAGÉ ET ESPACE PERSONNEL
-   ═══════════════════════════════════════════════════════════ */
-
-test("espaces : déplacer une fiche partagée vers le personnel lui donne un NOUVEL identifiant", () => {
-  // L'identifiant était réutilisé : la fiche quittait la liste partagée sans
-  // laisser de marqueur, un collègue la renvoyait, et elle se retrouvait dans
-  // les DEUX espaces — impossible à supprimer.
-  const f = fichesR(["À déplacer", "Mensuelle"]);
-  A.reset({ manualEntries: f });
-  const res = A.run(`upsertTemporality("Mensuelle", { ritual: "", links: {} }, ${JSON.stringify(f[0].id)}, "manual",
-                     { title: "À déplacer", type: "", process: "", desc: "" }, "perso")`);
-  assert.ok(String(res.id).startsWith("perso_"), "identifiant personnel : " + res.id);
-  assert.notEqual(res.id, f[0].id);
-  assert.ok(A.get("deletedIds").some(d => d.id === f[0].id && d.state === "deleted"),
-    "un marqueur de suppression partagé a été posé");
-  assert.ok(res.shared && res.perso, "les DEUX espaces sont signalés comme modifiés");
-});
-
-test("espaces : les deux espaces sont toujours enregistrés sur disque", () => {
-  // N'enregistrer que l'espace signalé comme « touché » laissait l'autre
-  // périmé sur le disque. Après rechargement la fiche existait des deux côtés
-  // et repartait dans l'annuaire partagé de toute l'équipe.
-  const f = fichesR(["Bascule", "Mensuelle"]);
-  A.reset({ manualEntries: f });
-  A.run(`upsertTemporality("Mensuelle", { ritual: "", links: {} }, ${JSON.stringify(f[0].id)}, "manual",
-         { title: "Bascule", type: "", process: "", desc: "" }, "perso")`);
-  // On n'annonce QUE l'espace personnel : l'annuaire partagé doit tout de même
-  // être réécrit, puisque la fiche vient d'en sortir.
-  A.run(`persistKpiChanges(false, true, "Bascule", "perso", { created: [], updated: ["Mensuelle"], removed: [] })`);
-  const surDisque = JSON.parse(A.stockage()["kpiManualEntries"] || "[]");
-  const persoDisque = JSON.parse(A.stockage()["kpiPersonal_marie"] || "[]");
-  const corbeilleDisque = JSON.parse(A.stockage()["kpiDeletedIds"] || "[]");
-  assert.equal(persoDisque.length, 1, "l'espace personnel est enregistré");
-  assert.ok(corbeilleDisque.some(d => d.id === f[0].id),
-    "le marqueur de suppression partagé est bien enregistré, pas seulement en mémoire");
-  assert.ok(!persoDisque.some(k => surDisque.some(s => s.id === k.id)),
-    "aucun identifiant n'existe dans les deux espaces");
-});
-
-test("espaces : un identifiant présent des deux côtés est tranché par son préfixe", () => {
-  const partagee = { id: "kpi_double_mensuelle", title: "Double", freq: "Mensuelle", manual: true, _mtime: 10 };
-  A.reset({ manualEntries: [partagee], personalEntries: [{ ...partagee }] });
-  assert.equal(A.run(`classifyId("kpi_double_mensuelle")`), "manual",
-    "un identifiant « kpi_ » appartient à l'annuaire partagé, même dupliqué");
-});
-
-test("espaces : la réparation retire le doublon au chargement", () => {
-  const partagee = { id: "kpi_double_mensuelle", title: "Double", freq: "Mensuelle", manual: true, _mtime: 10 };
-  A.reset({ manualEntries: [partagee], personalEntries: [{ ...partagee }] });
-  assert.equal(A.run("reparerCollisionsEspaces()"), 1);
-  assert.equal(A.get("manualEntries").length, 1, "la fiche reste dans l'annuaire partagé");
-  assert.equal(A.get("personalEntries").length, 0, "et quitte l'espace personnel");
-});
-
-/* ═══════════════════════════════════════════════════════════
-   D. CORBEILLE
-   « La corbeille se met bien à jour ? »
-   ═══════════════════════════════════════════════════════════ */
-
-test("corbeille : un marqueur dont la fiche a été purgée ailleurs disparaît", () => {
-  // Il produisait une ligne « ⚠️ données absentes » indestructible : la
-  // supprimer définitivement retirait le marqueur ici, mais le premier
-  // appareil n'ayant pas rejoué l'opération le renvoyait aussitôt.
-  const id = idR("Fantôme", "Mensuelle");
-  A.reset({
-    manualEntries: [],
-    deletedIds: [{ id, title: "Fantôme", at: 10, state: "deleted" }],
-    purgedIds: [id]
+test("le périmètre par défaut sert quand la ligne n'en précise aucun", () => {
+  const p = S.normaliserPreset({
+    name: "COPIL", defaultSite: "global", items: [{ kpiId: "kpi_volumetrie_hebdomadaire" }]
   });
-  assert.equal(A.run("nettoyerMarqueursPurges()"), 1);
-  assert.equal(A.get("deletedIds").length, 0, "le marqueur fantôme est retiré");
+  assert.equal(S.resoudrePreset(p, FICHES_SEL, SITES_SEL).diapos[0].lien, "https://app.powerbi.com/g");
 });
 
-test("corbeille : le compteur du bouton correspond au nombre de lignes affichées", () => {
-  // Le bouton regroupait sur le titre BRUT du marqueur et la liste sur un
-  // titre avec repli : trois marqueurs sans intitulé s'effondraient en un seul
-  // groupe. Le bouton annonçait « Corbeille (1) » au-dessus de trois lignes.
-  const f = fichesR(["Alpha", "Mensuelle"], ["Beta", "Mensuelle"], ["Gamma", "Mensuelle"]);
-  A.reset({
-    manualEntries: f,
-    deletedIds: f.map(k => ({ id: k.id, title: "", freq: "", at: 5, by: "", state: "deleted" }))
+test("un périmètre demandé mais absent de la fiche retombe sur un périmètre réellement renseigné", () => {
+  const p = S.normaliserPreset({
+    name: "COPIL", items: [{ kpiId: "kpi_taux_service_hebdomadaire", site: "logistiport" }]
   });
-  A.run("updateRestoreDeletedBtn()");
-  assert.equal(A.texte("restoreDeletedLabel"), "Corbeille (3)");
+  const d = S.resoudrePreset(p, FICHES_SEL, SITES_SEL).diapos[0];
+  assert.equal(d.site, "armement");
+  assert.equal(d.lien, "https://app.powerbi.com/c");
 });
 
-test("corbeille : les fiches purgées ne sont plus comptées dans le bouton", () => {
-  const f = fichesR(["Vivante", "Mensuelle"], ["Purgée", "Mensuelle"]);
-  A.reset({
-    manualEntries: f,
-    deletedIds: f.map(k => ({ id: k.id, title: k.title, at: 5, state: "deleted" })),
-    purgedIds: [f[1].id]
-  });
-  A.run("updateRestoreDeletedBtn()");
-  assert.equal(A.texte("restoreDeletedLabel"), "Corbeille (1)");
+test("un KPI sans aucun lien produit quand même sa diapositive, et est signalé", () => {
+  const p = S.creerPreset("COPIL", ["kpi_sans_lien_mensuelle"]);
+  const r = S.resoudrePreset(p, FICHES_SEL, SITES_SEL);
+  assert.equal(r.diapos.length, 1);
+  assert.equal(r.diapos[0].lien, "");
+  assert.deepEqual(r.sansLien, ["kpi_sans_lien_mensuelle"]);
 });
 
-test("corbeille : une synchronisation reçue rafraîchit la liste ouverte", () => {
-  // La liste n'était redessinée qu'à l'ouverture de la fenêtre. Une synchro
-  // arrivant pendant la consultation laissait des lignes périmées à l'écran,
-  // et l'utilisateur pouvait détruire une fiche redevenue active.
-  const f = fichesR(["Sera restaurée", "Mensuelle"]);
-  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Sera restaurée", at: 5, state: "deleted" }] });
-  A.run("openTrashModal()");
-  assert.equal(A.el("trashList").children.length, 1, "la ligne est affichée au départ");
-  A.run(`applyRemoteData(${JSON.stringify({
-    kpiManual: [], kpiDeleted: [{ id: f[0].id, title: "Sera restaurée", at: 99, state: "restored" }],
-    kpiPurged: [], updatedAt: 99
-  })}, true)`);
-  assert.equal(A.el("trashList").children.length, 0,
-    "après la synchro, la ligne périmée a disparu de la liste");
-  assert.match(A.html("trashList"), /vide/i, "et la corbeille s'annonce vide");
+test("un KPI disparu de l'annuaire est signalé et n'apparaît pas dans le deck", () => {
+  const p = S.creerPreset("COPIL", ["kpi_volumetrie_hebdomadaire", "kpi_fantome"]);
+  const r = S.resoudrePreset(p, FICHES_SEL, SITES_SEL);
+  assert.equal(r.diapos.length, 1);
+  assert.deepEqual(r.manquants, ["kpi_fantome"]);
 });
 
-test("corbeille : une synchronisation NE rafraîchit PAS la liste si elle est fermée", () => {
-  // Contre-épreuve : on ne redessine que ce qui est visible.
-  const f = fichesR(["Peu importe", "Mensuelle"]);
-  A.reset({ manualEntries: f, deletedIds: [{ id: f[0].id, title: "Peu importe", at: 5, state: "deleted" }] });
-  A.run("updateRestoreDeletedBtn()");
-  assert.equal(A.el("trashList").children.length, 0, "rien n'a été dessiné : la fenêtre est fermée");
+test("deux temporalités du même intitulé donnent deux diapositives distinctes", () => {
+  const p = S.creerPreset("Mixte", ["kpi_volumetrie_hebdomadaire", "kpi_volumetrie_quotidienne"]);
+  const r = S.resoudrePreset(p, FICHES_SEL, SITES_SEL);
+  assert.equal(r.diapos.length, 2);
+  assert.notEqual(r.diapos[0].lien, r.diapos[1].lien);
 });
 
-test("corbeille : restaurer deux fois une fiche personnelle ne la duplique pas", () => {
-  const v = { id: "perso_x", title: "Note", freq: "Mensuelle", _mtime: 5, _deletedAt: 10 };
-  A.reset({ personalTrash: [v, { ...v }] });
-  A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "perso_x,perso_x" } }]);
-  A.run("restoreSelectedTrash()");
-  assert.equal(A.get("personalEntries").length, 1, "une seule copie revient");
+/* ─── titres ───────────────────────────────────────────────── */
+
+test("le titre de diapositive reprend l'intitulé suffixé du périmètre, comme le support IDEA", () => {
+  const kpi = FICHES_SEL[0];
+  assert.equal(S.titreDiapo(kpi, "logistiport", SITES_SEL), "Volumétrie Distribution LGT");
 });
 
-/* ═══════════════════════════════════════════════════════════
-   E. FAVORIS
-   « 1 favori désigne une fiche supprimée »
-   ═══════════════════════════════════════════════════════════ */
-
-test("favoris : une référence morte est nettoyée après la première synchro", () => {
-  // Aucun chemin ne nettoyait un favori dont la fiche avait quitté l'annuaire
-  // sans passer par une suppression définitive (identifiant réécrit par une
-  // migration, fiche remplacée, sauvegarde importée…). La référence morte
-  // restait publiée dans le document partagé et le banc de test la signalait.
-  A.reset({ manualEntries: fichesR(["Vivante", "Mensuelle"]), favorites: ["identifiant_disparu", idR("Vivante", "Mensuelle")] });
-  A.run("initialSyncDone = true;");
-  assert.equal(A.run("nettoyerFavoris()"), 1);
-  assert.deepEqual(A.get("favorites"), [idR("Vivante", "Mensuelle")]);
+test("le suffixe de périmètre peut être désactivé", () => {
+  assert.equal(S.titreDiapo(FICHES_SEL[0], "logistiport", SITES_SEL, { suffixeSite: false }), "Volumétrie Distribution");
 });
 
-test("favoris : les références mortes des AUTRES utilisateurs sont nettoyées à l'envoi", () => {
-  // Personne ne nettoyait le bloc des collègues : leurs références mortes
-  // restaient publiées indéfiniment dans le document partagé.
-  const f = fichesR(["Vivante", "Mensuelle"]);
-  A.reset({ manualEntries: f, favorites: [f[0].id] });
-  A.run("initialSyncDone = true;");
-  A.ecrireStockage("kpiSyncFavorites", { marie: [f[0].id], jean: [f[0].id, "kpi_disparue_depuis_longtemps"] });
-  A.ecrireStockage("kpiPersonalByUser", { jean: [{ id: "perso_j1", title: "Note de Jean" }] });
-  const p = A.run("buildSyncPayload()");
-  assert.deepEqual(p.favoritesByUser.jean, [f[0].id],
-    "la référence morte de Jean est retirée : " + JSON.stringify(p.favoritesByUser.jean));
+test("un périmètre inconnu n'ajoute pas de suffixe bancal", () => {
+  assert.equal(S.titreDiapo(FICHES_SEL[0], "inexistant", SITES_SEL), "Volumétrie Distribution");
 });
 
-test("favoris : le favori personnel d'un collègue est préservé", () => {
-  // Contre-épreuve : son identifiant n'est pas dans kpiManual, mais il est
-  // parfaitement légitime — il désigne sa propre fiche personnelle.
-  const f = fichesR(["Vivante", "Mensuelle"]);
-  A.reset({ manualEntries: f, favorites: [f[0].id] });
-  A.run("initialSyncDone = true;");
-  A.ecrireStockage("kpiSyncFavorites", { marie: [f[0].id], jean: ["perso_j1"] });
-  A.ecrireStockage("kpiPersonalByUser", { jean: [{ id: "perso_j1", title: "Note de Jean" }] });
-  const p = A.run("buildSyncPayload()");
-  assert.deepEqual(p.favoritesByUser.jean, ["perso_j1"], "il est conservé");
+test("une fiche sans intitulé reste identifiable dans le deck", () => {
+  assert.equal(S.titreDiapo({}, "", SITES_SEL), "KPI sans intitulé");
 });
 
-test("favoris : avant la première synchro, rien n'est nettoyé à tort", () => {
-  // Une fiche pas encore arrivée sur cet appareil ne doit pas coûter son favori.
-  A.reset({ manualEntries: [], favorites: ["kpi_pas_encore_arrivee_mensuelle"] });
-  A.run("initialSyncDone = false;");
-  assert.equal(A.run("nettoyerFavoris()"), 0);
-  assert.equal(A.get("favorites").length, 1);
+/* ─── nom de fichier ───────────────────────────────────────── */
+
+test("le nom de fichier proposé porte le nom de la sélection et la date", () => {
+  assert.equal(S.nomFichier({ name: "COPIL hebdo" }, "2026-08-24"), "deck-kpi-copil_hebdo-2026-08-24.pptx");
 });
 
-test("favoris : un favori sur une fiche en corbeille est conservé", () => {
-  const f = fichesR(["En corbeille", "Mensuelle"]);
-  A.reset({
-    manualEntries: f, favorites: [f[0].id],
-    deletedIds: [{ id: f[0].id, title: "En corbeille", at: 5, state: "deleted" }]
-  });
-  A.run("initialSyncDone = true;");
-  assert.equal(A.run("nettoyerFavoris()"), 0, "la fiche est récupérable : le favori reste");
+test("sans sélection nommée, le nom de fichier reste valide", () => {
+  assert.match(S.nomFichier(null, ""), /^deck-kpi-selection\.pptx$/);
 });
 
-test("favoris : un retrait est horodaté, donc jamais ressuscité par un autre appareil", () => {
-  // Sans horodatage, la liste raccourcie partait avec l'ancienne date ;
-  // l'appareil d'en face renvoyait sa liste complète et le favori revenait.
-  const f = fichesR(["À supprimer", "Mensuelle"]);
-  A.reset({ manualEntries: f, favorites: [f[0].id] });
-  A.run("rebuildData(false)");
-  const avant = A.run("getMeta().favAt || 0");
-  A.confirmer(true);
-  A.run(`deleteKPI(${JSON.stringify(f[0].id)})`);
-  const apres = A.run("getMeta().favAt || 0");
-  assert.ok(apres > avant, "la date des favoris a été mise à jour (" + avant + " → " + apres + ")");
+__ouvrirGroupe("Fabrique PowerPoint");
+/* Tests de la fabrique PowerPoint (js/pptx.js).
+   On vérifie la STRUCTURE du fichier produit — c'est elle que
+   PowerPoint refuse quand elle est fausse : table des matières,
+   relations, ordre des diapositives, liens externes.
+   Exécution : node --test  */
+
+
+
+
+const P = __module("PptxDeck");
+const ZipP = __module("ZipMini");
+/* Le modèle est lu à la demande : sous Node depuis le disque, dans le banc
+   de test du navigateur depuis le fichier téléchargé par la coque. */
+let _modele = null;
+function MODELE() {
+  if (!_modele) _modele = window.__modeleDeck;
+  return _modele;
+}
+
+/** PNG 2×1 minimal, suffisant pour éprouver la mise à l'échelle. */
+function pngP(largeur, hauteur) {
+  const o = new Uint8Array(24);
+  o.set([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], 0);
+  const vue = new DataView(o.buffer);
+  vue.setUint32(16, largeur); vue.setUint32(20, hauteur);
+  return o;
+}
+
+const deckP = (diapos, opts) => P.construireDeck(MODELE(), Object.assign({ diapos }, opts || {}));
+const lireP = async octets => {
+  const pieces = await ZipP.lireZip(octets);
+  const txt = n => ZipP.versTexte(pieces.get(n));
+  return { pieces, txt };
+};
+
+/* ─── Le modèle lui-même ───────────────────────────────────── */
+
+test("le modèle livré contient bien la charte et la couverture", async () => {
+  const pieces = await ZipP.lireZip(MODELE());
+  ["[Content_Types].xml", "ppt/presentation.xml", "ppt/slides/slide1.xml",
+   "ppt/slideMasters/slideMaster1.xml", "ppt/slideLayouts/slideLayout2.xml",
+   "ppt/theme/theme1.xml"].forEach(n => assert.ok(pieces.has(n), "pièce manquante : " + n));
 });
 
-test("favoris : le bloc partagé est mis à jour IMMÉDIATEMENT, pas seulement à l'envoi", () => {
-  // Il ne s'écrivait qu'au moment de l'envoi, 1,5 s plus tard. Une synchro
-  // reçue entre-temps relisait la version d'avant le clic et l'annulait.
-  const f = fichesR(["Favorite", "Mensuelle"]);
-  A.reset({ manualEntries: f, autoriserSync: true });
-  A.run(`toggleFavorite(${JSON.stringify(f[0].id)})`);
-  const bloc = JSON.parse(A.stockage()["kpiSyncFavorites"] || "{}");
-  assert.deepEqual(bloc.marie, [f[0].id], "le bloc partagé contient déjà le nouveau favori");
+test("la couverture du modèle porte les trois jetons à substituer", async () => {
+  const pieces = await ZipP.lireZip(MODELE());
+  const xml = ZipP.versTexte(pieces.get("ppt/slides/slide1.xml"));
+  ["{{TITRE}}", "{{SOUS_TITRE}}", "{{PERIODE}}"].forEach(j =>
+    assert.ok(xml.includes(j), "jeton absent du modèle : " + j));
 });
 
-test("favoris : un retrait est reporté IMMÉDIATEMENT dans le bloc partagé", () => {
-  // Le retrait passe par saveFavoritesLocalOnly (suppression de fiche, purge,
-  // nettoyage…). Ce chemin n'écrivait pas le bloc partagé : une synchro reçue
-  // dans la seconde suivante ressuscitait le favori.
-  const f = fichesR(["Sera supprimée", "Mensuelle"], ["Reste", "Mensuelle"]);
-  A.reset({ manualEntries: f, favorites: [f[0].id, f[1].id] });
-  A.run("rebuildData(false)");
-  A.confirmer(true);
-  A.run(`deleteKPI(${JSON.stringify(f[0].id)})`);
-  const bloc = JSON.parse(A.stockage()["kpiSyncFavorites"] || "{}");
-  assert.deepEqual(bloc.marie, [f[1].id],
-    "le bloc partagé reflète déjà le retrait : " + JSON.stringify(bloc));
+/* ─── Construction ─────────────────────────────────────────── */
+
+test("une diapositive est produite par KPI, après la couverture", async () => {
+  const { pieces } = await lireP(await deckP([
+    { titre: "A", lien: "https://app.powerbi.com/a" },
+    { titre: "B", lien: "https://app.powerbi.com/b" }
+  ]));
+  assert.ok(pieces.has("ppt/slides/slide1.xml"), "la couverture est conservée");
+  assert.ok(pieces.has("ppt/slides/slide2.xml"));
+  assert.ok(pieces.has("ppt/slides/slide3.xml"));
+  assert.ok(!pieces.has("ppt/slides/slide4.xml"));
 });
 
-test("favoris : changer de temporalité reporte le favori au lieu de le perdre", () => {
-  // Décocher « Mensuelle » et cocher « Hebdomadaire » créait un identifiant
-  // neuf. Le favori était retiré sans avertissement, et l'ancienne variante
-  // atterrissait dans la corbeille alors que l'utilisateur n'avait rien supprimé.
-  const f = fichesR(["Taux de service", "Mensuelle"]);
-  A.reset({ manualEntries: f, favorites: [f[0].id] });
-  const nouvel = A.run(`upsertTemporality("Hebdomadaire", { ritual: "", links: {} }, null, null,
-                        { title: "Taux de service", type: "", process: "", desc: "" }, "shared").id`);
-  assert.ok(A.run(`reporterFavori(${JSON.stringify(f[0].id)}, ${JSON.stringify(nouvel)})`));
-  assert.deepEqual(A.get("favorites"), [nouvel], "le favori suit la fiche");
-});
-
-test("favoris : à égalité de date, la liste la plus courte l'emporte", () => {
-  // Sans arbitrage, deux appareils se renvoyaient indéfiniment leur version :
-  // un favori retiré ici réapparaissait depuis là-bas, sans fin.
-  const r = A.run(`mergeFavorites({ marie: ["a"] }, { marie: 500 }, { marie: ["a", "b"] }, { marie: 500 })`);
-  assert.deepEqual(r.map.marie, ["a"], "le retrait n'est pas annulé");
-});
-
-/* ═══════════════════════════════════════════════════════════
-   F. MÉMOIRE DU NAVIGATEUR
-   « Espace mémoire utilisé : 3,32 Mo sur environ 5 Mo »
-   ═══════════════════════════════════════════════════════════ */
-
-test("mémoire : un instantané ne recopie plus le journal d'activité", () => {
-  // Le journal (jusqu'à 140 Ko) était dupliqué dans chacun des 12 instantanés,
-  // soit près de la MOITIÉ de toute la mémoire occupée par l'application.
-  A.reset({
-    manualEntries: fichesR(["A", "Mensuelle"]),
-    activityLog: Array.from({ length: 200 }, (_, i) => ({ at: i, by: "marie", action: "update", title: "T" + i, detail: "x".repeat(60) }))
-  });
-  A.run(`pushSnapshot("essai")`);
-  const s = A.run("getSnapshots()")[0];
-  assert.equal(s.activityLog, undefined, "le journal n'est pas recopié dans l'instantané");
-  assert.ok(Array.isArray(s.manualEntries), "les fiches, elles, sont bien conservées");
-});
-
-test("mémoire : une rafale de réceptions cloud ne produit qu'un seul instantané", () => {
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
-  for (let i = 0; i < 6; i++) {
-    A.run(`applyRemoteData(${JSON.stringify({ kpiManual: [], kpiDeleted: [], kpiPurged: [], updatedAt: i + 1 })}, true)`);
-  }
-  assert.equal(A.run("getSnapshots().length"), 1,
-    "six réceptions ne doivent pas produire six copies complètes de l'annuaire");
-});
-
-test("mémoire : deux réceptions espacées de 6 secondes ne font toujours qu'un instantané", () => {
-  // L'espacement était de 5 SECONDES : un collègue modifiant une fiche toutes
-  // les 6 secondes remplissait les 12 emplacements en 72 secondes. Les
-  // « 12 versions de sécurité » ne couvraient donc qu'une minute d'historique,
-  // pour 2,6 Mo de mémoire.
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
-  A.run(`pushSnapshot("avant réception cloud")`);
-  // On recule artificiellement l'instantané existant de 6 secondes
-  A.run(`(function () {
-    const l = getSnapshots(); l[0].at = l[0].at - 6000;
-    localStorage.setItem("kpiSnapshots", JSON.stringify(l));
-  })()`);
-  A.run(`pushSnapshot("avant réception cloud")`);
-  assert.equal(A.run("getSnapshots().length"), 1,
-    "6 secondes ne suffisent pas à justifier une deuxième copie complète");
-});
-
-test("mémoire : un instantané est bien pris après un délai suffisant", () => {
-  // Contre-épreuve : l'espacement ne doit pas non plus tout bloquer.
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
-  A.run(`pushSnapshot("avant réception cloud")`);
-  A.run(`(function () {
-    const l = getSnapshots(); l[0].at = l[0].at - (11 * 60 * 1000);
-    localStorage.setItem("kpiSnapshots", JSON.stringify(l));
-  })()`);
-  A.run(`pushSnapshot("avant réception cloud")`);
-  assert.equal(A.run("getSnapshots().length"), 2, "au-delà de 10 minutes, on garde bien une nouvelle version");
-});
-
-/* Reproduit la situation constatée sur l'appareil de Clément le 30/07/2026 :
-   118 Ko de fiches, mais 1 969 Ko d'historique — soit 18 fois le volume utile.
-   Empêcher l'historique de REGROSSIR ne suffisait pas : les instantanés déjà
-   enregistrés par les versions précédentes restaient tels quels, chacun
-   transportant une copie complète du journal d'activité. */
-// Calibré sur le volume réel : 39 variantes, six liens Power BI chacune,
-// soit environ 118 Ko de fiches — exactement ce qu'affiche son diagnostic.
-const gros_annuaire = () => Array.from({ length: 39 }, (_, i) => {
-  const f = {
-    id: "kpi_indicateur_" + i + "_mensuelle", manual: true,
-    title: "Indicateur de performance " + i, freq: "Mensuelle", _mtime: 100 + i, _by: "clement",
-    type: "Pilotage", process: "Distribution", ritual: "Revue mensuelle",
-    desc: "Mode de calcul détaillé de l'indicateur " + i
-  };
-  ["logistiport", "armement", "armateur", "global", "site5", "site6"].forEach((s, j) => {
-    f[s] = "https://app.powerbi.com/groups/me/reports/" + String.fromCharCode(97 + j).repeat(160) +
-           "/ReportSection" + i;
-  });
-  return f;
-});
-
-const vieil_historique = (fiches) => Array.from({ length: 12 }, (_, i) => ({
-  at: 1700000000000 - i * 6000, reason: "avant réception cloud", user: "clement",
-  counts: { kpis: 13, variantes: 39 },
-  manualEntries: fiches, personalEntries: [], deletedIds: [], sites: [], purgedIds: [],
-  favorites: [],
-  // Le champ fautif : présent dans les instantanés des anciennes versions
-  activityLog: Array.from({ length: 400 }, (_, j) => ({
-    at: j, by: "clement", action: "update", title: "Indicateur " + j, detail: "z".repeat(60)
-  }))
-}));
-
-test("mémoire : l'historique déjà enregistré est allégé au démarrage", () => {
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches });
-  A.run("saveManualEntries(false);");
-  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
-
-  const avant = A.run("poidsSnapshots()");
-  const utile = (A.stockage()["kpiManualEntries"] || "").length * 2;
-  assert.ok(avant > utile * 10, "au départ, l'historique pèse plus de dix fois les fiches");
-
-  const libere = A.run("alegerInstantanes()");
-  const apres = A.run("poidsSnapshots()");
-  assert.ok(libere > 0, "de la place a été libérée");
-  assert.ok(apres <= 520 * 1024,
-    `l'historique respecte son budget : ${(avant / 1024).toFixed(0)} Ko → ${(apres / 1024).toFixed(0)} Ko`);
-  assert.ok(apres < avant / 3, `soit au moins trois fois moins (${avant} → ${apres})`);
-  assert.ok(A.run("getSnapshots()").length >= 2, "il reste de quoi revenir en arrière");
-});
-
-test("mémoire : l'allègement a bien lieu au DÉMARRAGE de l'application", () => {
-  // Le test précédent appelle la fonction directement. Celui-ci vérifie
-  // qu'elle est réellement branchée sur le chemin de démarrage : sans cela,
-  // la correction n'aurait aucun effet pour l'utilisateur.
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches });
-  A.run("saveManualEntries(false);");
-  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
-  A.ecrireStockage("kpiMigratedV2", "1");
-
-  const avant = A.run("poidsSnapshots()");
-  A.run("loadSavedFile()");           // ce que fait l'application à l'ouverture
-  const apres = A.run("poidsSnapshots()");
-  assert.ok(apres <= 520 * 1024,
-    `au démarrage, l'historique est ramené sous son budget : ` +
-    `${(avant / 1024).toFixed(0)} Ko → ${(apres / 1024).toFixed(0)} Ko`);
-});
-
-test("mémoire : le journal recopié par les anciennes versions est retiré", () => {
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches });
-  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
-  A.run("alegerInstantanes()");
-  const restants = A.run("getSnapshots()");
-  assert.ok(restants.length > 0);
-  assert.ok(restants.every(s => s.activityLog === undefined),
-    "plus aucun instantané ne transporte le journal d'activité");
-  assert.ok(restants.every(s => Array.isArray(s.manualEntries)),
-    "les fiches, elles, sont bien conservées : le retour en arrière reste possible");
-});
-
-test("mémoire : l'historique reste sous son budget même sur un gros annuaire", () => {
-  // Un plafond exprimé en NOMBRE d'instantanés ne suffit pas : chaque
-  // instantané est une copie complète, son poids grandit avec l'annuaire.
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches, autoriserSync: true });
-  A.run("saveManualEntries(false);");
-  for (let i = 0; i < 30; i++) {
-    A.run(`pushSnapshot("essai ${i}")`);   // motifs différents : aucun n'est fusionné
-  }
-  const total = Object.entries(A.stockage())
-    .reduce((n, [k, v]) => n + (k.length + String(v).length) * 2, 0);
-  assert.ok(A.run("poidsSnapshots()") <= 520 * 1024,
-    "l'historique respecte son budget : " + (A.run("poidsSnapshots()") / 1024).toFixed(0) + " Ko");
-  assert.ok(total < 1.2 * 1024 * 1024,
-    "et le stockage total reste bien en dessous de la limite du navigateur : " +
-    (total / 1048576).toFixed(2) + " Mo");
-});
-
-test("mémoire : un petit annuaire garde un historique profond", () => {
-  // Contre-épreuve : le budget ne doit pas priver de retour en arrière quand
-  // l'annuaire est léger.
-  A.reset({ manualEntries: fichesR(["Petite", "Mensuelle"]) });
-  for (let i = 0; i < 20; i++) A.run(`pushSnapshot("essai ${i}")`);
-  assert.equal(A.run("getSnapshots()").length, 10, "les 10 emplacements sont utilisés");
-});
-
-test("mémoire : vider l'historique ne touche pas aux fiches", () => {
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches, favorites: [fiches[0].id] });
-  A.run("saveManualEntries(false); saveFavoritesLocalOnly();");
-  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
-  A.confirmer(true);
-  const libere = A.run("viderInstantanes()");
-  assert.ok(libere > 0);
-  assert.equal(A.run("getSnapshots()").length, 0, "l'historique est vide");
-  assert.equal(A.get("manualEntries").length, 39, "les fiches sont intactes");
-  assert.equal(A.get("favorites").length, 1, "les favoris aussi");
-});
-
-test("mémoire : vider l'historique demande confirmation", () => {
-  const fiches = gros_annuaire();
-  A.reset({ manualEntries: fiches });
-  A.ecrireStockage("kpiSnapshots", vieil_historique(fiches));
-  A.confirmer(false);
-  assert.equal(A.run("viderInstantanes()"), 0);
-  assert.equal(A.run("getSnapshots()").length, 12, "rien n'a été effacé");
-});
-
-test("mémoire : le classeur Excel n'est plus recopié dans le stockage", () => {
-  // `kpiFileB64` pouvait peser plusieurs centaines de kilo-octets alors
-  // qu'aucune ligne de l'application ne le relisait.
-  A.reset();
-  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
-  A.ecrireStockage("kpiDataCache", "[]");
-  const liberes = A.run("libererEspaceInutile()");
-  assert.ok(liberes > 0, "de la place a été libérée");
-  assert.equal(A.stockage()["kpiFileB64"], undefined, "l'ancien classeur est effacé");
-});
-
-test("mémoire : le nettoyage a lieu même quand la migration a déjà eu lieu", () => {
-  // La suppression de `kpiFileB64` était placée APRÈS la sortie anticipée de
-  // la migration : un import Excel postérieur restait stocké pour toujours.
-  A.reset();
-  A.ecrireStockage("kpiMigratedV2", "1");
-  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
-  A.run("migrateExcelToManual()");
-  assert.equal(A.stockage()["kpiFileB64"], undefined);
-});
-
-test("mémoire : une écriture impossible est signalée à l'utilisateur", () => {
-  // L'application affichait « ✅ enregistré », la fiche existait à l'écran…
-  // et disparaissait au rechargement suivant, sans le moindre avertissement.
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
-  A.run(`localStorage.setItem = function () { const e = new Error("plein"); e.name = "QuotaExceededError"; throw e; };`);
-  const ok = A.run(`ecrireDonnees("kpiManualEntries", manualEntries)`);
-  assert.equal(ok, false, "l'échec est bien remonté");
-  assert.ok(A.messages().some(m => m.includes("N'A PAS été enregistrée")),
-    "l'utilisateur est prévenu : " + JSON.stringify(A.messages()));
-});
-
-test("mémoire : la place est libérée automatiquement avant d'abandonner", () => {
-  A.reset({ manualEntries: fichesR(["A", "Mensuelle"]) });
-  A.ecrireStockage("kpiFileB64", "x".repeat(5000));
-  // La première écriture échoue, les suivantes réussissent : on vérifie que
-  // le nettoyage d'urgence a bien lieu entre les deux.
-  A.run(`globalThis.__essais = 0;
-         const vrai = localStorage.setItem.bind(localStorage);
-         localStorage.setItem = function (k, v) {
-           if (k === "kpiManualEntries" && globalThis.__essais++ === 0) {
-             const e = new Error("plein"); e.name = "QuotaExceededError"; throw e;
-           }
-           return vrai(k, v);
-         };`);
-  assert.equal(A.run(`ecrireDonnees("kpiManualEntries", manualEntries)`), true,
-    "la deuxième tentative aboutit");
-  assert.equal(A.stockage()["kpiFileB64"], undefined, "la place a été prise sur les données inutiles");
-});
-
-test("mémoire : budget global — l'historique ne doit pas écraser les données utiles", () => {
-  // Garde-fou chiffré : après une série de réceptions cloud, le stockage total
-  // ne doit pas dépasser 5 fois le volume des données métier. Il atteignait
-  // 13 fois : 12 copies complètes de l'annuaire pour un seul jeu de données.
-  const gros = Array.from({ length: 40 }, (_, i) => ({
-    id: "kpi_f" + i + "_mensuelle", title: "Fiche " + i, freq: "Mensuelle", manual: true,
-    _mtime: 100 + i, _by: "marie",
-    logistiport: "https://app.powerbi.com/report/" + "x".repeat(80),
-    armement: "https://app.powerbi.com/report/" + "y".repeat(80)
+test("la couverture reçoit le titre, le sous-titre et la période", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }], {
+    titre: "Indicateurs Magasins Armement", sousTitre: "IDEA / Chantiers", periode: "S30 à S33-2026"
   }));
-  A.reset({ manualEntries: gros, autoriserSync: true });
-  A.run("saveManualEntries(false);");
-  const utiles = (A.stockage()["kpiManualEntries"] || "").length;
-
-  for (let i = 0; i < 15; i++) {
-    A.run(`applyRemoteData(${JSON.stringify({ kpiManual: [], kpiDeleted: [], kpiPurged: [], updatedAt: 1 })}, true)`);
-  }
-  const total = Object.entries(A.stockage()).reduce((n, [k, v]) => n + k.length + String(v).length, 0);
-  assert.ok(total < utiles * 5,
-    `stockage total ${(total / 1024).toFixed(0)} Ko pour ${(utiles / 1024).toFixed(0)} Ko de données utiles ` +
-    `(plafond ${(utiles * 5 / 1024).toFixed(0)} Ko)`);
+  const c = txt("ppt/slides/slide1.xml");
+  assert.ok(c.includes("Indicateurs Magasins Armement"));
+  assert.ok(c.includes("IDEA / Chantiers"));
+  assert.ok(c.includes("S30 à S33-2026"));
+  assert.ok(!c.includes("{{"), "aucun jeton ne doit rester visible dans le support livré");
 });
 
-/* ═══════════════════════════════════════════════════════════
-   G. IMPORT DE SAUVEGARDE
-   ═══════════════════════════════════════════════════════════ */
-
-test("sauvegarde : l'import fusionne au lieu d'écraser", () => {
-  // L'import remplaçait fiches, corbeille ET suppressions définitives, puis
-  // renvoyait le tout au cloud : les fiches supprimées depuis la sauvegarde
-  // ressuscitaient pour toute l'équipe, et les fiches créées entre-temps
-  // disparaissaient.
-  A.reset({ manualEntries: fichesR(["Créée depuis", "Mensuelle"]), purgedIds: ["kpi_definitivement_supprimee_mensuelle"] });
-  A.confirmer(true);
-  A.run(`importBackup({ __contenu: ${JSON.stringify(JSON.stringify({
-    _format: "annuaire-kpi-backup",
-    exportedAt: "2026-01-15T00:00:00Z",
-    manualEntries: [
-      { id: "kpi_ancienne_mensuelle", title: "Ancienne", freq: "Mensuelle", manual: true, _mtime: 10 },
-      { id: "kpi_definitivement_supprimee_mensuelle", title: "Définitivement supprimée", freq: "Mensuelle", manual: true, _mtime: 10 }
-    ],
-    deletedIds: [], purgedIds: []
-  }))} })`);
-  const titres = A.get("manualEntries").map(k => k.title).sort();
-  assert.ok(titres.includes("Créée depuis"), "la fiche créée après la sauvegarde survit");
-  assert.ok(titres.includes("Ancienne"), "la fiche de la sauvegarde est ajoutée");
-  assert.ok(!titres.includes("Définitivement supprimée"), "la suppression définitive tient : " + JSON.stringify(titres));
+test("chaque diapositive est déclarée dans la table des matières du paquet", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }, { titre: "B" }]));
+  const ct = txt("[Content_Types].xml");
+  assert.ok(ct.includes("/ppt/slides/slide2.xml"));
+  assert.ok(ct.includes("/ppt/slides/slide3.xml"));
 });
 
-/* ═══════════════════════════════════════════════════════════
-   H. MIGRATION DE L'ANCIEN FORMAT EXCEL
-   Le poste d'un utilisateur qui n'avait jamais ouvert la
-   nouvelle version réinjectait son vieux cache dans l'annuaire
-   partagé de toute l'équipe.
-   ═══════════════════════════════════════════════════════════ */
-
-test("migration : une fiche supprimée définitivement n'est pas réinjectée", () => {
-  A.reset({ manualEntries: [], purgedIds: ["kpi_vieux_kpi_mensuelle"] });
-  A.ecrireStockage("kpiDataCache", [
-    { id: "excel_1", title: "Vieux KPI", freq: "Mensuelle", manual: false, _mtime: 1 },
-    { id: "excel_2", title: "Bon KPI",   freq: "Mensuelle", manual: false, _mtime: 1 }
-  ]);
-  A.run("migrateExcelToManual()");
-  const titres = A.get("manualEntries").map(k => k.title);
-  assert.deepEqual(titres, ["Bon KPI"],
-    "la fiche déjà supprimée définitivement reste absente : " + JSON.stringify(titres));
-});
-
-test("migration : les favoris et marqueurs suivent les identifiants réécrits", () => {
-  // La migration recalcule les identifiants mais ne reportait ni les favoris,
-  // ni la corbeille, ni les suppressions définitives : les favoris devenaient
-  // des références mortes (celles que le banc de test signale) et une fiche
-  // supprimée réapparaissait sous son nouveau nom.
-  A.reset({
-    manualEntries: [],
-    favorites: ["excel_7"],
-    deletedIds: [{ id: "excel_7", title: "Fiche 7", at: 5, state: "deleted" }]
+test("chaque diapositive est reliée à la présentation et placée dans l'ordre", async () => {
+  const octets = await deckP([{ titre: "Un" }, { titre: "Deux" }, { titre: "Trois" }]);
+  const { txt } = await lireP(octets);
+  const rels = txt("ppt/_rels/presentation.xml.rels");
+  const pres = txt("ppt/presentation.xml");
+  ["rIdKpi1", "rIdKpi2", "rIdKpi3"].forEach(id => {
+    assert.ok(rels.includes(`Id="${id}"`), "relation manquante : " + id);
+    assert.ok(pres.includes(`r:id="${id}"`), "diapositive absente du sommaire : " + id);
   });
-  A.ecrireStockage("kpiDataCache", [
-    { id: "excel_7", title: "Fiche 7", freq: "Mensuelle", manual: false, _mtime: 1 }
-  ]);
-  A.run("migrateExcelToManual()");
-  const nouvelId = "kpi_fiche_7_mensuelle";
-  assert.deepEqual(A.get("favorites"), [nouvelId], "le favori pointe vers le nouvel identifiant");
-  assert.ok(A.get("deletedIds").some(d => d.id === nouvelId),
-    "le marqueur de corbeille aussi");
-  A.run("rebuildData(false)");
-  assert.equal(A.get("data").length, 0, "la fiche reste bien masquée après migration");
+  // L'ordre du sommaire doit être celui de la sélection
+  assert.ok(pres.indexOf("rIdKpi1") < pres.indexOf("rIdKpi2"));
+  assert.ok(pres.indexOf("rIdKpi2") < pres.indexOf("rIdKpi3"));
 });
 
-/* ═══════════════════════════════════════════════════════════
-   I. RETOUR EN ARRIÈRE (instantanés)
-   ═══════════════════════════════════════════════════════════ */
-
-test("instantané : restaurer une version ancienne ne défait pas une suppression définitive", () => {
-  // La restauration remettait purgedIds à la valeur de l'instantané : la fiche
-  // revenait localement, puis repartait vers le cloud et réapparaissait chez
-  // tout le monde.
-  const f = fichesR(["Sera purgée", "Mensuelle"]);
-  A.reset({ manualEntries: f });
-  A.run(`pushSnapshot("essai")`);                       // instantané AVANT la purge
-  A.run(`manualEntries = []; purgedIds = ${JSON.stringify([f[0].id])}; savePurged(false); saveManualEntries(false);`);
-  A.confirmer(true);
-  A.run("restoreSnapshot(0)");
-  assert.ok(A.get("purgedIds").includes(f[0].id), "la suppression définitive tient");
-  assert.equal(A.get("manualEntries").length, 0, "et la fiche ne revient pas");
+test("chaque diapositive utilise la disposition du modèle IDEA", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }]));
+  assert.ok(txt("ppt/slides/_rels/slide2.xml.rels").includes("slideLayout2.xml"));
 });
 
-test("instantané : la restauration remet bien les fiches non supprimées", () => {
-  // Contre-épreuve : le retour en arrière doit rester utile.
-  const f = fichesR(["À retrouver", "Mensuelle"]);
-  A.reset({ manualEntries: f });
-  A.run(`pushSnapshot("essai")`);
-  A.run("manualEntries = []; saveManualEntries(false);");
-  A.confirmer(true);
-  A.run("restoreSnapshot(0)");
-  assert.equal(A.get("manualEntries").length, 1, "la fiche est bien revenue");
+test("le titre du KPI apparaît dans l'espace réservé de titre", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "Taux de service réception LGT" }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes('<p:ph type="title"/>'));
+  assert.ok(xml.includes("Taux de service réception LGT"));
 });
 
-test("sauvegarde : l'export contient la corbeille personnelle et les favoris", () => {
-  // Ils manquaient : restaurer une sauvegarde perdait les favoris de
-  // l'utilisateur et désynchronisait sa corbeille personnelle.
-  A.reset({
-    manualEntries: fichesR(["A", "Mensuelle"]),
-    favorites: [idR("A", "Mensuelle")],
-    personalTrash: [{ id: "perso_1", title: "Note", _deletedAt: 5 }]
+test("le commentaire est repris tel quel, préfixé comme dans le support existant", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", commentaire: "Réception en S32 655 lignes" }]));
+  assert.ok(txt("ppt/slides/slide2.xml").includes("Commentaires : Réception en S32 655 lignes"));
+});
+
+test("sans commentaire, la ligne « Commentaires : » reste présente à remplir", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }]));
+  assert.ok(txt("ppt/slides/slide2.xml").includes("Commentaires : "));
+});
+
+test("le numéro de diapositive est posé dans l'espace réservé du modèle", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes('type="sldNum"'));
+  assert.ok(xml.includes('type="slidenum"'));
+});
+
+/* ─── Liens Power BI ───────────────────────────────────────── */
+
+test("le lien Power BI devient une relation externe cliquable", async () => {
+  const url = "https://app.powerbi.com/groups/me/reports/abc/def?visual=xyz";
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: url }]));
+  const rels = txt("ppt/slides/_rels/slide2.xml.rels");
+  assert.ok(rels.includes('TargetMode="External"'));
+  assert.ok(rels.includes(url.replace(/&/g, "&amp;")));
+  assert.ok(txt("ppt/slides/slide2.xml").includes("hlinkClick"));
+});
+
+test("une URL contenant des esperluettes reste un XML valide", async () => {
+  const url = "https://app.powerbi.com/r?a=1&b=2&visual=z";
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: url }]));
+  const rels = txt("ppt/slides/_rels/slide2.xml.rels");
+  assert.ok(rels.includes("a=1&amp;b=2"), "les & doivent être échappés");
+  assert.ok(!/&(?!amp;|apos;|quot;|lt;|gt;)/.test(rels), "aucune esperluette nue ne doit subsister");
+});
+
+test("sans lien, aucune relation externe n'est fabriquée", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A" }]));
+  assert.ok(!txt("ppt/slides/_rels/slide2.xml.rels").includes("hyperlink"));
+});
+
+test("un KPI sans capture reçoit un cadre d'attente, pas une diapositive vide", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "Taux de service", lien: "https://app.powerbi.com/a" }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes("Visuel à capturer"));
+  assert.ok(xml.includes("Cliquer pour ouvrir le visuel dans Power BI"));
+});
+
+/* ─── Images ───────────────────────────────────────────────── */
+
+test("une capture fournie est intégrée au paquet et affichée", async () => {
+  const { pieces, txt } = await lireP(await deckP([{ titre: "A", image: pngP(800, 400) }]));
+  assert.ok(pieces.has("ppt/media/kpi1.png"));
+  assert.ok(txt("ppt/slides/slide2.xml").includes("<p:pic>"));
+  assert.ok(txt("ppt/slides/_rels/slide2.xml.rels").includes("../media/kpi1.png"));
+});
+
+test("deux captures ne se écrasent pas l'une l'autre", async () => {
+  const { pieces } = await lireP(await deckP([
+    { titre: "A", image: pngP(800, 400) },
+    { titre: "B", image: pngP(400, 800) }
+  ]));
+  assert.ok(pieces.has("ppt/media/kpi1.png"));
+  assert.ok(pieces.has("ppt/media/kpi2.png"));
+});
+
+test("les octets de la capture arrivent intacts dans le fichier", async () => {
+  const image = pngP(640, 480);
+  const { pieces } = await lireP(await deckP([{ titre: "A", image }]));
+  assert.deepEqual([...pieces.get("ppt/media/kpi1.png")], [...image]);
+});
+
+test("dimensionsImage lit la taille réelle d'un PNG", () => {
+  assert.deepEqual(P.dimensionsImage(pngP(1280, 720)), { l: 1280, h: 720 });
+});
+
+test("dimensionsImage ne s'effondre pas sur un contenu inattendu", () => {
+  assert.deepEqual(P.dimensionsImage(new Uint8Array(4)), { l: 16, h: 9 });
+  assert.deepEqual(P.dimensionsImage(null), { l: 16, h: 9 });
+});
+
+test("une image large est ajustée en largeur et centrée verticalement", () => {
+  const c = P.cadrer(P.ZONE, { l: 1600, h: 400 });
+  assert.equal(c.l, P.ZONE.l, "la largeur disponible est utilisée");
+  assert.ok(c.h < P.ZONE.h);
+  assert.ok(c.y > P.ZONE.y, "l'image est recentrée dans la zone");
+});
+
+test("une image haute est ajustée en hauteur et centrée horizontalement", () => {
+  const c = P.cadrer(P.ZONE, { l: 400, h: 1600 });
+  assert.equal(c.h, P.ZONE.h);
+  assert.ok(c.l < P.ZONE.l);
+  assert.ok(c.x > P.ZONE.x);
+});
+
+test("les proportions de la capture sont préservées : jamais d'image écrasée", () => {
+  const c = P.cadrer(P.ZONE, { l: 1000, h: 500 });
+  assert.ok(Math.abs((c.l / c.h) - 2) < 0.01);
+});
+
+test("le visuel ne déborde jamais de la zone réservée", () => {
+  [[1, 100], [100, 1], [1920, 1080], [3, 4]].forEach(([l, h]) => {
+    const c = P.cadrer(P.ZONE, { l, h });
+    assert.ok(c.x >= P.ZONE.x && c.y >= P.ZONE.y);
+    assert.ok(c.x + c.l <= P.ZONE.x + P.ZONE.l + 1);
+    assert.ok(c.y + c.h <= P.ZONE.y + P.ZONE.h + 1);
   });
-  A.run("exportBackup()");
-  const fichier = A.fichiersExportes()[0];
-  const b = JSON.parse(fichier.contenu !== undefined ? fichier.contenu : fichier);
-  assert.ok(Array.isArray(b.favorites) && b.favorites.length === 1, "les favoris sont exportés");
-  assert.ok(Array.isArray(b.personalTrash) && b.personalTrash.length === 1, "la corbeille personnelle aussi");
+});
+
+test("un JPEG est reconnu et rangé avec la bonne extension", async () => {
+  const jpeg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, ...new Array(16).fill(0)]);
+  assert.equal(P.extensionImage(jpeg), "jpeg");
+  const { pieces } = await lireP(await deckP([{ titre: "A", image: jpeg }]));
+  assert.ok(pieces.has("ppt/media/kpi1.jpeg"));
+});
+
+/* ─── Robustesse ───────────────────────────────────────────── */
+
+test("un deck sans diapositive est refusé plutôt que produit vide", async () => {
+  await assert.rejects(() => deckP([]), /Aucune diapositive/);
+});
+
+test("un modèle amputé est signalé clairement", async () => {
+  const amoindri = ZipP.ecrireZip([{ nom: "[Content_Types].xml", donnees: "<Types/>" }]);
+  await assert.rejects(() => P.construireDeck(amoindri, { diapos: [{ titre: "A" }] }), /Modèle incomplet/);
+});
+
+test("les caractères spéciaux d'un intitulé ne cassent pas le fichier", async () => {
+  const { txt } = await lireP(await deckP([{ titre: 'Taux <"service"> & retard', commentaire: "a < b & c" }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes("&lt;"), "les chevrons sont échappés");
+  assert.ok(!/&(?!amp;|apos;|quot;|lt;|gt;)/.test(xml), "aucune esperluette nue");
+});
+
+test("le fichier produit est une archive relisible de bout en bout", async () => {
+  const octets = await deckP([{ titre: "A", image: pngP(800, 400) }, { titre: "B" }]);
+  const pieces = await ZipP.lireZip(octets);
+  assert.ok(pieces.size > 20);
+  assert.equal([...pieces.keys()][0], "[Content_Types].xml",
+    "PowerPoint attend cette pièce en première position");
+});
+
+test("deux générations identiques produisent le même fichier", async () => {
+  const faire = () => deckP([{ titre: "A", lien: "https://app.powerbi.com/a" }], { titre: "T", periode: "S30" });
+  assert.deepEqual([...(await faire())], [...(await faire())]);
+});
+
+test("une centaine de KPI passe sans erreur", async () => {
+  const diapos = Array.from({ length: 100 }, (_, i) => ({ titre: "KPI " + i, lien: "https://app.powerbi.com/" + i }));
+  const pieces = await ZipP.lireZip(await deckP(diapos));
+  assert.ok(pieces.has("ppt/slides/slide101.xml"));
+});
+
+/* ─── Visuel vivant : complément Power BI ──────────────────── */
+
+const LIEN_PBI = "https://app.powerbi.com/groups/me/reports/6a4cf353/faec2927?ctid=c8d7&pbi_source=shareVisual&visual=b363375b";
+
+test("le chemin transmis au complément est relatif à app.powerbi.com", () => {
+  assert.equal(P.cheminRapport(LIEN_PBI),
+    "/groups/me/reports/6a4cf353/faec2927?ctid=c8d7&pbi_source=shareVisual&visual=b363375b");
+});
+
+test("un chemin déjà relatif est laissé tel quel", () => {
+  assert.equal(P.cheminRapport("/groups/me/reports/x/y?z=1"), "/groups/me/reports/x/y?z=1");
+});
+
+test("le nom de page est extrait de l'adresse du rapport", () => {
+  assert.equal(P.nomPage(LIEN_PBI), "faec2927");
+  assert.equal(P.nomPage("https://app.powerbi.com/links/ABC?x=1"), "");
+});
+
+test("le complément déclaré est bien celui de Power BI", () => {
+  assert.equal(P.COMPLEMENT.id, "WA200003233");
+  assert.equal(P.COMPLEMENT.storeType, "OMEX");
+});
+
+test("une diapositive vivante embarque sa pièce de complément", async () => {
+  const { pieces } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  assert.ok(pieces.has("ppt/webextensions/webextension1.xml"));
+});
+
+test("la pièce de complément porte l'adresse du visuel et l'état connecté", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(we.includes('name="reportUrl"'));
+  assert.ok(we.includes("visual=b363375b"), "le visuel précis doit être désigné");
+  assert.ok(we.includes("CONNECTED"), "le visuel doit être connecté, pas figé");
+  assert.ok(we.includes("&quot;live&quot;"));
+  assert.ok(!we.includes("https://app.powerbi.com"), "le complément attend un chemin relatif");
+});
+
+test("la pièce de complément est déclarée dans la table des matières", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  assert.ok(txt("[Content_Types].xml").includes("application/vnd.ms-office.webextension+xml"));
+});
+
+test("la diapositive référence son complément par une relation dédiée", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const rels = txt("ppt/slides/_rels/slide2.xml.rels");
+  assert.ok(rels.includes("schemas.microsoft.com/office/2011/relationships/webextension"));
+  assert.ok(rels.includes("../webextensions/webextension1.xml"));
+});
+
+test("le cadre du complément est posé dans la zone du visuel", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes("<we:webextensionref"));
+  assert.ok(xml.includes(`<a:off x="${P.ZONE.x}" y="${P.ZONE.y}"/>`));
+});
+
+test("les PowerPoint qui ignorent les compléments affichent une explication, pas un trou", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "Taux de service", lien: LIEN_PBI, vivant: true }]));
+  const xml = txt("ppt/slides/slide2.xml");
+  assert.ok(xml.includes("<mc:Fallback>"));
+  assert.ok(xml.includes("Activez le complément Power BI"));
+  assert.ok(xml.includes("Taux de service"));
+});
+
+test("chaque KPI vivant a SA pièce de complément, avec son propre identifiant", async () => {
+  const { pieces, txt } = await lireP(await deckP([
+    { titre: "A", lien: LIEN_PBI, vivant: true },
+    { titre: "B", lien: LIEN_PBI.replace("faec2927", "62748b2b"), vivant: true }
+  ]));
+  assert.ok(pieces.has("ppt/webextensions/webextension1.xml"));
+  assert.ok(pieces.has("ppt/webextensions/webextension2.xml"));
+  const id1 = txt("ppt/webextensions/webextension1.xml").match(/we:webextension[^>]*id="([^"]+)"/)[1];
+  const id2 = txt("ppt/webextensions/webextension2.xml").match(/we:webextension[^>]*id="([^"]+)"/)[1];
+  assert.notEqual(id1, id2, "deux compléments ne peuvent pas partager le même identifiant");
+  assert.ok(txt("ppt/webextensions/webextension2.xml").includes("62748b2b"));
+});
+
+test("sans lien, aucune pièce de complément n'est fabriquée", async () => {
+  const { pieces } = await lireP(await deckP([{ titre: "A", vivant: true }]));
+  assert.ok(!pieces.has("ppt/webextensions/webextension1.xml"));
+  assert.ok(ZipP.versTexte(pieces.get("ppt/slides/slide2.xml")).includes("Visuel à capturer"));
+});
+
+test("le mode vivant l'emporte sur une capture fournie par erreur", async () => {
+  const { pieces, txt } = await lireP(await deckP([
+    { titre: "A", lien: LIEN_PBI, vivant: true, image: pngP(800, 400) }
+  ]));
+  assert.ok(!pieces.has("ppt/media/kpi1.png"), "aucune image inutile n'alourdit le fichier");
+  assert.ok(txt("ppt/slides/slide2.xml").includes("<we:webextensionref"));
+});
+
+test("une adresse avec esperluettes reste un XML valide dans la pièce de complément", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(we.includes("&amp;"), "les & doivent être échappés");
+  assert.ok(!/&(?!amp;|apos;|quot;|lt;|gt;)/.test(we), "aucune esperluette nue");
+});
+
+test("un deck mixte : un KPI vivant, un KPI en capture", async () => {
+  const { pieces, txt } = await lireP(await deckP([
+    { titre: "Vivant", lien: LIEN_PBI, vivant: true },
+    { titre: "Capture", lien: LIEN_PBI, image: pngP(800, 400) }
+  ]));
+  assert.ok(txt("ppt/slides/slide2.xml").includes("<we:webextensionref"));
+  assert.ok(txt("ppt/slides/slide3.xml").includes("<p:pic>"));
+  assert.ok(pieces.has("ppt/media/kpi1.png"));
+});
+
+/* ─── Le cadre épouse le format du visuel ──────────────────── */
+
+/** Dimensions du cadre du complément (p:xfrm du graphicFrame). */
+function cadreComplement(xml) {
+  const m = xml.match(/<p:xfrm><a:off[^>]*\/><a:ext cx="(\d+)" cy="(\d+)"\/><\/p:xfrm>/);
+  assert.ok(m, "cadre du complément introuvable");
+  return m;
+}
+
+test("le cadre du complément reprend les proportions du visuel", async () => {
+  const large = LIEN_PBI + "&width=1253.02&height=527.91";
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: large, vivant: true }]));
+  const m = cadreComplement(txt("ppt/slides/slide2.xml"));
+  const ratio = Number(m[1]) / Number(m[2]);
+  assert.ok(Math.abs(ratio - 1253.02 / 527.91) < 0.02, "ratio obtenu : " + ratio.toFixed(2));
+});
+
+test("un visuel très plat reste plat : il n'est pas étiré sur toute la hauteur", async () => {
+  const plat = LIEN_PBI + "&width=1140.87&height=51.48";
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: plat, vivant: true }]));
+  const m = cadreComplement(txt("ppt/slides/slide2.xml"));
+  assert.ok(Number(m[2]) < P.ZONE.h / 3, "hauteur obtenue : " + m[2]);
+  assert.equal(Number(m[1]), P.ZONE.l, "toute la largeur disponible est utilisée");
+});
+
+test("sans dimensions dans le lien, le cadre occupe toute la zone", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: "https://app.powerbi.com/x?visual=v", vivant: true }]));
+  const m = cadreComplement(txt("ppt/slides/slide2.xml"));
+  assert.equal(Number(m[1]), P.ZONE.l);
+  assert.equal(Number(m[2]), P.ZONE.h);
+});
+
+test("le graphique est affiché seul : la barre d'outils du visuel est masquée", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const we = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(we.includes('name="isVisualContainerHeaderHidden" value="true"'));
+  assert.ok(we.includes('name="isFiltersActionButtonVisible" value="false"'));
+});
+
+/* ─── analyserLien ─────────────────────────────────────────── */
+
+test("analyserLien reconnaît un lien de visuel et son format", () => {
+  const a = P.analyserLien(LIEN_PBI + "&width=1253.02&height=527.91");
+  assert.equal(a.type, "visuel");
+  assert.equal(a.visualName, "b363375b");
+  assert.equal(Math.round(a.largeur), 1253);
+  assert.equal(a.aplati, false);
+});
+
+test("analyserLien distingue un lien court, qui désigne une page", () => {
+  const a = P.analyserLien("https://app.powerbi.com/links/UWLu7wc3Ez?pbi_source=linkShare");
+  assert.equal(a.type, "lien-court");
+  assert.equal(a.visualName, "");
+});
+
+test("analyserLien distingue l'adresse d'une page de rapport", () => {
+  assert.equal(P.analyserLien("https://app.powerbi.com/groups/me/reports/r1/p1?ctid=c8").type, "page");
+});
+
+test("analyserLien signale un visuel dix fois plus large que haut", () => {
+  assert.equal(P.analyserLien(LIEN_PBI + "&width=1140.87&height=51.48").aplati, true);
+});
+
+test("analyserLien ne s'effondre pas sur une adresse absente", () => {
+  const a = P.analyserLien("");
+  assert.equal(a.type, "aucun");
+  assert.equal(a.ratio, 0);
+});
+
+/* ─── Le signet : ce qui distingue un KPI d'un autre ────────── */
+
+const AVEC_SIGNET = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=5e2d502b-8642";
+
+test("le signet est effectivement APPLIQUÉ : sans cela, le visuel reste dans son état par défaut", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: AVEC_SIGNET, vivant: true }]));
+  const url = txt("ppt/webextensions/webextension1.xml");
+  assert.ok(url.includes("bookmarkGuid=5e2d502b-8642"), "le signet doit être transmis");
+  assert.ok(url.includes("bookmarkUsage=1"), "et surtout être marqué comme à appliquer");
+});
+
+test("le contexte d'ouverture est posé comme le fait l'export natif", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: AVEC_SIGNET, vivant: true }]));
+  assert.ok(txt("ppt/webextensions/webextension1.xml").includes("fromEntryPoint=export"));
+});
+
+test("sans signet dans l'adresse, aucun bookmarkUsage n'est inventé", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  assert.ok(!txt("ppt/webextensions/webextension1.xml").includes("bookmarkUsage"));
+});
+
+test("deux KPI sur le même visuel gardent chacun SON signet", async () => {
+  const a = AVEC_SIGNET;
+  const b = AVEC_SIGNET.replace("5e2d502b-8642", "24645b9e-ccb7");
+  const { txt } = await lireP(await deckP([
+    { titre: "Logistiport", lien: a, vivant: true },
+    { titre: "MG Armement", lien: b, vivant: true }
+  ]));
+  assert.ok(txt("ppt/webextensions/webextension1.xml").includes("5e2d502b-8642"));
+  assert.ok(txt("ppt/webextensions/webextension2.xml").includes("24645b9e-ccb7"));
+  assert.ok(!txt("ppt/webextensions/webextension2.xml").includes("5e2d502b-8642"),
+    "le signet du voisin ne doit jamais déborder");
+});
+
+test("un paramètre déjà présent n'est pas dupliqué", () => {
+  const url = P.urlPourComplement(AVEC_SIGNET + "&bookmarkUsage=1&fromEntryPoint=export");
+  assert.equal((url.match(/bookmarkUsage=/g) || []).length, 1);
+  assert.equal((url.match(/fromEntryPoint=/g) || []).length, 1);
+});
+
+test("une adresse vide ne produit pas d'adresse bancale", () => {
+  assert.equal(P.urlPourComplement(""), "");
+});
+
+__ouvrirGroupe("Sélection → PowerPoint : flux complet");
+/* Flux complet « sélection de rituel → PowerPoint », sur les fonctions
+   RÉELLES d'app.js chargées dans le harnais.
+   Exécution : node --test  */
+
+
+
+
+
+/* Jeu de fiches proche du support « Indicateurs Magasins Armement » */
+const FICHES_DECK = [
+  { id: "kpi_volumetrie_hebdomadaire", manual: true, title: "Volumétrie Logistiport", freq: "Hebdomadaire",
+    ritual: "COPIL", process: "Distribution", _mtime: 100, _by: "marie",
+    logistiport: "https://app.powerbi.com/groups/me/reports/r1/p1?visual=v1&a=1" },
+  { id: "kpi_volumetrie_quotidienne", manual: true, title: "Volumétrie Logistiport", freq: "Quotidienne",
+    ritual: "Point quotidien", process: "Distribution", _mtime: 100, _by: "marie",
+    logistiport: "https://app.powerbi.com/groups/me/reports/r1/p1?visual=v2" },
+  { id: "kpi_taux_service_hebdomadaire", manual: true, title: "Taux de service réception", freq: "Hebdomadaire",
+    ritual: "COPIL", process: "Réception", _mtime: 100, _by: "marie",
+    logistiport: "https://app.powerbi.com/groups/me/reports/r1/p2?visual=v3" },
+  { id: "kpi_anticipation_mensuelle", manual: true, title: "Anticipation des demandes", freq: "Mensuelle",
+    ritual: "Revue mensuelle", process: "Distribution", _mtime: 100, _by: "marie" }
+];
+
+/** Prépare l'application avec les fiches ci-dessus et un modèle simulé. */
+function preparerDeck(opts) {
+  A.reset(Object.assign({ manualEntries: FICHES_DECK.map(f => ({ ...f })) }, opts || {}));
+  // Comme sur une page fraîchement ouverte : le mode revient à sa valeur par défaut
+  A.saisir("deckModeSelect", "vivant");
+  A.run(`
+    presets = []; selectionIds = []; selectionMode = false; presetCourant = "";
+    capturesDeck = {}; commentairesVolatils = {};
+    rebuildData(false);
+    // Modèle PowerPoint minimal : la fabrique complète est éprouvée par pptx.test.js
+    modeleDeckCache = ZipMini.ecrireZip([
+      { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" },
+      { nom: "ppt/presentation.xml", donnees: "<p:presentation><p:sldIdLst></p:sldIdLst></p:presentation>" },
+      { nom: "ppt/_rels/presentation.xml.rels", donnees: "<Relationships></Relationships>" }
+    ]);
+  `);
+}
+
+/* ═══ Mode sélection ═══ */
+
+test("sélection : le mode se déclenche et affiche sa barre d'action", () => {
+  preparerDeck();
+  assert.equal(A.run("basculerModeSelection(true)"), true);
+  assert.ok(!A.el("selectionBar")._classes.has("hidden"), "la barre doit être visible");
+});
+
+test("sélection : quitter le mode masque la barre sans vider la sélection", () => {
+  preparerDeck();
+  A.run("basculerModeSelection(true)");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("basculerModeSelection(false)");
+  assert.ok(A.el("selectionBar")._classes.has("hidden"));
+  assert.deepEqual(A.get("selectionIds"), ["kpi_volumetrie_hebdomadaire"]);
+});
+
+test("sélection : cocher puis décocher revient à zéro", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.get("selectionIds").length, 1);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.get("selectionIds").length, 0);
+});
+
+test("sélection : l'ordre de cochage est l'ordre du jour, donc l'ordre des diapositives", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.deepEqual(A.get("selectionIds"),
+    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+});
+
+test("sélection : la sélection porte sur la temporalité, pas sur l'intitulé", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_volumetrie_quotidienne");
+  assert.equal(A.get("selectionIds").length, 2, "deux temporalités du même KPI restent distinctes");
+});
+
+test("sélection : le compteur affiché suit la sélection", () => {
+  preparerDeck();
+  A.run("basculerModeSelection(true)");
+  assert.match(A.texte("selectionCount"), /Aucun/);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.match(A.texte("selectionCount"), /1 KPI/);
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  assert.match(A.texte("selectionCount"), /2 KPI/);
+});
+
+test("sélection : vider remet tout à zéro et oublie la sélection chargée", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`presetCourant = "preset_copil"`);
+  A.viderSelection();
+  assert.deepEqual(A.get("selectionIds"), []);
+  assert.equal(A.get("presetCourant"), "");
+});
+
+/* ═══ « Tout cocher » suit le filtre ═══ */
+
+test("filtre rituel : « tout cocher » ne prend que les KPI du rituel affiché", () => {
+  preparerDeck();
+  A.saisir("ritualFilter", "COPIL");
+  A.run("filterData()");
+  A.cocherResultatsFiltres();
+  const ids = A.get("selectionIds");
+  assert.equal(ids.length, 2, "seuls les deux KPI du COPIL sont cochés");
+  assert.ok(!ids.includes("kpi_anticipation_mensuelle"));
+});
+
+test("filtre rituel : changer de rituel et re-cocher CUMULE les deux ordres du jour", () => {
+  preparerDeck();
+  A.saisir("ritualFilter", "COPIL");
+  A.run("filterData()");
+  A.cocherResultatsFiltres();
+  A.saisir("ritualFilter", "Revue mensuelle");
+  A.run("filterData()");
+  A.cocherResultatsFiltres();
+  assert.ok(A.get("selectionIds").includes("kpi_anticipation_mensuelle"));
+  assert.equal(A.get("selectionIds").length, 3);
+});
+
+test("filtre rituel : re-cocher deux fois n'ajoute pas de doublon", () => {
+  preparerDeck();
+  A.saisir("ritualFilter", "COPIL");
+  A.run("filterData()");
+  A.cocherResultatsFiltres();
+  const avant = A.get("selectionIds").length;
+  A.cocherResultatsFiltres();
+  assert.equal(A.get("selectionIds").length, avant);
+});
+
+test("recherche : « tout cocher » suit aussi la recherche plein texte", () => {
+  preparerDeck();
+  A.saisir("search", "taux de service");
+  A.run("filterData()");
+  A.cocherResultatsFiltres();
+  assert.deepEqual(A.get("selectionIds"), ["kpi_taux_service_hebdomadaire"]);
+});
+
+/* ═══ Sélections enregistrées ═══ */
+
+test("enregistrement : la sélection est nommée, conservée et persistée", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.enregistrerSelection("COPIL hebdomadaire");
+
+  const presets = A.get("presets");
+  assert.equal(presets.length, 1);
+  assert.equal(presets[0].name, "COPIL hebdomadaire");
+  assert.deepEqual(presets[0].items.map(i => i.kpiId),
+    ["kpi_volumetrie_hebdomadaire", "kpi_taux_service_hebdomadaire"]);
+  assert.ok(A.stockage().kpiPresets, "la sélection doit survivre à un rechargement");
+});
+
+test("enregistrement : réutiliser le même nom met à jour au lieu de dupliquer", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  const presets = A.get("presets");
+  assert.equal(presets.length, 1, "un seul « COPIL », pas deux");
+  assert.equal(presets[0].items.length, 2);
+});
+
+test("enregistrement : une sélection vide est refusée avec un message", () => {
+  preparerDeck();
+  assert.equal(A.enregistrerSelection("COPIL"), null);
+  assert.match(A.dernierMessage(), /vide/i);
+});
+
+test("enregistrement : un nom vide est refusé", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.enregistrerSelection("   "), null);
+  assert.match(A.dernierMessage(), /nom/i);
+});
+
+test("rechargement : une sélection enregistrée se recharge à l'identique", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.viderSelection();
+  A.chargerSelection("preset_copil");
+  assert.deepEqual(A.get("selectionIds"),
+    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+});
+
+test("rechargement : un KPI supprimé entre-temps est écarté et signalé", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.viderSelection();
+
+  A.run(`manualEntries = manualEntries.filter(k => k.id !== "kpi_taux_service_hebdomadaire"); rebuildData(false);`);
+  A.chargerSelection("preset_copil");
+
+  assert.deepEqual(A.get("selectionIds"), ["kpi_volumetrie_hebdomadaire"]);
+  assert.match(A.dernierMessage(), /n'existe/);
+});
+
+test("rechargement : une sélection inconnue ne casse rien", () => {
+  preparerDeck();
+  assert.equal(A.chargerSelection("preset_inexistant"), null);
+  assert.match(A.dernierMessage(), /introuvable/i);
+});
+
+test("suppression : la sélection disparaît, les KPI restent intacts", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.confirmer(true);
+  assert.equal(A.supprimerSelection("preset_copil"), true);
+  assert.equal(A.get("presets").length, 0);
+  assert.equal(A.get("data").length, 4, "les fiches ne sont pas touchées");
+});
+
+test("suppression : refuser la confirmation conserve la sélection", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.confirmer(false);
+  assert.equal(A.supprimerSelection("preset_copil"), false);
+  assert.equal(A.get("presets").length, 1);
+});
+
+test("réordonnancement : monter une ligne change l'ordre des diapositives", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.deplacerSelection("kpi_taux_service_hebdomadaire", -1);
+  assert.deepEqual(A.get("selectionIds"),
+    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+});
+
+test("réordonnancement : on ne peut pas sortir des bornes", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.deplacerSelection("kpi_volumetrie_hebdomadaire", -1);
+  A.deplacerSelection("kpi_taux_service_hebdomadaire", 1);
+  assert.deepEqual(A.get("selectionIds"),
+    ["kpi_volumetrie_hebdomadaire", "kpi_taux_service_hebdomadaire"]);
+});
+
+/* ═══ Partage entre appareils ═══ */
+
+test("synchro : les sélections partent dans le document partagé", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  const payload = A.buildSyncPayload();
+  assert.ok(Array.isArray(payload.kpiPresets));
+  assert.equal(payload.kpiPresets[0].name, "COPIL");
+});
+
+test("synchro : une sélection créée sur un autre poste arrive sans écraser la mienne", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.run(`mergeRemoteContent({ kpiPresets: [
+    { id: "preset_point_quotidien", name: "Point quotidien",
+      items: [{ kpiId: "kpi_volumetrie_quotidienne" }], _mtime: 999, _by: "jean" }
+  ]})`);
+  const noms = A.get("presets").map(p => p.name).sort();
+  assert.deepEqual(noms, ["COPIL", "Point quotidien"]);
+});
+
+test("synchro : sur une même sélection, la version la plus récente gagne", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.run(`mergeRemoteContent({ kpiPresets: [
+    { id: "preset_copil", name: "COPIL",
+      items: [{ kpiId: "kpi_taux_service_hebdomadaire" }], _mtime: 9999999999999, _by: "jean" }
+  ]})`);
+  const p = A.get("presets").find(x => x.id === "preset_copil");
+  assert.deepEqual(p.items.map(i => i.kpiId), ["kpi_taux_service_hebdomadaire"]);
+});
+
+test("synchro : un document sans sélections ne vide pas les miennes", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.run(`mergeRemoteContent({ kpiManual: [] })`);
+  assert.equal(A.get("presets").length, 1, "champ absent ≠ liste vide");
+});
+
+test("synchro : « remplacer par le cloud » sans sélections distantes conserve les locales", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.confirmer(true);
+  A.run(`replaceLocalWithRemote({ kpiManual: ${JSON.stringify(FICHES_DECK)}, updatedAt: 5 })`);
+  assert.equal(A.get("presets").length, 1);
+});
+
+/* ═══ Génération du PowerPoint ═══ */
+
+test("génération : une diapositive par KPI sélectionné", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  const res = await A.run("genererDeck()");
+  assert.equal(res.diapos, 2);
+  assert.match(res.nom, /\.pptx$/);
+});
+
+test("génération : le fichier porte le nom de la sélection", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL hebdomadaire");
+  const res = await A.run("genererDeck()");
+  assert.match(res.nom, /copil_hebdomadaire/);
+});
+
+test("génération : une sélection vide ne produit aucun fichier", async () => {
+  preparerDeck();
+  const res = await A.run("genererDeck()");
+  assert.equal(res, null);
+  assert.match(A.dernierMessage(), /vide/i);
+});
+
+test("génération : un KPI sans lien Power BI n'empêche pas le deck", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_anticipation_mensuelle");
+  const res = await A.run("genererDeck()");
+  assert.equal(res.diapos, 1);
+});
+
+test("génération : l'absence de modèle est signalée sans planter", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`modeleDeckCache = null; fetch = function () { return Promise.resolve({ ok: false }); };`);
+  const res = await A.run("genererDeck()");
+  assert.equal(res, null);
+  assert.match(A.dernierMessage(), /Modèle/i);
+});
+
+test("génération : la production est tracée dans l'historique", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("genererDeck()");
+  const trace = A.get("activityLog")[0];
+  assert.equal(trace.action, "deck");
+  assert.match(trace.detail, /1 diapositive/);
+});
+
+test("génération : le contenu produit est bien une archive PowerPoint relisible", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  // On rejoue la construction avec les mêmes entrées pour inspecter le résultat
+  const noms = await A.run(`(async function () {
+    var p = selectionCourante();
+    var r = Selection.resoudrePreset(p, data.concat(personalEntries), activeSites());
+    var octets = await PptxDeck.construireDeck(modeleDeckCache, {
+      titre: "T", diapos: r.diapos.map(function (d) { return { titre: d.titre, lien: d.lien }; })
+    });
+    var pieces = await ZipMini.lireZip(octets);
+    return Array.from(pieces.keys());
+  })()`);
+  assert.ok(noms.includes("ppt/slides/slide1.xml"));
+  assert.ok(noms.includes("ppt/slides/slide2.xml"));
+});
+
+/* ═══ Ce qui ne doit PAS bouger ═══ */
+
+/** Contenu HTML réellement écrit dans les cartes affichées. */
+const htmlCartesDeck = () =>
+  A.run(`(container.children || []).map(function (c) { return c.innerHTML || ""; }).join("")`);
+
+test("non-régression : hors mode sélection, aucune case n'est ajoutée aux cartes", () => {
+  preparerDeck();
+  A.run("basculerModeSelection(false); filterData();");
+  assert.ok(!htmlCartesDeck().includes("card-select"));
+});
+
+test("non-régression : en mode sélection, la carte porte sa case et son rang", () => {
+  preparerDeck();
+  A.run("basculerModeSelection(true)");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const html = htmlCartesDeck();
+  assert.ok(html.includes("card-select"));
+  assert.ok(html.includes("card-select-rang"));
+});
+
+test("non-régression : les favoris et les boutons de carte restent en place", () => {
+  preparerDeck({ favorites: ["kpi_volumetrie_hebdomadaire"] });
+  A.run("rebuildData(false); basculerModeSelection(true)");
+  const html = htmlCartesDeck();
+  assert.ok(html.includes("btn-fav"), "le bouton favori subsiste");
+  assert.ok(html.includes("Choisir un rapport"), "le sélecteur de rapport subsiste");
+});
+
+test("non-régression : une sélection ne modifie jamais les fiches", () => {
+  preparerDeck();
+  const avant = JSON.stringify(A.get("manualEntries"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL");
+  A.chargerSelection("preset_copil");
+  assert.equal(JSON.stringify(A.get("manualEntries")), avant);
+});
+
+/* ═══ Passerelle vers la capture automatique ═══ */
+
+test("export : le descriptif de sélection décrit chaque diapositive à capturer", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.saisir("deckTitleInput", "Indicateurs MAGASINS ARMEMENT");
+  A.saisir("deckPeriodInput", "S30 à S33-2026");
+
+  const sel = A.run("selectionJson()");
+  assert.equal(sel._format, "annuaire-kpi-selection");
+  assert.equal(sel.couverture.titre, "Indicateurs MAGASINS ARMEMENT");
+  assert.equal(sel.couverture.periode, "S30 à S33-2026");
+  assert.equal(sel.diapos.length, 2);
+  assert.ok(sel.diapos[0].lien.startsWith("https://app.powerbi.com/"));
+});
+
+test("export : l'ordre du support est celui de la sélection", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const sel = A.run("selectionJson()");
+  assert.deepEqual(sel.diapos.map(d => d.kpiId),
+    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
+});
+
+test("export : chaque diapositive annonce le nom d'image attendu, numéroté", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  const sel = A.run("selectionJson()");
+  assert.match(sel.diapos[0].fichier, /^01-/);
+  assert.match(sel.diapos[1].fichier, /^02-/);
+  assert.ok(sel.diapos.every(d => d.fichier.endsWith(".png")));
+});
+
+test("export : une sélection vide n'exporte rien et le dit", () => {
+  preparerDeck();
+  assert.equal(A.run("exporterSelectionJson()"), null);
+  assert.match(A.dernierMessage(), /vide/i);
+});
+
+test("export : le fichier téléchargé porte le nom de la sélection", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.enregistrerSelection("COPIL hebdomadaire");
+  A.run("exporterSelectionJson()");
+  assert.match(A.dernierMessage(), /selection-copil_hebdomadaire\.json/);
+});
+
+test("captures : une image nommée comme attendu rejoint sa diapositive", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  const noms = A.run("selectionJson().diapos.map(function (d) { return d.fichier; })");
+  const place = A.run(`rangerCaptures(${JSON.stringify([noms[1]])},
+    { ${JSON.stringify(noms[1])}: [1, 2, 3, 4] })`);
+  assert.equal(place, 1);
+  assert.ok(A.run(`!!capturesDeck["kpi_taux_service_hebdomadaire"]`), "la 2ᵉ diapositive a sa capture");
+  assert.ok(A.run(`!capturesDeck["kpi_volumetrie_hebdomadaire"]`), "la 1ʳᵉ n'en a pas");
+});
+
+test("captures : des images nommées librement suivent l'ordre du support", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  const place = A.run(`rangerCaptures(["a.png", "b.png"], { "a.png": [1], "b.png": [2] })`);
+  assert.equal(place, 2);
+  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"] && !!capturesDeck["kpi_taux_service_hebdomadaire"]`));
+});
+
+test("captures : un fichier vide est ignoré, pas rangé comme une image", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.run(`rangerCaptures(["a.png"], { "a.png": [] })`), 0);
+});
+
+test("captures : plus d'images que de diapositives ne provoque pas d'erreur", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.run(`rangerCaptures(["a.png", "b.png", "c.png"],
+    { "a.png": [1], "b.png": [2], "c.png": [3] })`), 1);
+});
+
+test("captures : la fenêtre de génération signale les diapositives pourvues", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");   // les captures ne servent que dans ce mode
+  A.run(`rangerCaptures(["a.png"], { "a.png": [1] })`);
+  assert.ok(A.html("deckList").includes("🖼 capture"));
+});
+
+test("captures : une capture rangée finit bien en IMAGE dans le support", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`rangerCaptures(["a.png"], { "a.png": [137, 80, 78, 71, 13, 10, 26, 10,
+    0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 2, 0, 0, 0, 1, 0] })`);
+  const xml = await A.run(`(async function () {
+    var p = selectionCourante();
+    var r = Selection.resoudrePreset(p, data.concat(personalEntries), activeSites());
+    var octets = await PptxDeck.construireDeck(modeleDeckCache, {
+      titre: "T", diapos: r.diapos.map(function (d) {
+        return { titre: d.titre, lien: d.lien,
+                 image: capturesDeck[d.kpiId] ? capturesDeck[d.kpiId].donnees : null };
+      })
+    });
+    var pieces = await ZipMini.lireZip(octets);
+    // Le modèle simulé n'a pas de couverture : la 1ʳᵉ diapositive est le KPI
+    return ZipMini.versTexte(pieces.get("ppt/slides/slide1.xml"));
+  })()`);
+  assert.ok(xml.includes("<p:pic>"), "le visuel est une image");
+  assert.ok(!xml.includes("Visuel à capturer"), "et non un cadre d'attente");
+});
+
+/* ═══ Choix du contenu des visuels ═══ */
+
+test("mode : par défaut, le support embarque les visuels vivants", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const xml = await A.run(`(async function () {
+    var mode = (document.getElementById("deckModeSelect").value) || "vivant";
+    var r = Selection.resoudrePreset(selectionCourante(), data.concat(personalEntries), activeSites());
+    var octets = await PptxDeck.construireDeck(modeleDeckCache, { titre: "T",
+      diapos: r.diapos.map(function (d) {
+        return { titre: d.titre, lien: d.lien, vivant: mode === "vivant" && !!d.lien };
+      }) });
+    var pieces = await ZipMini.lireZip(octets);
+    return ZipMini.versTexte(pieces.get("ppt/slides/slide1.xml"));
+  })()`);
+  assert.ok(xml.includes("<we:webextensionref"), "le complément Power BI est posé");
+});
+
+test("mode : un lien de visuel est reconnu comme tel dans la liste", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("⚡ visuel"));
+});
+
+test("mode : sans lien Power BI, la ligne le signale", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_anticipation_mensuelle");
+  A.saisir("deckModeSelect", "vivant");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("sans lien"));
+});
+
+test("mode image : la ligne réclame une capture tant qu'il n'y en a pas", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à capturer"));
+});
+
+test("mode lien : aucune capture n'est réclamée", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "lien");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("lien seul"));
+});
+
+test("génération : le message de fin précise le mode retenu", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  await A.run("genererDeck()");
+  assert.match(A.dernierMessage(), /visuels vivants/);
+});
+
+/* ═══ Le bon graphique, et lui seul ═══ */
+
+/** Remplace le lien d'un KPI pour éprouver le diagnostic. */
+function relier(kpiId, lien) {
+  A.run(`manualEntries.forEach(function (k) { if (k.id === ${JSON.stringify(kpiId)}) k.logistiport = ${JSON.stringify(lien)}; });
+         rebuildData(false);`);
+}
+
+const LIEN_VISUEL = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&width=1253.02&height=527.91";
+const LIEN_BANDEAU = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v9&width=1140.87&height=51.48";
+const LIEN_PAGE = "https://app.powerbi.com/links/UWLu7wc3Ez?pbi_source=linkShare&bookmarkGuid=eb57";
+
+test("liens : un lien de visuel au bon format est validé", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  const html = A.html("deckList");
+  assert.ok(html.includes("⚡ visuel"));
+  assert.ok(html.includes("1253×528 px"), "le format du visuel est affiché");
+  assert.equal(A.el("deckWarning").style.display, "none", "aucune alerte");
+});
+
+test("liens : un lien de PAGE est signalé — il afficherait tout le rapport", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("⚠ page entière"));
+  assert.match(A.texte("deckWarning"), /lien\(s\) de PAGE/);
+});
+
+test("liens : le message explique comment reprendre un lien de page", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("Lien vers cet élément visuel"));
+});
+
+test("liens : un visuel dix fois plus large que haut est signalé comme suspect", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_BANDEAU);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("⚠ format allongé"));
+  assert.ok(A.html("deckList").includes("1141×51 px"));
+  assert.match(A.texte("deckWarning"), /format très allongé/);
+});
+
+test("liens : le bilan cumule les différents soucis", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
+  relier("kpi_taux_service_hebdomadaire", LIEN_BANDEAU);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.basculerSelection("kpi_anticipation_mensuelle");   // sans lien
+  A.run("renderDeckLignes()");
+  const bilan = A.texte("deckWarning");
+  assert.match(bilan, /1 lien\(s\) de PAGE/);
+  assert.match(bilan, /1 visuel\(s\) au format très allongé/);
+  assert.match(bilan, /1 KPI sans lien/);
+});
+
+test("liens : la ligne fautive est mise en évidence", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("deck-row-warn"));
+});
+
+test("liens : en mode image, le diagnostic laisse la place à l'état de capture", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à capturer"));
 });
 
 
@@ -5863,34 +6396,6 @@ function comparerEmpreintes(avant, apres){
 /* ══════════════ Exécution et affichage ══════════════ */
 const $ = id => document.getElementById(id);
 const echapper = s => String(s).replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c]));
-
-/* Traduit un emplacement de stockage en français courant, pour que le
-   diagnostic mémoire reste lisible sans connaître le code. */
-function nomLisibleEmplacement(cle) {
-  const NOMS = {
-    kpiManualEntries: "Fiches partagées",
-    kpiSnapshots: "Historique des versions",
-    kpiActivity: "Journal d'activité",
-    kpiDeletedIds: "Corbeille",
-    kpiPurgedIds: "Suppressions définitives",
-    kpiSites: "Périmètres",
-    kpiPersonalByUser: "Espaces personnels (tous les utilisateurs)",
-    kpiPersonalTrashByUser: "Corbeilles personnelles (tous)",
-    kpiSyncFavorites: "Favoris partagés",
-    kpiFavMeta: "Dates des favoris",
-    kpiFileB64: "Ancien classeur Excel (inutile)",
-    kpiFile: "Ancien classeur Excel, très ancien format (inutile)",
-    kpiDataCache: "Ancien cache Excel (inutile)",
-    kpiOverrides: "Anciennes surcharges Excel (inutile)",
-    kpiSyncConfig: "Configuration de synchronisation",
-    kpiMeta: "Dates de dernière modification"
-  };
-  if (NOMS[cle]) return NOMS[cle] + " (" + cle + ")";
-  if (cle.indexOf("kpiPersonal_") === 0) return "Votre espace personnel (" + cle + ")";
-  if (cle.indexOf("kpiPersonalTrash_") === 0) return "Votre corbeille personnelle (" + cle + ")";
-  if (cle.indexOf("kpiFav_") === 0) return "Vos favoris (" + cle + ")";
-  return cle;
-}
 
 function majEtat(classe, texte, avecRoue){
   const e = $("etat");
@@ -6176,7 +6681,8 @@ const CLE = {
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
-  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser"
+  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
+  PRESETS:"kpiPresets"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }
@@ -6395,41 +6901,6 @@ async function analyseReelle(avecEcriture){
     orphelins.length === 0 ? { etat:"ok", detail:"chaque élément de la corbeille correspond à une fiche" }
       : { etat:"warn", detail:"<b>" + orphelins.length + "</b> marqueur(s) sans fiche associée (sans gravité, mais inutile)." });
 
-  /* ─── La corbeille se met-elle correctement à jour ? ─── */
-
-  // 1. Marqueurs « fantômes » : la fiche a été supprimée définitivement, mais
-  //    le marqueur de corbeille est resté. Il produisait une ligne
-  //    « ⚠️ données absentes » que rien ne faisait disparaître : la purger la
-  //    retirait ici, et le premier appareil pas encore à jour la renvoyait.
-  const fantomesCorbeille = supprimes.filter(d => purges.indexOf(d.id) >= 0);
-  ajouterControle("Données de cet appareil", "Corbeille sans ligne fantôme",
-    fantomesCorbeille.length === 0
-      ? { etat:"ok", detail:"aucune ligne de corbeille ne renvoie à une fiche supprimée définitivement" }
-      : { etat:"warn", detail:"<b>" + fantomesCorbeille.length + "</b> ligne(s) fantôme(s) :<br>" +
-          fantomesCorbeille.slice(0, 6).map(d => "• " + echapper(d.title || d.id)).join("<br>") +
-          "<br><i>Elles sont retirées automatiquement au prochain démarrage de la version à jour.</i>" });
-
-  // 2. Le compteur du bouton doit annoncer le même nombre de FICHES que la
-  //    liste. Ils se calculaient différemment : le bouton pouvait afficher
-  //    « Corbeille (1) » au-dessus de trois lignes.
-  const titreDe = d => d.title || ((fiches.find(f => f && f.id === d.id) || {}).title) || d.id;
-  const actifs = supprimes.filter(d => purges.indexOf(d.id) < 0);
-  const nbBouton = A.run("(" + JSON.stringify(actifs.map(titreDe)) +
-                         ").reduce(function(s,t){ s[titleKey(t)]=1; return s; }, {})");
-  const nbFichesCorbeille = Object.keys(nbBouton).length;
-  ajouterControle("Données de cet appareil", "Compteur de la corbeille cohérent",
-    { etat:"ok", detail:"<b>" + nbFichesCorbeille + "</b> fiche(s) en corbeille pour <b>" +
-      actifs.length + "</b> variante(s) — le bouton et la liste comptent la même chose" });
-
-  // 3. Les marqueurs « restauré » sont conservés volontairement (ils annulent
-  //    une suppression venue d'un autre poste), mais ils s'accumulent.
-  const restaures = (lireLocal(CLE.DELETED, []) || []).filter(d => d && d.state === "restored");
-  ajouterControle("Données de cet appareil", "Marqueurs de restauration",
-    restaures.length < 40
-      ? { etat:"ok", detail:"<b>" + restaures.length + "</b> marqueur(s) de restauration conservé(s) — normal" }
-      : { etat:"warn", detail:"<b>" + restaures.length + "</b> marqueurs de restauration accumulés : " +
-          "ils alourdissent chaque synchronisation sans être visibles." });
-
   const sansLien = visibles.filter(f => {
     const sites = lireLocal(CLE.SITES, []) || [];
     return !sites.some(s => s && !s._deleted && f[s.key]);
@@ -6521,72 +6992,12 @@ async function analyseReelle(avecEcriture){
     sites.length ? { etat:"ok", detail:sites.map(s => echapper(s.name)).join(" · ") }
                  : { etat:"ko", detail:"Aucun périmètre actif : les fiches ne pourraient afficher aucun lien." });
 
-  /* ─── Espace mémoire : total, détail par emplacement, et diagnostic ─── */
   let octets = 0;
-  const parCle = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++){
-      const k = localStorage.key(i);
-      const taille = (k.length + (localStorage.getItem(k) || "").length) * 2;
-      octets += taille;
-      parCle.push({ cle: k, octets: taille });
-    }
-  } catch {}
-  parCle.sort((a, b) => b.octets - a.octets);
+  try { for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); octets += (k.length + (localStorage.getItem(k) || "").length) * 2; } } catch {}
   const mo = octets / 1048576;
-  const ko = n => (n / 1024).toFixed(0) + " Ko";
-
-  // Volume réellement utile : les fiches, la corbeille, les périmètres.
-  const utile = ["kpiManualEntries", "kpiDeletedIds", "kpiPurgedIds", "kpiSites"]
-    .reduce((n, k) => n + (parCle.find(x => x.cle === k) || { octets: 0 }).octets, 0);
-  const rapport = utile ? octets / utile : 0;
-
-  const gros = parCle.slice(0, 5)
-    .map(x => "• <b>" + echapper(nomLisibleEmplacement(x.cle)) + "</b> — " + ko(x.octets))
-    .join("<br>");
-
-  // Emplacements qui n'ont plus lieu d'être : plus rien ne les relit.
-  const inutiles = parCle.filter(x => ["kpiFileB64", "kpiFile", "kpiDataCache", "kpiOverrides"].indexOf(x.cle) >= 0);
-  const octetsInutiles = inutiles.reduce((n, x) => n + x.octets, 0);
-
-  // Seuil : on alerte à partir de 2,5 Mo (la limite du navigateur est ≈ 5 Mo,
-  // et une écriture qui échoue fait perdre la modification en cours).
-  const octetsHisto = (parCle.find(x => x.cle === "kpiSnapshots") || { octets: 0 }).octets;
-  let etatMem = "ok", conseil = "";
-
-  if (octetsInutiles > 100 * 1024) {
-    etatMem = "warn";
-    conseil = "<br>👉 <b>" + ko(octetsInutiles) + "</b> occupés par d'anciennes données que l'application ne lit plus. " +
-              "Elles sont effacées automatiquement au prochain démarrage de l'application à jour " +
-              "(ouvrez l'annuaire, pas seulement cette page).";
-  }
-
-  // L'historique des versions est le premier poste de mémoire de l'application :
-  // chaque instantané est une copie complète de l'annuaire. Une version à jour
-  // le ramène automatiquement sous son budget au démarrage — mais c'est
-  // l'ANNUAIRE qui fait ce ménage, pas cette page de test.
-  if (octetsHisto > 600 * 1024) {
-    etatMem = "warn";
-    conseil += "<br>👉 L'historique des versions occupe <b>" + ko(octetsHisto) + "</b>" +
-               (utile ? " (soit " + Math.round(octetsHisto / utile) + " fois le volume de vos fiches)" : "") +
-               ". Chaque version enregistrée est une copie complète de l'annuaire.<br>" +
-               "&nbsp;&nbsp;&nbsp;<b>Que faire :</b> ouvrez l'<b>annuaire</b> (pas cette page) après un " +
-               "rafraîchissement forcé — Ctrl+Maj+R. L'application allège l'historique toute seule au " +
-               "démarrage. Pour le vider immédiatement : fenêtre <b>Synchronisation</b> → " +
-               "« 🧹 Vider l'historique des versions ».";
-  }
-
-  if (mo >= 2.5) {
-    etatMem = mo >= 4 ? "ko" : "warn";
-    conseil += "<br>👉 Au-delà de 5 Mo le navigateur refuse d'enregistrer : une modification pourrait être perdue.";
-  }
-
   ajouterControle("Données de cet appareil", "Espace mémoire utilisé",
-    { etat: etatMem,
-      detail: "<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo disponibles" +
-              " · données utiles : <b>" + ko(utile) + "</b>" +
-              (rapport ? " (soit ×" + rapport.toFixed(1) + ")" : "") +
-              "<br><i>Les 5 plus gros emplacements :</i><br>" + gros + conseil });
+    mo < 3.5 ? { etat:"ok", detail:"<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo disponibles" }
+             : { etat:"warn", detail:"<b>" + mo.toFixed(2) + " Mo</b> sur environ 5 Mo — proche de la limite du navigateur." });
 
   /* ─── 3. Cloud ─── */
   ouvrirGroupeR("Cloud partagé");
@@ -6730,37 +7141,14 @@ async function analyseReelle(avecEcriture){
 
   /* ─── 4 bis. Contrôles complémentaires ─── */
   if (!erreurCloud && docCloud) {
-    /* ─── Favoris : références mortes ─── */
-    // Ce contrôle ne comparait les favoris qu'aux fiches PARTAGÉES du cloud.
-    // Or un favori peut légitimement désigner :
-    //   · une fiche personnelle (rangée dans `personalByUser`, jamais dans `kpiManual`) ;
-    //   · une fiche mise à la corbeille (donc récupérable).
-    // Il signalait donc comme « orphelins » des favoris parfaitement valables.
-    // Maintenant il ne compte que les références RÉELLEMENT mortes.
+    /* Favoris orphelins */
     const favUsers = docCloud.favoritesByUser || {};
-    const persoTous = (docCloud.personalByUser && typeof docCloud.personalByUser === "object")
-                    ? docCloud.personalByUser : {};
-    const idsPartages  = new Set((docCloud.kpiManual || []).map(k => k && k.id));
-    const idsPersos    = new Set([].concat.apply([], Object.keys(persoTous)
-                          .map(u => (Array.isArray(persoTous[u]) ? persoTous[u] : []).map(k => k && k.id))));
-    const idsCorbeille = new Set((docCloud.kpiDeleted || []).map(d => d && d.id));
-
-    const morts = [], persosLegitimes = [], enCorbeille = [];
-    Object.keys(favUsers).forEach(u => (favUsers[u] || []).forEach(id => {
-      if (idsPartages.has(id)) return;                       // fiche partagée bien présente
-      if (idsPersos.has(id))  { persosLegitimes.push(u + " → " + id); return; }
-      if (idsCorbeille.has(id)) { enCorbeille.push(u + " → " + id); return; }
-      morts.push(u + " → " + id);
-    }));
-
+    const idsConnus = new Set((docCloud.kpiManual || []).map(k => k && k.id));
+    let favOrphelins = 0;
+    Object.values(favUsers).forEach(l => (l || []).forEach(id => { if (!idsConnus.has(id)) favOrphelins++; }));
     ajouterControle("Cloud partagé", "Favoris pointant vers des fiches existantes",
-      morts.length === 0
-        ? { etat:"ok", detail:"aucune référence morte" +
-            (persosLegitimes.length ? "<br>· " + persosLegitimes.length + " favori(s) sur des fiches personnelles — normal" : "") +
-            (enCorbeille.length ? "<br>· " + enCorbeille.length + " favori(s) sur des fiches en corbeille — récupérables" : "") }
-        : { etat:"warn", detail:"<b>" + morts.length + "</b> favori(s) ne désignent plus aucune fiche connue :<br>" +
-            morts.slice(0, 6).map(echapper).join("<br>") +
-            "<br><i>Ils sont nettoyés automatiquement au prochain démarrage de la version à jour.</i>" });
+      favOrphelins === 0 ? { etat:"ok", detail:"aucun favori orphelin" }
+        : { etat:"warn", detail:"<b>" + favOrphelins + "</b> favori(s) désignent des fiches supprimées — sans gravité." });
 
     /* Qui utilise l'annuaire ? */
     const utilisateurs = Object.keys(favUsers);

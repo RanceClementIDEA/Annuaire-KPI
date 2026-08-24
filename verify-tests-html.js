@@ -25,6 +25,11 @@ function elem(tag, id) {
     get className() { return [...el._cls].join(" "); },
     set className(v) { el._cls = new Set(String(v).split(/\s+/).filter(Boolean)); },
     appendChild(c) { el.children.push(c); return c; },
+    insertBefore(c) { el.children.unshift(c); return c; },
+    removeChild(c) { el.children = el.children.filter(x => x !== c); return c; },
+    get firstChild() { return el.children[0] || null; },
+    click() {}, blur() {}, scrollTo() {}, closest() { return null; },
+    getAttribute() { return null; },
     addEventListener() {}, setAttribute() {}, querySelectorAll() { return []; },
     querySelector() { return null; }, focus() {}, remove() {}
   };
@@ -50,10 +55,17 @@ const sandbox = {
   fetch: async (url) => {
     const f = String(url).split("?")[0];
     const p = path.join(__dirname, f);
-    if (!fs.existsSync(p)) return { ok: false, status: 404, text: async () => "" };
-    return { ok: true, status: 200, text: async () => fs.readFileSync(p, "utf8") };
+    if (!fs.existsSync(p)) return { ok: false, status: 404, text: async () => "", arrayBuffer: async () => new ArrayBuffer(0) };
+    return {
+      ok: true, status: 200,
+      text: async () => fs.readFileSync(p, "utf8"),
+      arrayBuffer: async () => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }
+    };
   }
 };
+sandbox.Uint8Array = Uint8Array; sandbox.DataView = DataView;
+sandbox.TextEncoder = TextEncoder; sandbox.TextDecoder = TextDecoder;
+sandbox.Blob = Blob; sandbox.DecompressionStream = DecompressionStream;
 sandbox.window = sandbox; sandbox.globalThis = sandbox; sandbox.self = sandbox;
 vm.createContext(sandbox);
 

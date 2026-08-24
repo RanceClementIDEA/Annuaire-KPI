@@ -241,13 +241,39 @@ const assert = {
   notEqual(a,b,m){ if(a==b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
-  deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); }
+  deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
+  async rejects(fn, re, m){
+    let erreur = null;
+    try { await (typeof fn === "function" ? fn() : fn); }
+    catch(e){ erreur = e; }
+    if (!erreur) throw new Error(m || "la promesse aurait dû échouer");
+    if (re && !re.test(String(erreur.message))) {
+      throw new Error(m || `l'erreur "${erreur.message}" ne correspond pas à ${re}`);
+    }
+  }
 };
+
+/* Accès différé aux modules du bac à sable : ZipMini, PptxDeck et Selection
+   ne sont posés sur window qu'une fois app.js chargé, bien après l'évaluation
+   du script de cette page. */
+function __module(nom){
+  return new Proxy({}, {
+    get(_, cle){
+      const m = window[nom];
+      if (!m) throw new Error("Module " + nom + " non chargé");
+      const v = m[cle];
+      return typeof v === "function" ? v.bind(m) : v;
+    }
+  });
+}
 
 /* ══════════════ Bac à sable partagé avec les tests locaux ══════════════ */
 /*__HARNESS__*/
 
-const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js", "app.js"];
+const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
+                  "js/zip.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/selection.js", "app.js"];
 const journalFichiers = [];
 
 async function loadApp(surProgression){
@@ -263,6 +289,18 @@ async function loadApp(surProgression){
     journalFichiers.push({ f, ok:true, info:(t.length/1024).toFixed(1) + " Ko" });
     sources.push(t);
   }
+  // Modèle PowerPoint : nécessaire aux tests de la fabrique de deck.
+  try {
+    const rm = await fetch("modele-deck.pptx?anticache=" + Date.now());
+    if (rm.ok) {
+      window.__modeleDeck = new Uint8Array(await rm.arrayBuffer());
+      journalFichiers.push({ f:"modele-deck.pptx", ok:true,
+                             info:(window.__modeleDeck.length/1024).toFixed(1) + " Ko" });
+    } else {
+      journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:"HTTP " + rm.status });
+    }
+  } catch(e){ journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:e.message }); }
+
   if (surProgression) surProgression(1, "initialisation du bac à sable");
   window.__sources = sources;      // permet de créer d'autres appareils simulés
   return creerHarnais(sources);
@@ -614,7 +652,8 @@ const CLE = {
   SITES:"kpiSites", ACTIVITY:"kpiActivity", USER:"kpiUser",
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
-  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser"
+  PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
+  PRESETS:"kpiPresets"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

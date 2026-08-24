@@ -7,7 +7,7 @@
   /** Élément de page simulé : mémorise ce qu'on lui écrit. */
   function creerElement(id) {
     const el = {
-      id, tagName: "DIV", textContent: "", value: "", checked: false, selectedIndex: 0,
+      id, tagName: "DIV", textContent: "", value: "", checked: false,
       // Une liste déroulante garde toujours son option « Tous » en tête
       options: [{ tagName: "OPTION", value: "", textContent: "Tous" }],
       style: {}, dataset: {}, children: [], _classes: new Set(),
@@ -29,6 +29,19 @@
       querySelector() { return creerElement("sous-élément"); }, querySelectorAll() { return []; },
       scrollTo() {}, closest() { return null; }
     };
+    // Une liste déroulante réelle change de VALEUR quand on change son index :
+    // sans cela, resetFilters() remettait l'index à zéro en laissant l'ancienne
+    // valeur en place, et les tests de filtre ne reflétaient pas le navigateur.
+    let _selIdx = 0;
+    Object.defineProperty(el, "selectedIndex", {
+      get: () => _selIdx,
+      set(i) {
+        _selIdx = Number(i) || 0;
+        const opt = el.options[_selIdx];
+        if (opt) el.value = opt.value !== undefined ? opt.value : opt.textContent;
+      }
+    });
+
     // Comme dans la vraie page, une fenêtre modale démarre fermée
     if (/Modal$/.test(String(id))) el._classes.add("hidden");
     // innerHTML = "" doit réellement vider le contenu (options comprises)
@@ -159,6 +172,7 @@
           data = []; groupSel = {}; groupReport = {};
           currentView = "all";                       // on repart toujours de la vue « Tous »
           if (typeof searchInput === "object" && searchInput) searchInput.value = "";
+          if (typeof typeFilter === "object" && typeFilter) typeFilter.selectedIndex = 0;
           if (typeof processFilter === "object" && processFilter) processFilter.selectedIndex = 0;
           if (typeof ritualFilter === "object" && ritualFilter) ritualFilter.selectedIndex = 0;
           applyingRemoteSync = ${opts.autoriserSync ? "false" : "true"};
@@ -185,6 +199,14 @@
       texte: id => { const v = elementPourId(id).textContent; return v === undefined || v === null ? "" : String(v); },
       html: id => { const v = elementPourId(id).innerHTML; return v === undefined || v === null ? "" : String(v); },
       saisir(id, valeur) { elementPourId(id).value = valeur; return this; },
+      /* Choisit une option d'une liste déroulante : positionne l'index ET la
+         valeur, exactement comme un clic dans le navigateur. */
+      selectionner(id, valeur) {
+        const el = elementPourId(id);
+        const i = el.options.findIndex(o => (o.value !== undefined ? o.value : o.textContent) === valeur);
+        if (i >= 0) el.selectedIndex = i; else el.value = valeur;
+        return this;
+      },
       cocher(id, v) { elementPourId(id).checked = !!v; return this; },
       requete(selecteur, elements) { requetes.set(selecteur, elements); return this; },
 

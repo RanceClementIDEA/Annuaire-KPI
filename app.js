@@ -11,6 +11,17 @@ let personalEntries = []; // Signets personnels de l'utilisateur (locaux, jamais
 let overrides = {};     // Modifications apportées aux KPIs Excel, par id
 let deletedIds = [];    // Fiches Excel supprimées : [{id, title, freq, at, by}]
 
+/* ── Sélections de KPI & production du PowerPoint ────────────
+   Déclarés ici, avec le reste de l'état : les fonctions de
+   chargement tournent dès l'ouverture de session. */
+let presets = [];          // sélections enregistrées, partagées avec l'équipe
+let selectionMode = false; // le mode « cocher des KPI » est-il actif ?
+let selectionIds = [];     // variantes cochées, DANS L'ORDRE de l'ordre du jour
+let presetCourant = "";    // identifiant de la sélection chargée, s'il y en a une
+let capturesDeck = {};     // kpiId → { donnees, ext } — captures de la session
+let dernierRendu = [];     // groupes affichés au dernier rendu (pour « tout cocher »)
+let commentairesVolatils = {}; // commentaires saisis pour une sélection non enregistrée
+
 function isDeleted(id) { return isDeletedIn(deletedIds, id); }
 
 // Enregistre un marqueur de suppression daté (unique point d'entrée).
@@ -302,6 +313,7 @@ function login(user) {
   loadDeletedIds();
   loadPurged();
   loadActivity();
+  loadPresets();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -1272,7 +1284,8 @@ const ACTION_META = {
   update:  { icon: "✏️", label: "Modification", cls: "act-update" },
   delete:  { icon: "🗑", label: "Suppression",  cls: "act-delete" },
   restore: { icon: "↩",  label: "Restauration", cls: "act-restore" },
-  purge:   { icon: "🔥", label: "Suppression définitive", cls: "act-purge" }
+  purge:   { icon: "🔥", label: "Suppression définitive", cls: "act-purge" },
+  deck:    { icon: "📊", label: "PowerPoint généré", cls: "act-deck" }
 };
 
 function renderHistoryList() {
@@ -2060,7 +2073,16 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
     `<option value="${esc(s.key)}" data-url="${esc(kpi[s.key])}"${s.key === savedSite ? " selected" : ""}>${esc(s.name)}</option>`
   ).join("");
 
+  // Mode sélection : une case par carte, numérotée dans l'ordre de l'ordre du jour.
+  const rang = selectionIds.indexOf(kpi.id);
+  const coche = selectionMode ? `
+      <label class="card-select${rang >= 0 ? " on" : ""}" title="Ajouter cette temporalité à la sélection">
+        <input type="checkbox" ${rang >= 0 ? "checked" : ""} onchange="basculerSelection('${safeId}')">
+        <span class="card-select-rang">${rang >= 0 ? rang + 1 : ""}</span>
+      </label>` : "";
+
   return `
+      ${coche}
       ${isFav ? `<div class="fav-ribbon">⭐ Favori</div>` : ""}
 
       <div class="card-header">
@@ -2141,6 +2163,7 @@ function render(groups, matchCount) {
   animateNextRender = true; // par défaut, les rendus suivants animent
   container.innerHTML = "";
   kpiGroups = {};
+  dernierRendu = groups;   // mémorisé pour « tout cocher ce qui est filtré »
 
   if (!groups.length) {
     const msg = currentView === "perso"
@@ -2421,6 +2444,7 @@ function buildSyncPayload() {
     kpiSites: sites,
     kpiPurged: purgedIds,
     kpiActivity: activityLog,
+    kpiPresets: presets,          // sélections de rituel, partagées comme les fiches
     personalByUser,
     personalTrashByUser,
     favoritesByUser,
@@ -2550,6 +2574,14 @@ function mergeRemoteContent(payload) {
   if (Array.isArray(payload.kpiActivity)) {
     activityLog = mergeActivity(activityLog, payload.kpiActivity, MAX_ACTIVITY);
     saveActivity(false);
+  }
+
+  // Sélections de rituel : même arbitrage que les fiches, sélection par
+  // sélection. Deux personnes peuvent en créer chacune une sans s'écraser.
+  if (Array.isArray(payload.kpiPresets)) {
+    presets = Selection.fusionnerPresets(presets, payload.kpiPresets);
+    savePresets(false);
+    remplirListePresets();
   }
 
   // ── Espace personnel, rangé par utilisateur ──
@@ -2718,6 +2750,12 @@ function replaceLocalWithRemote(payload) {
   nettoyerMarqueursPurges();
   if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) { sites = payload.kpiSites; saveSites(false); }
   if (Array.isArray(payload.kpiActivity)) { activityLog = payload.kpiActivity; saveActivity(false); }
+  // Champ absent ≠ liste vide : un document ancien n'a pas de sélections,
+  // les effacer ferait perdre le travail d'ordre du jour de l'équipe.
+  if (Array.isArray(payload.kpiPresets)) {
+    presets = payload.kpiPresets.map(p => Selection.normaliserPreset(p));
+    savePresets(false);
+  }
   if (payload.favoritesByUser) {
     ecrireDonnees("kpiSyncFavorites", payload.favoritesByUser);
     if (payload.favoritesByUser[currentUser]) { favorites = payload.favoritesByUser[currentUser]; saveFavoritesLocalOnly(); }
@@ -3861,6 +3899,549 @@ document.getElementById("backupFileInput")?.addEventListener("change", function 
   if (this.files && this.files[0]) importBackup(this.files[0]);
   this.value = "";
 });
+
+/* ============================================
+   SÉLECTIONS DE RITUEL & GÉNÉRATION DU POWERPOINT
+   --------------------------------------------
+   Trois briques, dans cet ordre :
+     1. cocher des KPI (mode sélection)
+     2. enregistrer / recharger cette sélection (partagée)
+     3. produire le PowerPoint aux couleurs IDEA
+
+   La logique pure vit dans js/selection.js et js/pptx.js ;
+   ici on ne fait que la relier à la page et au stockage.
+============================================ */
+
+const LS_PRESETS = "kpiPresets";
+let modeleDeckCache = null;   // modele-deck.pptx, chargé une seule fois
+
+function loadPresets() {
+  const brut = Store.readJSON(LS_PRESETS, []) || [];
+  presets = (Array.isArray(brut) ? brut : []).map(p => Selection.normaliserPreset(p));
+  // La liste déroulante doit être remplie dès l'ouverture de session : sans
+  // cela, les sélections enregistrées n'apparaissaient qu'après en avoir
+  // créé une nouvelle dans la même session.
+  remplirListePresets();
+}
+
+function savePresets(sync = true) {
+  ecrireDonnees(LS_PRESETS, presets);
+  if (sync) scheduleAutoSync();
+}
+
+/* ─── Mode sélection ─────────────────────────────────────── */
+
+function basculerModeSelection(actif) {
+  selectionMode = actif === undefined ? !selectionMode : !!actif;
+  const barre = document.getElementById("selectionBar");
+  if (barre) barre.classList.toggle("hidden", !selectionMode);
+  const bouton = document.getElementById("selectionModeBtn");
+  if (bouton) bouton.classList.toggle("actif", selectionMode);
+  if (selectionMode) remplirListePresets();
+  document.body.classList.toggle("mode-selection", selectionMode);
+  majBarreSelection();
+  filterData();
+  return selectionMode;
+}
+
+/** Coche ou décoche une variante. L'ORDRE d'ajout est conservé : c'est
+    l'ordre de passage du rituel, donc l'ordre des diapositives. */
+function basculerSelection(id) {
+  if (!id) return selectionIds.slice();
+  const i = selectionIds.indexOf(id);
+  if (i >= 0) selectionIds.splice(i, 1);
+  else selectionIds.push(id);
+  majBarreSelection();
+  filterData();
+  return selectionIds.slice();
+}
+
+/** Coche toutes les variantes actuellement affichées (filtre en cours). */
+function cocherResultatsFiltres() {
+  let ajoutes = 0;
+  dernierRendu.forEach(g => {
+    const id = groupSel[g.key] || (g.variants[0] && g.variants[0].id);
+    if (id && !selectionIds.includes(id)) { selectionIds.push(id); ajoutes++; }
+  });
+  majBarreSelection();
+  filterData();
+  showToast(ajoutes ? `✅ ${ajoutes} KPI ajouté(s) à la sélection` : "Tout est déjà sélectionné", 2400);
+  return ajoutes;
+}
+
+function viderSelection() {
+  selectionIds = [];
+  presetCourant = "";
+  majBarreSelection();
+  filterData();
+  return 0;
+}
+
+/** Déplace une ligne de la sélection (ordre du jour). */
+function deplacerSelection(id, sens) {
+  const i = selectionIds.indexOf(id);
+  const j = i + (sens < 0 ? -1 : 1);
+  if (i < 0 || j < 0 || j >= selectionIds.length) return selectionIds.slice();
+  selectionIds.splice(j, 0, selectionIds.splice(i, 1)[0]);
+  renderDeckLignes();
+  filterData();
+  return selectionIds.slice();
+}
+
+function majBarreSelection() {
+  const n = selectionIds.length;
+  const compteur = document.getElementById("selectionCount");
+  if (compteur) compteur.textContent = n === 0 ? "Aucun KPI sélectionné"
+    : `${n} KPI sélectionné${n > 1 ? "s" : ""}`;
+  const btn = document.getElementById("deckBtn");
+  if (btn) btn.disabled = n === 0;
+  return n;
+}
+
+/* ─── Sélections enregistrées ────────────────────────────── */
+
+/** La sélection en cours, sous forme de sélection enregistrable. */
+function selectionCourante(nom) {
+  const existante = presets.find(p => p.id === presetCourant);
+  return Selection.normaliserPreset({
+    id: existante ? existante.id : undefined,
+    name: nom || (existante && existante.name) || "Sélection",
+    defaultSite: existante ? existante.defaultSite : "",
+    items: selectionIds.map(id => {
+      const ancienne = existante && existante.items.find(it => it.kpiId === id);
+      return { kpiId: id, site: ancienne ? ancienne.site : "", commentaire: ancienne ? ancienne.commentaire : "" };
+    }),
+    _mtime: now(),
+    _by: currentUser || "?"
+  });
+}
+
+/**
+ * Enregistre la sélection courante sous un nom.
+ * Un nom déjà utilisé met à jour la sélection existante : on ne
+ * multiplie pas les doublons « COPIL », « COPIL (2) »…
+ */
+function enregistrerSelection(nom) {
+  const propre = String(nom || "").trim();
+  if (!propre) { showToast("Donnez un nom à la sélection", 2600); return null; }
+  if (!selectionIds.length) { showToast("La sélection est vide", 2600); return null; }
+
+  const id = "preset_" + Selection.slug(propre);
+  const existante = presets.find(p => p.id === id);
+  const preset = Selection.normaliserPreset({
+    id,
+    name: propre,
+    defaultSite: existante ? existante.defaultSite : "",
+    items: selectionIds.map(kpiId => {
+      const anc = existante && existante.items.find(it => it.kpiId === kpiId);
+      return { kpiId, site: anc ? anc.site : "", commentaire: anc ? anc.commentaire : "" };
+    }),
+    _mtime: now(),
+    _by: currentUser || "?"
+  });
+
+  presets = presets.filter(p => p.id !== id).concat([preset]);
+  presetCourant = id;
+  savePresets();
+  remplirListePresets();
+  logActivity("update", propre, `sélection de ${preset.items.length} KPI`);
+  saveActivity();
+  showToast(`💾 Sélection « ${propre} » enregistrée`, 2800);
+  return preset;
+}
+
+function chargerSelection(id) {
+  const preset = presets.find(p => p.id === id);
+  if (!preset) { showToast("Sélection introuvable", 2600); return null; }
+  const connus = new Set([...data, ...personalEntries].map(k => k && k.id));
+  const vivants = preset.items.filter(it => connus.has(it.kpiId));
+  const perdus = preset.items.length - vivants.length;
+
+  selectionIds = vivants.map(it => it.kpiId);
+  presetCourant = preset.id;
+  if (!selectionMode) basculerModeSelection(true);
+  majBarreSelection();
+  filterData();
+  showToast(perdus
+    ? `📋 « ${preset.name} » chargée — ${perdus} KPI n'existe(nt) plus`
+    : `📋 Sélection « ${preset.name} » chargée`, 3000);
+  return selectionIds.slice();
+}
+
+function supprimerSelection(id) {
+  const preset = presets.find(p => p.id === id);
+  if (!preset) return false;
+  if (!confirm(`Supprimer la sélection « ${preset.name} » ?\n\nLes KPI eux-mêmes ne sont pas touchés.`)) return false;
+  presets = presets.filter(p => p.id !== id);
+  if (presetCourant === id) presetCourant = "";
+  savePresets();
+  remplirListePresets();
+  showToast("Sélection supprimée", 2400);
+  return true;
+}
+
+function remplirListePresets() {
+  const sel = document.getElementById("presetSelect");
+  if (!sel) return;
+  sel.innerHTML = "";
+  const vide = document.createElement("option");
+  vide.value = ""; vide.textContent = presets.length ? "— Sélections enregistrées —" : "Aucune sélection enregistrée";
+  sel.appendChild(vide);
+  presets.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach(p => {
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = `${p.name} (${p.items.length})`;
+    sel.appendChild(o);
+  });
+  sel.value = presetCourant || "";
+}
+
+/* ─── Fenêtre de génération ──────────────────────────────── */
+
+function ouvrirDeckModal() {
+  if (!selectionIds.length) { showToast("Sélectionnez d'abord des KPI", 2600); return; }
+  const titre = document.getElementById("deckTitleInput");
+  if (titre && !titre.value) {
+    const p = presets.find(x => x.id === presetCourant);
+    titre.value = p ? "Indicateurs — " + p.name : "Indicateurs KPI";
+  }
+  renderDeckLignes();
+  document.getElementById("deckModal")?.classList.remove("hidden");
+}
+
+function fermerDeckModal() {
+  document.getElementById("deckModal")?.classList.add("hidden");
+}
+
+/** Diapositives telles qu'elles seront produites, dans l'ordre. */
+function diaposCourantes() {
+  return Selection.resoudrePreset(
+    selectionCourante(),
+    [...data, ...personalEntries],
+    activeSites()
+  );
+}
+
+/** Mode de génération choisi dans la fenêtre. */
+function modeDeck() {
+  const sel = document.getElementById("deckModeSelect");
+  return (sel && sel.value) || "vivant";
+}
+
+/**
+ * Ce que le lien d'une diapositive désigne réellement.
+ * C'est LE point qui décide si le support montrera le bon graphique :
+ * un lien de page affiche tout le rapport, pas le visuel.
+ */
+function diagnosticLien(d) {
+  const a = PptxDeck.analyserLien(d.lien);
+  if (a.type === "aucun") {
+    return { ok: false, court: "sans lien", detail: "aucun lien Power BI pour ce périmètre" };
+  }
+  if (a.type !== "visuel") {
+    return { ok: false, court: "⚠ page entière",
+             detail: "ce lien désigne une PAGE de rapport : le support affichera toute la page. " +
+                     "Reprenez-le par « … → Partager → Lien vers cet élément visuel »." };
+  }
+  const format = Math.round(a.largeur) + "×" + Math.round(a.hauteur) + " px";
+  if (a.aplati) {
+    return { ok: false, court: "⚠ format allongé",
+             detail: "visuel " + format + " — plus de dix fois plus large que haut. Ouvrez-le pour " +
+                     "confirmer que c'est bien le graphique voulu." };
+  }
+  return { ok: true, court: "⚡ visuel", detail: format };
+}
+
+/** Ce qui sera posé dans le cadre du visuel, selon le mode choisi. */
+function etatVisuel(d) {
+  const mode = modeDeck();
+  if (mode === "image")  return capturesDeck[d.kpiId] ? { texte: "🖼 capture", cls: " on" } : { texte: "à capturer", cls: "" };
+  const diag = diagnosticLien(d);
+  if (mode === "lien")   return { texte: d.lien ? "lien seul" : "sans lien", cls: "" };
+  return { texte: diag.court, cls: diag.ok ? " on" : " alerte" };
+}
+
+function renderDeckLignes() {
+  const el = document.getElementById("deckList");
+  if (!el) return;
+  const { diapos } = diaposCourantes();
+  el.innerHTML = diapos.map((d, i) => `
+    <div class="deck-row${diagnosticLien(d).ok ? "" : " deck-row-warn"}">
+      <span class="deck-num">${i + 1}</span>
+      <div class="deck-main">
+        <b>${esc(d.titre)}</b>
+        <span class="deck-sub">${esc([d.kpi.freq || "", diagnosticLien(d).detail].filter(Boolean).join(" · "))}</span>
+        <input type="text" class="deck-comment" data-kpi="${esc(d.kpiId)}"
+               placeholder="Commentaires : …" value="${esc(d.commentaire)}"
+               oninput="noterCommentaire('${esc(d.kpiId).replace(/'/g, "\\'")}', this.value)">
+      </div>
+      <div class="deck-tools">
+        <span class="deck-shot${etatVisuel(d).cls}">${etatVisuel(d).texte}</span>
+        <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', -1)" title="Monter">▲</button>
+        <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', 1)" title="Descendre">▼</button>
+      </div>
+    </div>`).join("");
+
+  // Bilan : ce qui empêcherait le support d'afficher le bon graphique.
+  const soucis = diapos.filter(d => !diagnosticLien(d).ok);
+  const avert = document.getElementById("deckWarning");
+  if (avert) {
+    const pages = soucis.filter(d => diagnosticLien(d).court === "⚠ page entière").length;
+    const plats = soucis.filter(d => diagnosticLien(d).court === "⚠ format allongé").length;
+    const vides = soucis.filter(d => !d.lien).length;
+    const parties = [];
+    if (pages) parties.push(`${pages} lien(s) de PAGE : tout le rapport s'affichera, pas le seul graphique`);
+    if (plats) parties.push(`${plats} visuel(s) au format très allongé : à confirmer en les ouvrant`);
+    if (vides) parties.push(`${vides} KPI sans lien`);
+    avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";
+    avert.style.display = parties.length ? "block" : "none";
+  }
+}
+
+/** Mémorise le commentaire saisi pour une diapositive. */
+function noterCommentaire(kpiId, texte) {
+  const preset = presets.find(p => p.id === presetCourant);
+  if (preset) {
+    const it = preset.items.find(x => x.kpiId === kpiId);
+    if (it) { it.commentaire = texte; preset._mtime = now(); savePresets(); return texte; }
+  }
+  // Sélection non enregistrée : on garde le commentaire le temps de la session
+  commentairesVolatils[kpiId] = texte;
+  return texte;
+}
+
+/** Range une capture d'écran (collée ou déposée) pour un KPI. */
+function ajouterCapture(kpiId, octets) {
+  if (!kpiId || !octets || !octets.length) return false;
+  capturesDeck[kpiId] = { donnees: octets instanceof Uint8Array ? octets : new Uint8Array(octets) };
+  renderDeckLignes();
+  return true;
+}
+
+/* ─── Passerelle vers la capture automatique ─────────────── */
+
+/**
+ * Nom de fichier de capture attendu pour une diapositive.
+ * Numéroté : l'ordre du support se lit dans le dossier de captures.
+ */
+function nomCapture(index, kpiId) {
+  return String(index + 1).padStart(2, "0") + "-" + Selection.slug(kpiId) + ".png";
+}
+
+/**
+ * Décrit la sélection courante dans un fichier JSON autonome.
+ * C'est le contrat entre l'annuaire et l'outil de capture
+ * (outils/capturer-visuels.js) : les liens à ouvrir, l'ordre, les
+ * titres et le nom d'image attendu pour chacun.
+ */
+function selectionJson() {
+  const preset = selectionCourante();
+  const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
+  const lire = id => { const e = document.getElementById(id); return (e && e.value) || ""; };
+  return {
+    _format: "annuaire-kpi-selection",
+    _version: 1,
+    nom: preset.name,
+    exportePar: currentUser || "?",
+    couverture: {
+      titre:     lire("deckTitleInput") || "Indicateurs KPI",
+      sousTitre: lire("deckSubtitleInput"),
+      periode:   lire("deckPeriodInput")
+    },
+    diapos: diapos.map((d, i) => ({
+      kpiId: d.kpiId,
+      titre: d.titre,
+      site: d.site,
+      lien: d.lien,
+      commentaire: d.commentaire || commentairesVolatils[d.kpiId] || "",
+      fichier: nomCapture(i, d.kpiId)
+    }))
+  };
+}
+
+/**
+ * Range un lot de captures dans les diapositives.
+ * L'appariement se fait d'abord sur le nom de fichier produit par
+ * `nomCapture` (l'outil de capture les nomme ainsi), sinon sur le rang
+ * dans l'ordre alphabétique — ce qui marche aussi pour un dossier
+ * d'images numérotées à la main.
+ * @returns {number} nombre de captures placées
+ */
+function rangerCaptures(fichiers, octetsParNom) {
+  const { diapos } = diaposCourantes();
+  const attendus = new Map(diapos.map((d, i) => [nomCapture(i, d.kpiId), d.kpiId]));
+  const noms = (fichiers || []).slice().sort();
+  let places = 0, rang = 0;
+
+  noms.forEach(nom => {
+    const octets = octetsParNom[nom];
+    if (!octets || !octets.length) return;
+    let cible = attendus.get(nom);
+    if (!cible) {                       // nom libre : on suit l'ordre du support
+      while (rang < diapos.length && capturesDeck[diapos[rang].kpiId]) rang++;
+      cible = rang < diapos.length ? diapos[rang].kpiId : null;
+      rang++;
+    }
+    if (!cible) return;
+    capturesDeck[cible] = { donnees: octets instanceof Uint8Array ? octets : new Uint8Array(octets) };
+    places++;
+  });
+
+  renderDeckLignes();
+  return places;
+}
+
+/** Télécharge ce descriptif : point d'entrée de la capture automatique. */
+function exporterSelectionJson() {
+  const sel = selectionJson();
+  if (!sel.diapos.length) { showToast("Sélection vide : rien à exporter", 2800); return null; }
+  const nom = "selection-" + Selection.slug(sel.nom) + ".json";
+  telechargerOctets(JSON.stringify(sel, null, 2), nom, "application/json");
+  showToast(`⬇ ${nom} — à donner à l'outil de capture`, 3600);
+  return sel;
+}
+
+/* ─── Production du fichier ──────────────────────────────── */
+
+async function chargerModeleDeck() {
+  if (modeleDeckCache) return modeleDeckCache;
+  const rep = await fetch("modele-deck.pptx");
+  if (!rep || !rep.ok) throw new Error("modele-deck.pptx introuvable");
+  modeleDeckCache = new Uint8Array(await rep.arrayBuffer());
+  return modeleDeckCache;
+}
+
+function telechargerOctets(octets, nom, type) {
+  const blob = new Blob([octets], { type: type || "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nom;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return nom;
+}
+
+/**
+ * Produit le PowerPoint : une diapositive de couverture puis une
+ * diapositive par KPI sélectionné, dans l'ordre de la sélection.
+ * @returns {Promise<{nom:string, diapos:number}|null>}
+ */
+async function genererDeck() {
+  const preset = selectionCourante();
+  const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
+  if (!diapos.length) { showToast("Sélection vide : rien à produire", 2800); return null; }
+
+  let modele;
+  try {
+    modele = await chargerModeleDeck();
+  } catch (err) {
+    showToast("❌ Modèle PowerPoint introuvable (modele-deck.pptx) — " + (err.message || ""), 4000);
+    return null;
+  }
+
+  const lire = id => document.getElementById(id);
+  const mode = (lire("deckModeSelect") && lire("deckModeSelect").value) || "vivant";
+  const options = {
+    titre:     (lire("deckTitleInput") && lire("deckTitleInput").value) || "Indicateurs KPI",
+    sousTitre: (lire("deckSubtitleInput") && lire("deckSubtitleInput").value) || "",
+    periode:   (lire("deckPeriodInput") && lire("deckPeriodInput").value) || "",
+    diapos: diapos.map(d => ({
+      titre: d.titre,
+      lien: d.lien,
+      commentaire: d.commentaire || commentairesVolatils[d.kpiId] || "",
+      // Visuel vivant : le complément Power BI, donc aucune image à fournir.
+      vivant: mode === "vivant" && !!d.lien,
+      image: mode === "image" && capturesDeck[d.kpiId] ? capturesDeck[d.kpiId].donnees : null
+    }))
+  };
+
+  let octets;
+  try {
+    octets = await PptxDeck.construireDeck(modele, options);
+  } catch (err) {
+    showToast("❌ Génération impossible : " + (err.message || ""), 4000);
+    return null;
+  }
+
+  const nom = Selection.nomFichier(preset, new Date().toISOString().slice(0, 10));
+  telechargerOctets(octets, nom);
+  logActivity("deck", preset.name, `${diapos.length} diapositive(s)`);
+  saveActivity();
+  fermerDeckModal();
+  const detail = mode === "vivant" ? "visuels vivants"
+               : mode === "image"  ? "captures"
+               : "cadres cliquables";
+  showToast(`📊 PowerPoint généré : ${diapos.length} diapositive(s), ${detail}`, 3400);
+  return { nom, diapos: diapos.length };
+}
+
+/* ─── Branchements ───────────────────────────────────────── */
+
+document.getElementById("selectionModeBtn")?.addEventListener("click", () => basculerModeSelection());
+document.getElementById("selectionExitBtn")?.addEventListener("click", () => basculerModeSelection(false));
+document.getElementById("selectAllBtn")?.addEventListener("click", cocherResultatsFiltres);
+document.getElementById("selectClearBtn")?.addEventListener("click", viderSelection);
+document.getElementById("deckBtn")?.addEventListener("click", ouvrirDeckModal);
+document.getElementById("closeDeckBtn")?.addEventListener("click", fermerDeckModal);
+document.getElementById("deckGenerateBtn")?.addEventListener("click", () => { genererDeck(); });
+document.getElementById("deckExportBtn")?.addEventListener("click", exporterSelectionJson);
+document.getElementById("deckModeSelect")?.addEventListener("change", renderDeckLignes);
+document.getElementById("deckShotsBtn")?.addEventListener("click", () => {
+  document.getElementById("deckShotsInput")?.click();
+});
+document.getElementById("deckShotsInput")?.addEventListener("change", function () {
+  const fichiers = Array.from(this.files || []);
+  this.value = "";
+  if (!fichiers.length) return;
+  const noms = fichiers.map(f => f.name);
+  Promise.all(fichiers.map(f => f.arrayBuffer())).then(buffers => {
+    const parNom = {};
+    fichiers.forEach((f, i) => { parNom[f.name] = new Uint8Array(buffers[i]); });
+    const n = rangerCaptures(noms, parNom);
+    showToast(n ? `🖼 ${n} capture(s) placée(s)` : "Aucune capture reconnue", 3000);
+  });
+});
+document.getElementById("presetSaveBtn")?.addEventListener("click", () => {
+  const p = presets.find(x => x.id === presetCourant);
+  const nom = prompt("Nom de la sélection (ex : COPIL hebdomadaire)", p ? p.name : "");
+  if (nom !== null) enregistrerSelection(nom);
+});
+document.getElementById("presetSelect")?.addEventListener("change", function () {
+  if (this.value) chargerSelection(this.value);
+});
+document.getElementById("presetDeleteBtn")?.addEventListener("click", () => {
+  const sel = document.getElementById("presetSelect");
+  if (sel && sel.value) supprimerSelection(sel.value);
+});
+
+// Coller une capture d'écran : le KPI visé est celui de la ligne survolée,
+// à défaut la première diapositive sans capture. Le geste attendu est
+// « Impr. écran sur le visuel Power BI, puis Ctrl+V ici ».
+document.addEventListener("paste", function (e) {
+  const modale = document.getElementById("deckModal");
+  if (!modale || modale.classList.contains("hidden")) return;
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type && items[i].type.indexOf("image") === 0) {
+      const fichier = items[i].getAsFile();
+      const cible = cibleCapture();
+      if (!cible) { showToast("Toutes les diapositives ont déjà une capture", 2600); return; }
+      fichier.arrayBuffer().then(buf => {
+        ajouterCapture(cible, new Uint8Array(buf));
+        showToast("🖼 Capture ajoutée", 2000);
+      });
+      e.preventDefault();
+      return;
+    }
+  }
+});
+
+/** Prochaine diapositive sans capture : cible par défaut d'un collage. */
+function cibleCapture() {
+  const { diapos } = diaposCourantes();
+  const libre = diapos.find(d => !capturesDeck[d.kpiId]);
+  return libre ? libre.kpiId : null;
+}
 
 /* ============================================
    TUTORIEL ANIMÉ + AIDE POWER BI

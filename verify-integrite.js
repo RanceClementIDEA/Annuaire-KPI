@@ -32,14 +32,23 @@ const sandbox = {
   addEventListener(){}, removeEventListener(){}, matchMedia:()=>({matches:false,addListener(){},addEventListener(){}}),
   fetch: async (url) => {
     const f = String(url).split("?")[0], p = path.join(process.cwd(), f);
-    if (!fs.existsSync(p)) return { ok:false, status:404, text:async()=>"" };
+    if (!fs.existsSync(p)) return { ok:false, status:404, text:async()=>"", arrayBuffer:async()=>new ArrayBuffer(0) };
+    if (/\.pptx$/.test(f)) {
+      const b = fs.readFileSync(p);
+      return { ok:true, status:200, text:async()=>"",
+               arrayBuffer:async()=>b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) };
+    }
     let src = fs.readFileSync(p, "utf8");
     // SABOTAGE : on fait écrire app.js dans la vraie mémoire au chargement
     if (sabotage && f === "app.js") src += '\n;try{ globalThis.localStorage.setItem("kpiManualEntries","[]"); }catch(e){}\n';
-    return { ok:true, status:200, text:async()=>src };
+    return { ok:true, status:200, text:async()=>src, arrayBuffer:async()=>new ArrayBuffer(0) };
   }
 };
 sandbox.window=sandbox; sandbox.globalThis=sandbox; sandbox.self=sandbox;
+/* Primitives du navigateur absentes d'un contexte vm : la fabrique de
+   PowerPoint (js/zip.js) en a besoin. */
+sandbox.TextEncoder = TextEncoder; sandbox.TextDecoder = TextDecoder;
+sandbox.Blob = Blob; sandbox.DecompressionStream = DecompressionStream;
 vm.createContext(sandbox);
 vm.runInContext(script, sandbox, { filename:"tests.html" });
 

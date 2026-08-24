@@ -12,6 +12,17 @@ function adapter(src) {
     .replace(/^const \{[^}]*\} = require\("\.\/js\/merge\.js"\);\s*$/m, "")
     .replace(/^const \{[^}]*\} = require\("\.\/sync-sim\.js"\);\s*$/m, "")
     .replace(/^const \{ loadApp \} = require\("\.\/app-harness\.js"\);\s*$/m, "")
+    // Modules exposés globalement par le bac à sable : pas de require côté navigateur
+    // Accès différé : les modules n'existent qu'une fois le bac à sable chargé,
+    // or ces lignes s'exécutent au chargement de la page.
+    .replace(/^const (\w+) = require\("\.\/js\/zip\.js"\);\s*$/m, "const $1 = __module(\"ZipMini\");")
+    .replace(/^const (\w+) = require\("\.\/js\/pptx\.js"\);\s*$/m, "const $1 = __module(\"PptxDeck\");")
+    .replace(/^const (\w+) = require\("\.\/js\/selection\.js"\);\s*$/m, "const $1 = __module(\"Selection\");")
+    .replace(/^const fs = require\("node:fs"\);\s*$/m, "")
+    .replace(/^const path = require\("node:path"\);\s*$/m, "")
+    // Le modèle PowerPoint est téléchargé par la coque, pas lu sur le disque
+    .replace(/if \(!_modele\) _modele = new Uint8Array\(fs\.readFileSync[\s\S]*?\);\n/,
+             "if (!_modele) _modele = window.__modeleDeck;\n")
     .replace(/^const A = loadApp\(\);.*$/m, "")
     .replace(/^module\.exports[^;]*;\s*$/m, "");
 }
@@ -27,7 +38,11 @@ const groupes = [
   ["Synchronisation multi-appareils", "sync.test.js"],
   ["Fonctions de l'application", "app.test.js"],
   ["Affichage, import/export et corbeille", "app-ui.test.js"],
-  ["Flux complets : synchro, formulaire, persistance", "app-flows.test.js"]
+  ["Flux complets : synchro, formulaire, persistance", "app-flows.test.js"],
+  ["Archive ZIP (fabrique PowerPoint)", "zip.test.js"],
+  ["Sélections de rituel", "selection.test.js"],
+  ["Fabrique PowerPoint", "pptx.test.js"],
+  ["Sélection → PowerPoint : flux complet", "deck.test.js"]
 ];
 
 const tests = groupes

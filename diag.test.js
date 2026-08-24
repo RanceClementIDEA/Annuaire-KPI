@@ -26,6 +26,12 @@ function clesDuDiagnostic() {
   return cles;
 }
 
+/* L'application écrit soit directement, soit via son point de passage unique
+   ecrireDonnees() : les deux comptent comme « écrit au bon endroit ». */
+function ecritDans(cle) {
+  return app.includes(`localStorage.setItem("${cle}"`) || app.includes(`ecrireDonnees("${cle}"`);
+}
+
 const app_ = clesDeLApplication();
 const diag = clesDuDiagnostic();
 
@@ -42,23 +48,23 @@ test("chaque clé du diagnostic existe réellement dans l'application", () => {
 
 test("les fiches partagées sont lues au bon endroit", () => {
   assert.equal(diag.MANUAL, "kpiManualEntries");
-  assert.ok(app.includes('localStorage.setItem("kpiManualEntries"'), "l'application écrit bien à cet endroit");
+  assert.ok(ecritDans("kpiManualEntries"), "l'application écrit bien à cet endroit");
 });
 
 test("la corbeille est lue au bon endroit", () => {
   assert.equal(diag.DELETED, "kpiDeletedIds");
-  assert.ok(app.includes('localStorage.setItem("kpiDeletedIds"'));
+  assert.ok(ecritDans("kpiDeletedIds"));
 });
 
 test("les suppressions définitives sont lues au bon endroit", () => {
   assert.equal(diag.PURGED, "kpiPurgedIds",
     "sinon les fiches supprimées définitivement seraient comptées comme présentes");
-  assert.ok(app.includes('localStorage.setItem("kpiPurgedIds"'));
+  assert.ok(ecritDans("kpiPurgedIds"));
 });
 
 test("les périmètres sont lus au bon endroit", () => {
   assert.equal(diag.SITES, "kpiSites");
-  assert.ok(app.includes('localStorage.setItem("kpiSites"'));
+  assert.ok(ecritDans("kpiSites"));
 });
 
 test("les préfixes personnels correspondent à ceux de l'application", () => {

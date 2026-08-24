@@ -13,7 +13,16 @@
     "coverage": "node coverage.js",
     "build:page": "node build-tests-html.js",
     "verify:page": "node verify-tests-html.js",
-    "lint": "npx --yes eslint js/ app.js"
+    "lint": "npx --yes eslint js/ app.js outils/",
+    "test:deck": "node --test zip.test.js selection.test.js pptx.test.js deck.test.js",
+    "smoke": "node smoke-ui.js",
+    "capture": "node outils/capturer-visuels.js",
+    "deck": "node outils/generer-deck.js",
+    "test:outils": "node --test outils.test.js",
+    "verifier:liens": "node outils/verifier-liens.js",
+    "verifier:deck": "node outils/verifier-deck.js",
+    "build:essai": "node outils/construire-annuaire-test.js",
+    "smoke:essai": "node smoke-essai.js"
   },
   "license": "UNLICENSED"
 }

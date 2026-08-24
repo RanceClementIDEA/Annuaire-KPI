@@ -97,13 +97,15 @@ test("corbeille : les fiches partagées et personnelles cohabitent", () => {
 });
 
 test("corbeille : la sélection regroupe tous les identifiants d'une fiche", () => {
-  A.reset();
+  // Les identifiants doivent être réellement en corbeille : getTrashSelection
+  // écarte volontairement les lignes périmées par une synchronisation.
+  A.reset({ deletedIds: ["a", "b", "c"].map(id => ({ id, at: 9, state: "deleted" })) });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b,c" } }]);
   assert.deepEqual(A.run("getTrashSelection()"), ["a", "b", "c"]);
 });
 
 test("corbeille : plusieurs fiches cochées donnent tous leurs identifiants", () => {
-  A.reset();
+  A.reset({ deletedIds: ["a", "b", "c"].map(id => ({ id, at: 9, state: "deleted" })) });
   A.requete("#trashList .trash-check:checked", [{ dataset: { ids: "a,b" } }, { dataset: { ids: "c" } }]);
   assert.equal(A.run("getTrashSelection().length"), 3);
 });
@@ -571,6 +573,8 @@ test("synchro : « Récupérer » remplace réellement les données locales", ()
 test("synchro : « Récupérer » prend un instantané de sécurité au préalable", () => {
   A.reset({ manualEntries: fiches(["Avant", "Mensuelle"]) });
   A.run("rebuildData(false)");
+  // Le cloud est vide : l'application demande confirmation avant d'écraser.
+  A.confirmer(true);
   A.run(`replaceLocalWithRemote(${JSON.stringify({ kpiManual: [], kpiDeleted: [], updatedAt: 1 })})`);
   const snaps = A.run("getSnapshots()");
   assert.ok(snaps.length > 0, "un instantané existe");

@@ -13,9 +13,18 @@ export default [
         setTimeout: "readonly", clearTimeout: "readonly", confirm: "readonly",
         btoa: "readonly", atob: "readonly", Uint8Array: "readonly",
         Store: "readonly", createCarousel: "readonly",
+        // Fabrique de PowerPoint (js/zip.js, js/pptx.js, js/selection.js)
+        ZipMini: "readonly", PptxDeck: "readonly", Selection: "readonly",
+        InspecteurDeck: "readonly",
+        TextEncoder: "readonly", TextDecoder: "readonly",
+        DecompressionStream: "readonly", DataView: "readonly",
+        fetch: "readonly", alert: "readonly", prompt: "readonly", location: "readonly",
+        // Double exposition : fichier <script> dans le navigateur, module sous Node
+        module: "readonly", require: "readonly",
         mergeEntries: "readonly", mergeOverrides: "readonly", mergeDeleted: "readonly",
         mergeFavorites: "readonly", mergeActivity: "readonly",
-        normalizeDeleted: "readonly", isDeletedIn: "readonly"
+        normalizeDeleted: "readonly", isDeletedIn: "readonly",
+        mergeParUtilisateur: "readonly", sansMarqueursPurges: "readonly"
       }
     },
     rules: {
@@ -26,6 +35,26 @@ export default [
       "no-var": "error",
       "prefer-const": "warn",
       "max-lines-per-function": ["warn", { max: 60, skipComments: true }]
+    }
+  },
+  {
+    /* Outils en ligne de commande : vrais modules Node */
+    files: ["outils/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "commonjs",
+      globals: {
+        require: "readonly", module: "readonly", process: "readonly",
+        console: "readonly", __dirname: "readonly", Buffer: "readonly",
+        Uint8Array: "readonly"
+      }
+    },
+    rules: {
+      "no-unused-vars": ["warn", { args: "none" }],
+      "no-undef": "error",
+      "no-var": "error",
+      "prefer-const": "warn",
+      "max-lines-per-function": ["warn", { max: 90, skipComments: true }]
     }
   }
 ];
