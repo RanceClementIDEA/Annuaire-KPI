@@ -24,6 +24,13 @@
     ? require("./zip.js")
     : root.ZipMini;
 
+  /* Empreintes : facultatif. Sans elles le générateur produit exactement
+     ce qu'il produisait avant — le complément affichera « l'objet visuel
+     n'existe plus », mais rien d'autre ne change. */
+  const Emp = (typeof module !== "undefined" && module.exports)
+    ? require("./empreintes.js")
+    : root.Empreintes;
+
   const POUCE = 914400;                     // 1 pouce en EMU
   const LARGEUR_DIAPO = 9144000;            // 10 pouces (format 4:3 du modèle)
   const HAUTEUR_DIAPO = 6858000;            // 7,5 pouces
@@ -284,6 +291,28 @@
     return `<we:property name="${esc(nom)}" value="${v}"/>`;
   }
 
+  /**
+   * Complète une diapositive avec l'empreinte relevée pour son visuel.
+   *
+   * Le complément Power BI ne relit pas l'adresse à l'ouverture : il
+   * restaure ce qu'il avait mémorisé à l'insertion. Sans empreinte, il
+   * conclut que l'objet visuel n'existe plus — même si l'adresse est
+   * rigoureusement identique à une insertion manuelle qui fonctionne.
+   *
+   * Ce qui a été posé explicitement sur la diapositive prime : le
+   * diagnostic doit pouvoir contredire l'empreinte.
+   */
+  function avecEmpreinte(diapo, empreintes) {
+    const d = diapo || {};
+    if (!empreintes || !Emp || !d.vivant || !d.lien) return d;
+    const emp = Emp.trouver(empreintes, d.lien);
+    const props = emp && Emp.proprietesPour(emp);
+    if (!props) return d;
+    return Object.assign({}, d, {
+      proprietesComplement: Object.assign({}, props, d.proprietesComplement || {})
+    });
+  }
+
   function xmlWebextension(index, diapo) {
     const url = diapo.urlComplement || urlPourComplement(diapo.lien);
     const info = analyserLien(diapo.lien);
@@ -444,7 +473,8 @@
    */
   async function construireDeck(modele, options) {
     const opts = options || {};
-    const diapos = Array.isArray(opts.diapos) ? opts.diapos : [];
+    const diapos = (Array.isArray(opts.diapos) ? opts.diapos : [])
+      .map(d => avecEmpreinte(d, opts.empreintes));
     if (!diapos.length) throw new Error("Aucune diapositive à produire");
 
     const pieces = await Zip.lireZip(modele);
@@ -520,7 +550,7 @@
   const API = {
     construireDeck, dimensionsImage, cadrer, esc, extensionImage,
     cheminRapport, nomPage, analyserLien, urlPourComplement, adresseIncorporation,
-    COMPLEMENT, PROPRIETES_PAR_DEFAUT, cadreComplement,
+    COMPLEMENT, PROPRIETES_PAR_DEFAUT, cadreComplement, avecEmpreinte,
     BARRE_COMPLEMENT, HAUTEUR_MINI_COMPLEMENT,
     ZONE, TITRE, COMMENT, LARGEUR_DIAPO, HAUTEUR_DIAPO, POUCE
   };

@@ -22,6 +22,7 @@
     SITES:       "kpiSites",
     ACTIVITY:    "kpiActivity",
     PRESETS:     "kpiPresets",       // sélections de rituel (voir js/selection.js)
+    EMPREINTES:  "kpiEmpreintes",    // mémoire du complément Power BI (voir js/empreintes.js)
     DATA_CACHE:  "kpiDataCache",
     FILE_B64:    "kpiFileB64",
     FILE_LEGACY: "kpiFile",           // ancien format (tableau de nombres)
