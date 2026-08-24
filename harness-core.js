@@ -262,6 +262,9 @@
       cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
       ecrituresCloud: () => run("globalThis.__ecritures"),
       ecoutesActives: () => run("globalThis.__ecoutes.length"),
+      /* Les documents écoutés, pour distinguer l'annuaire lui-même du
+         document séparé des empreintes. */
+      ecoutesCles: () => run("globalThis.__ecoutes.map(e => e.cle)"),
       panneCloud(message) { run(`globalThis.__erreurCloud = ${message ? `Object.assign(new Error(${JSON.stringify(message)}), { code: ${JSON.stringify(message)} })` : "null"}`); return this; },
 
       /* --- interactions simulées --- */

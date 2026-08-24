@@ -15,6 +15,7 @@ let deletedIds = [];    // Fiches Excel supprimées : [{id, title, freq, at, by}
    Déclarés ici, avec le reste de l'état : les fonctions de
    chargement tournent dès l'ouverture de session. */
 let presets = [];          // sélections enregistrées, partagées avec l'équipe
+let empreintes = [];       // mémoire du complément Power BI, par visuel (js/empreintes.js)
 let selectionMode = false; // le mode « cocher des KPI » est-il actif ?
 let selectionIds = [];     // variantes cochées, DANS L'ORDRE de l'ordre du jour
 let presetCourant = "";    // identifiant de la sélection chargée, s'il y en a une
@@ -314,6 +315,7 @@ function login(user) {
   loadPurged();
   loadActivity();
   loadPresets();
+  loadEmpreintes();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -359,6 +361,7 @@ function deconnecter() {
   favorites = [];
   // Coupe proprement la synchro cloud pour le prochain utilisateur
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  couperEcouteEmpreintes();
   connectedSyncCode = null;
   initialSyncDone = false;
   syncBusy = false;
@@ -2288,7 +2291,7 @@ function ensureBuiltinConfig() {
   setSyncConfig({ config: { ...BUILTIN_FIREBASE_CONFIG }, code: BUILTIN_SYNC_CODE, enabled: true });
 }
 
-let fbApp = null, fbDb = null, fbUnsub = null;
+let fbApp = null, fbDb = null, fbUnsub = null, fbUnsubEmpreintes = null;
 let syncDebounceHandle = null;
 let lastSyncPushAt = 0;
 let lastAppliedSyncAt = 0;
@@ -2367,6 +2370,51 @@ function setSyncStatusUI(state, detail) {
 
 function syncDocRef(code) {
   return fbDb.collection("kpi_sync").doc(code);
+}
+
+/* Document séparé pour les empreintes : ~5 Ko par visuel, alors que le
+   document principal est plafonné à 1 Mo. Les mêler ferait courir le
+   risque de ne plus pouvoir enregistrer l'annuaire du tout. */
+function empreintesDocRef(code) {
+  return fbDb.collection("kpi_sync").doc(code + "__empreintes");
+}
+
+/** Envoie les empreintes, en refusionnant d'abord ce qui est déjà en ligne. */
+async function pousserEmpreintes() {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb || !currentUser || !navigator.onLine) return false;
+  try {
+    const snap = await empreintesDocRef(cfg.code).get();
+    if (snap.exists) {
+      const distant = snap.data();
+      if (distant && Array.isArray(distant.kpiEmpreintes)) {
+        empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+        ecrireDonnees(LS_EMPREINTES, empreintes);
+      }
+    }
+    await empreintesDocRef(cfg.code).set({ kpiEmpreintes: empreintes, updatedAt: now() });
+    return true;
+  } catch (err) {
+    // L'annuaire doit rester utilisable même si ce document-là échoue.
+    return false;
+  }
+}
+
+/** Récupère les empreintes partagées et les fusionne aux locales. */
+async function tirerEmpreintes() {
+  const cfg = getSyncConfig();
+  if (!cfg || !fbDb) return 0;
+  try {
+    const snap = await empreintesDocRef(cfg.code).get();
+    if (!snap.exists) return 0;
+    const distant = snap.data();
+    if (!distant || !Array.isArray(distant.kpiEmpreintes)) return 0;
+    empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+    ecrireDonnees(LS_EMPREINTES, empreintes);
+    return empreintes.length;
+  } catch (err) {
+    return 0;
+  }
 }
 
 function buildSyncPayload() {
@@ -2677,6 +2725,7 @@ async function pullFromCloud(manual, replace) {
   setSyncStatusUI("syncing");
   try {
     const snap = await syncDocRef(cfg.code).get();
+    await tirerEmpreintes();   // document séparé : son absence n'est pas une erreur
     if (!snap.exists) {
       setSyncStatusUI("connected");
       if (manual) showToast("Aucune donnée cloud pour ce code", 2800);
@@ -2802,8 +2851,32 @@ function rejouerSyncEnAttente() {
   }
 }
 
+/* Écoute du document d'empreintes. Séparée de l'écoute principale : une
+   empreinte ajoutée par un collègue doit arriver sans rien re-rendre. */
+/* Coupe l'écoute des empreintes. Appelée partout où l'écoute principale
+   est coupée : un abonnement oublié continuerait d'écrire dans le
+   stockage après la déconnexion. */
+function couperEcouteEmpreintes() {
+  if (fbUnsubEmpreintes) { fbUnsubEmpreintes(); fbUnsubEmpreintes = null; }
+}
+
+function ecouterEmpreintes(code) {
+  couperEcouteEmpreintes();
+  if (!fbDb) return;
+  fbUnsubEmpreintes = empreintesDocRef(code).onSnapshot(snap => {
+    if (!snap.exists) return;
+    const distant = snap.data();
+    if (!distant || !Array.isArray(distant.kpiEmpreintes)) return;
+    const avant = empreintes.length;
+    empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+    ecrireDonnees(LS_EMPREINTES, empreintes);
+    if (empreintes.length !== avant) renderDeckLignes();
+  }, () => { /* silencieux : l'annuaire reste utilisable sans les empreintes */ });
+}
+
 function listenForRemoteChanges(code) {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  ecouterEmpreintes(code);
   fbUnsub = syncDocRef(code).onSnapshot(
     snap => {
       if (!snap.exists) return;
@@ -2997,6 +3070,7 @@ function connectSync(manual) {
 
 function disconnectSync() {
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  couperEcouteEmpreintes();
   connectedSyncCode = null;
   initialSyncDone = false;
   syncBusy = false;
@@ -3237,6 +3311,7 @@ document.getElementById("syncEnabledToggle")?.addEventListener("change", functio
   } else {
     // Mise en pause : on coupe l'écoute (la connexion reste pour l'usage manuel)
     if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  couperEcouteEmpreintes();
     clearTimeout(syncDebounceHandle);
     setSyncStatusUI("connected");
     showToast("Synchronisation en pause", 2200);
@@ -3546,6 +3621,7 @@ function resetSyncCompletely() {
   )) return;
 
   if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  couperEcouteEmpreintes();
   fbApp = null; fbDb = null; connectedSyncCode = null;
   pendingPush = false;
   clearTimeout(syncDebounceHandle);
@@ -3913,7 +3989,34 @@ document.getElementById("backupFileInput")?.addEventListener("change", function 
 ============================================ */
 
 const LS_PRESETS = "kpiPresets";
+const LS_EMPREINTES = "kpiEmpreintes";
 let modeleDeckCache = null;   // modele-deck.pptx, chargé une seule fois
+
+/* ─── Empreintes de visuels ───────────────────────────────
+   Le complément Power BI ne relit pas l'adresse à l'ouverture : il
+   restaure ce qu'il avait mémorisé lors de l'insertion. Un support
+   fabriqué sans cette mémoire affiche « l'objet visuel n'existe plus ».
+   On la relève une fois, sur un PowerPoint où l'insertion a été faite
+   à la main, et on la rejoue ensuite à volonté.
+
+   Elles vivent dans un document de synchronisation SÉPARÉ : l'état
+   sérialisé pèse ~5 Ko par visuel, et le document principal est
+   plafonné à 1 Mo côté Firestore. */
+
+function loadEmpreintes() {
+  const brut = Store.readJSON(LS_EMPREINTES, []) || [];
+  empreintes = (Array.isArray(brut) ? brut : []).map(e => Empreintes.normaliserEmpreinte(e));
+}
+
+function saveEmpreintes(sync = true) {
+  ecrireDonnees(LS_EMPREINTES, empreintes);
+  if (sync) pousserEmpreintes();
+}
+
+/** Empreinte connue pour ce lien, ou null. */
+function empreintePour(lien) {
+  return Empreintes.trouver(empreintes, lien);
+}
 
 function loadPresets() {
   const brut = Store.readJSON(LS_PRESETS, []) || [];
@@ -4152,13 +4255,73 @@ function diagnosticLien(d) {
   return { ok: true, court: "⚡ visuel", detail: format };
 }
 
+/**
+ * Relève les empreintes d'un PowerPoint où les visuels ont été insérés
+ * À LA MAIN. C'est l'opération à faire UNE FOIS par KPI ; ensuite la
+ * génération est automatique.
+ *
+ * @returns {Promise<{ajoutees:number, total:number, ignores:number}>}
+ */
+async function releverEmpreintesDepuis(octets) {
+  const pieces = await ZipMini.lireZip(octets);
+  const noms = [...pieces.keys()]
+    .filter(n => /^ppt\/webextensions\/webextension\d+\.xml$/.test(n));
+
+  const trouvees = [];
+  let ignores = 0;
+  noms.forEach(nom => {
+    const xml = ZipMini.versTexte(pieces.get(nom));
+    const props = {};
+    const re = /<we:property name="([^"]+)" value="([\s\S]*?)"\/>/g;
+    let m;
+    while ((m = re.exec(xml))) props[m[1]] = m[2];
+    const emp = Empreintes.creerEmpreinte(props, { horodatage: now(), auteur: currentUser || "?" });
+    if (emp) trouvees.push(emp); else ignores++;
+  });
+
+  const avant = new Set(empreintes.map(e => e.id));
+  empreintes = Empreintes.fusionnerEmpreintes(trouvees, empreintes);
+  const ajoutees = empreintes.filter(e => !avant.has(e.id)).length;
+  if (trouvees.length) saveEmpreintes();
+  return { ajoutees, total: trouvees.length, ignores };
+}
+
+/** Le fichier choisi dans la fenêtre de génération. */
+async function importerEmpreintes(fichier) {
+  if (!fichier) return null;
+  try {
+    const octets = new Uint8Array(await fichier.arrayBuffer());
+    const bilan = await releverEmpreintesDepuis(octets);
+    if (!bilan.total) {
+      showToast("Aucun visuel inséré à la main dans ce fichier — "
+        + "il faut un PowerPoint où le visuel a été ajouté depuis Power BI", 5000);
+    } else {
+      showToast("🔎 " + bilan.total + " empreinte(s) relevée(s)"
+        + (bilan.ajoutees ? ", dont " + bilan.ajoutees + " nouvelle(s)" : ""), 3400);
+      logActivity("empreintes", fichier.name, bilan.total + " visuel(s)");
+      saveActivity();
+    }
+    renderDeckLignes();
+    return bilan;
+  } catch (err) {
+    showToast("❌ Lecture impossible : " + (err.message || ""), 4000);
+    return null;
+  }
+}
+
 /** Ce qui sera posé dans le cadre du visuel, selon le mode choisi. */
 function etatVisuel(d) {
   const mode = modeDeck();
   if (mode === "image")  return capturesDeck[d.kpiId] ? { texte: "🖼 capture", cls: " on" } : { texte: "à capturer", cls: "" };
   const diag = diagnosticLien(d);
   if (mode === "lien")   return { texte: d.lien ? "lien seul" : "sans lien", cls: "" };
-  return { texte: diag.court, cls: diag.ok ? " on" : " alerte" };
+  if (!diag.ok)          return { texte: diag.court, cls: " alerte" };
+  /* Le lien peut être parfait : sans empreinte, le complément affichera
+     quand même « l'objet visuel n'existe plus ». C'est le seul état qui
+     décide vraiment si la diapositive montrera le graphique. */
+  return Empreintes.empreinteComplete(empreintePour(d.lien))
+    ? { texte: "⚡ visuel", cls: " on" }
+    : { texte: "à relever", cls: " alerte" };
 }
 
 function renderDeckLignes() {
@@ -4193,6 +4356,14 @@ function renderDeckLignes() {
     if (pages) parties.push(`${pages} lien(s) de PAGE : tout le rapport s'affichera, pas le seul graphique`);
     if (plats) parties.push(`${plats} visuel(s) au format très allongé : à confirmer en les ouvrant`);
     if (vides) parties.push(`${vides} KPI sans lien`);
+    if (modeDeck() === "vivant") {
+      const aRelever = diapos.filter(d => diagnosticLien(d).ok
+        && !Empreintes.empreinteComplete(empreintePour(d.lien))).length;
+      if (aRelever) {
+        parties.push(`${aRelever} visuel(s) sans empreinte : ils afficheront « l'objet visuel n'existe plus ». `
+          + `Insérez-les une fois à la main dans un PowerPoint, puis relevez-le ci-dessous.`);
+      }
+    }
     avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";
     avert.style.display = parties.length ? "block" : "none";
   }
@@ -4352,7 +4523,10 @@ async function genererDeck() {
       // Visuel vivant : le complément Power BI, donc aucune image à fournir.
       vivant: mode === "vivant" && !!d.lien,
       image: mode === "image" && capturesDeck[d.kpiId] ? capturesDeck[d.kpiId].donnees : null
-    }))
+    })),
+    /* La mémoire relevée sur une insertion manuelle. Sans elle, le
+       complément affiche « l'objet visuel n'existe plus ». */
+    empreintes
   };
 
   let octets;
@@ -4376,6 +4550,14 @@ async function genererDeck() {
 }
 
 /* ─── Branchements ───────────────────────────────────────── */
+
+document.getElementById("deckEmpreintesBtn")?.addEventListener("click",
+  () => document.getElementById("deckEmpreintesInput")?.click());
+document.getElementById("deckEmpreintesInput")?.addEventListener("change", async e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = "";       // rechoisir le même fichier doit rester possible
+  if (f) await importerEmpreintes(f);
+});
 
 document.getElementById("selectionModeBtn")?.addEventListener("click", () => basculerModeSelection());
 document.getElementById("selectionExitBtn")?.addEventListener("click", () => basculerModeSelection(false));

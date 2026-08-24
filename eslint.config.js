@@ -14,7 +14,7 @@ export default [
         btoa: "readonly", atob: "readonly", Uint8Array: "readonly",
         Store: "readonly", createCarousel: "readonly",
         // Fabrique de PowerPoint (js/zip.js, js/pptx.js, js/selection.js)
-        ZipMini: "readonly", PptxDeck: "readonly", Selection: "readonly",
+        ZipMini: "readonly", PptxDeck: "readonly", Selection: "readonly", Empreintes: "readonly",
         InspecteurDeck: "readonly",
         TextEncoder: "readonly", TextDecoder: "readonly",
         DecompressionStream: "readonly", DataView: "readonly",

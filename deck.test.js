@@ -29,7 +29,7 @@ function preparerDeck(opts) {
   A.saisir("deckModeSelect", "vivant");
   A.run(`
     presets = []; selectionIds = []; selectionMode = false; presetCourant = "";
-    capturesDeck = {}; commentairesVolatils = {};
+    empreintes = []; capturesDeck = {}; commentairesVolatils = {};
     rebuildData(false);
     // Modèle PowerPoint minimal : la fabrique complète est éprouvée par pptx.test.js
     modeleDeckCache = ZipMini.ecrireZip([
@@ -541,8 +541,30 @@ test("mode : par défaut, le support embarque les visuels vivants", async () => 
   assert.ok(xml.includes("<we:webextensionref"), "le complément Power BI est posé");
 });
 
-test("mode : un lien de visuel est reconnu comme tel dans la liste", () => {
+/* Pose l'empreinte d'un lien : ce que le complément Power BI avait
+   mémorisé lors d'une insertion faite à la main. Sans elle, il affiche
+   « l'objet visuel n'existe plus » — vérifié en conditions réelles. */
+function poserEmpreinte(lien) {
+  A.run(`empreintes = [Empreintes.creerEmpreinte({
+    reportUrl: ${JSON.stringify(lien)},
+    artifactName: "&quot;Histo empilé&quot;",
+    bookmark: "&quot;H4sIEtatSerialise&quot;"
+  }, { horodatage: 1 })]`);
+}
+
+test("mode : un lien de visuel sans empreinte demande d'abord un relevé", () => {
   preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"),
+    "sans empreinte, le complément afficherait « l'objet visuel n'existe plus »");
+});
+
+test("mode : une fois l'empreinte relevée, le visuel est annoncé comme prêt", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  poserEmpreinte(LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.saisir("deckModeSelect", "vivant");
   A.run("renderDeckLignes()");
@@ -596,12 +618,22 @@ const LIEN_PAGE = "https://app.powerbi.com/links/UWLu7wc3Ez?pbi_source=linkShare
 test("liens : un lien de visuel au bon format est validé", () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  poserEmpreinte(LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
   const html = A.html("deckList");
   assert.ok(html.includes("⚡ visuel"));
   assert.ok(html.includes("1253×528 px"), "le format du visuel est affiché");
   assert.equal(A.el("deckWarning").style.display, "none", "aucune alerte");
+});
+
+test("liens : un visuel sans empreinte est signalé dans le bilan", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.equal(A.el("deckWarning").style.display, "block");
+  assert.ok(A.texte("deckWarning").includes("sans empreinte"));
 });
 
 test("liens : un lien de PAGE est signalé — il afficherait tout le rapport", () => {
@@ -660,4 +692,108 @@ test("liens : en mode image, le diagnostic laisse la place à l'état de capture
   A.saisir("deckModeSelect", "image");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("à capturer"));
+});
+
+/* ─── Empreintes : relevé, partage, génération ──────────────
+   Le relevé se fait dans le navigateur, à partir d'un PowerPoint où le
+   visuel a été inséré à la main. C'est l'unique opération manuelle, et
+   elle n'est à faire qu'une fois par KPI. */
+
+/** Un .pptx minimal portant UN complément Power BI, comme après insertion. */
+function pptxAvecComplement(lien, nom) {
+  const props = [
+    `<we:property name="reportUrl" value="&quot;${lien.replace(/&/g, "&amp;")}&quot;"/>`,
+    `<we:property name="artifactName" value="&quot;${nom || "Histo empilé"}&quot;"/>`,
+    `<we:property name="pageName" value="&quot;p1&quot;"/>`,
+    `<we:property name="datasetId" value="&quot;jeu-1&quot;"/>`,
+    `<we:property name="bookmark" value="&quot;H4sIEtatSerialise&quot;"/>`,
+    `<we:property name="initialStateBookmark" value="&quot;H4sIEtatSerialise&quot;"/>`,
+    `<we:property name="creatorSessionId" value="&quot;session-a-oublier&quot;"/>`
+  ].join("");
+  return A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" },
+    { nom: "ppt/webextensions/webextension1.xml",
+      donnees: ${JSON.stringify(`<we:webextension><we:properties>${props}</we:properties></we:webextension>`)} }
+  ])`);
+}
+
+test("empreintes : un PowerPoint fait à la main livre sa mémoire", async () => {
+  preparerDeck();
+  const octets = pptxAvecComplement(LIEN_VISUEL);
+  const bilan = await A.run("releverEmpreintesDepuis")(octets);
+  assert.equal(bilan.total, 1);
+  assert.equal(bilan.ajoutees, 1);
+  assert.equal(A.run("empreintes.length"), 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("empreintes : les traces de la session d'insertion ne sont pas reprises", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  assert.ok(!("creatorSessionId" in A.run("empreintes[0].proprietes")),
+    "un fichier neuf ne doit pas porter les traces d'un autre");
+});
+
+test("empreintes : relever deux fois le même visuel n'en crée pas deux", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  const second = await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL, "Renommé"));
+  assert.equal(second.ajoutees, 0);
+  assert.equal(A.run("empreintes.length"), 1);
+});
+
+test("empreintes : un PowerPoint sans insertion manuelle ne trompe personne", async () => {
+  preparerDeck();
+  const vide = A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" }])`);
+  const bilan = await A.run("releverEmpreintesDepuis")(vide);
+  assert.equal(bilan.total, 0);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : le relevé est rangé dans le stockage, donc partagé", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  const range = JSON.parse(A.run(`localStorage.getItem("kpiEmpreintes")`));
+  assert.equal(range.length, 1);
+  assert.ok(range[0].proprietes.bookmark, "l'état sérialisé est conservé : sans lui, rien ne s'affiche");
+});
+
+/* Le fichier tel que le navigateur le remet après un clic sur « Parcourir ». */
+function fichierChoisi(octets, nom) {
+  return { name: nom || "support.pptx", arrayBuffer: async () => octets.buffer || octets };
+}
+
+test("empreintes : importer un fichier remet la liste à jour toute seule", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"));
+  await A.run("importerEmpreintes")(fichierChoisi(pptxAvecComplement(LIEN_VISUEL)));
+  assert.ok(A.html("deckList").includes("⚡ visuel"), "la liste se remet à jour toute seule");
+});
+
+test("empreintes : un fichier sans insertion manuelle le dit clairement", async () => {
+  preparerDeck();
+  const vide = A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" }])`);
+  await A.run("importerEmpreintes")(fichierChoisi(vide));
+  assert.match(A.dernierMessage(), /inséré à la main/);
+});
+
+test("empreintes : le support produit porte bien la mémoire relevée", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const options = A.run(`(function () {
+    const preset = selectionCourante();
+    const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
+    return { diapos: diapos.map(d => ({ lien: d.lien, vivant: true })), empreintes };
+  })()`);
+  const diapo = A.run("PptxDeck.avecEmpreinte")(options.diapos[0], options.empreintes);
+  assert.ok(diapo.proprietesComplement, "l'empreinte est appliquée à la diapositive");
+  assert.equal(diapo.proprietesComplement.artifactName, "&quot;Histo empilé&quot;");
+  assert.ok(diapo.proprietesComplement.initialStateBookmark, "la copie de l'état est reconstituée");
 });

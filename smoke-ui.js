@@ -113,9 +113,52 @@ const serveur = http.createServer((req, res) => {
   await etape("le mode « visuel vivant » est proposé par défaut", async () => {
     const v = await page.inputValue("#deckModeSelect");
     if (v !== "vivant") throw new Error("mode par défaut : " + v);
+  });
+
+  await etape("sans empreinte, chaque ligne réclame un relevé", async () => {
+    // Le lien peut être parfait : sans la mémoire du complément, PowerPoint
+    // afficherait « l'objet visuel n'existe plus ». La liste doit le dire.
     const lignes = await page.locator(".deck-shot").allTextContents();
-    // Chaque ligne doit annoncer un VISUEL — pas une page de rapport
+    if (!lignes.every(t => /à relever/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
+    const bilan = await page.locator("#deckWarning").textContent();
+    if (!/sans empreinte/.test(bilan || "")) throw new Error("bilan : " + bilan);
+  });
+
+  await etape("relever un PowerPoint fait à la main débloque les visuels", async () => {
+    // Un .pptx minimal portant les deux compléments, comme après insertion
+    // manuelle depuis Power BI — fabriqué dans la page, avec ses propres outils.
+    await page.evaluate(async () => {
+      const comp = (rapport, page_, visuel, nom) => {
+        const url = `/groups/me/reports/${rapport}/${page_}?pbi_source=shareVisual&amp;visual=${visuel}`;
+        const props = [
+          `<we:property name="reportUrl" value="&quot;${url}&quot;"/>`,
+          `<we:property name="artifactName" value="&quot;${nom}&quot;"/>`,
+          `<we:property name="bookmark" value="&quot;H4sIEtat${visuel}&quot;"/>`
+        ].join("");
+        return `<we:webextension><we:properties>${props}</we:properties></we:webextension>`;
+      };
+      const octets = ZipMini.ecrireZip([
+        { nom: "[Content_Types].xml", donnees: '<?xml version="1.0"?><Types></Types>' },
+        { nom: "ppt/webextensions/webextension1.xml", donnees: comp("r1", "p1", "v1", "Histo empilé") },
+        { nom: "ppt/webextensions/webextension2.xml", donnees: comp("r1", "p2", "v2", "Courbe") }
+      ]);
+      await releverEmpreintesDepuis(octets);
+      renderDeckLignes();
+    });
+    const lignes = await page.locator(".deck-shot").allTextContents();
     if (!lignes.every(t => /⚡ visuel/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
+  });
+
+  await etape("le support produit embarque la mémoire du complément", async () => {
+    const noms = await page.evaluate(async () => {
+      const { diapos } = Selection.resoudrePreset(selectionCourante(),
+        [...data, ...personalEntries], activeSites());
+      const d = PptxDeck.avecEmpreinte({ lien: diapos[0].lien, vivant: true }, empreintes);
+      return Object.keys(d.proprietesComplement || {});
+    });
+    ["artifactName", "bookmark", "initialStateBookmark"].forEach(n => {
+      if (!noms.includes(n)) throw new Error(n + " absent : " + JSON.stringify(noms));
+    });
   });
 
   await etape("le PowerPoint est réellement téléchargé", async () => {

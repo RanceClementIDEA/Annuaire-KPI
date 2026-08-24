@@ -242,6 +242,9 @@ const assert = {
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
   deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  /* Sous Node, deepStrictEqual compare aussi les types. La comparaison par
+     JSON suffit ici : les tests concernés portent sur des données simples. */
+  deepStrictEqual(a,b,m){ return assert.deepEqual(a,b,m); },
   /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
   async rejects(fn, re, m){
     let erreur = null;
@@ -272,7 +275,7 @@ function __module(nom){
 /*__HARNESS__*/
 
 const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
-                  "js/zip.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/zip.js", "js/empreintes.js", "js/pptx.js", "js/inspecter-deck.js",
                   "js/selection.js", "app.js"];
 const journalFichiers = [];
 
@@ -653,7 +656,7 @@ const CLE = {
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
   PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
-  PRESETS:"kpiPresets"
+  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

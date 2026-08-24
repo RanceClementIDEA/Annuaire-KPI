@@ -242,6 +242,9 @@ const assert = {
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
   deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
+  /* Sous Node, deepStrictEqual compare aussi les types. La comparaison par
+     JSON suffit ici : les tests concernés portent sur des données simples. */
+  deepStrictEqual(a,b,m){ return assert.deepEqual(a,b,m); },
   /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
   async rejects(fn, re, m){
     let erreur = null;
@@ -533,6 +536,9 @@ function __module(nom){
       cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
       ecrituresCloud: () => run("globalThis.__ecritures"),
       ecoutesActives: () => run("globalThis.__ecoutes.length"),
+      /* Les documents écoutés, pour distinguer l'annuaire lui-même du
+         document séparé des empreintes. */
+      ecoutesCles: () => run("globalThis.__ecoutes.map(e => e.cle)"),
       panneCloud(message) { run(`globalThis.__erreurCloud = ${message ? `Object.assign(new Error(${JSON.stringify(message)}), { code: ${JSON.stringify(message)} })` : "null"}`); return this; },
 
       /* --- interactions simulées --- */
@@ -564,7 +570,7 @@ function __module(nom){
 
 
 const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
-                  "js/zip.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/zip.js", "js/empreintes.js", "js/pptx.js", "js/inspecter-deck.js",
                   "js/selection.js", "app.js"];
 const journalFichiers = [];
 
@@ -3878,11 +3884,22 @@ async function attendre(tours = 30) {
 
 /* ═══ Connexion au cloud ═══ */
 
+/* Deux documents sont écoutés, et deux seulement : l'annuaire partagé, et
+   le document séparé des empreintes de visuels. Ce dernier est à part
+   parce que l'état sérialisé pèse ~5 Ko par visuel, alors que le document
+   principal est plafonné à 1 Mo. Un troisième abonnement signalerait une
+   écoute oubliée à la reconnexion. */
+function ecoutesAttendues() {
+  const code = A.run("BUILTIN_SYNC_CODE");
+  return ["kpi_sync/" + code, "kpi_sync/" + code + "__empreintes"].sort();
+}
+
+
 test("connexion : la configuration intégrée est réinstallée automatiquement", () => {
   A.reset(); A.firebaseSimule();
   A.run(`setSyncConfig(null); connectSync(false);`);
   assert.ok(A.run("getSyncConfig()"), "un appareil vierge se reconfigure tout seul");
-  assert.equal(A.ecoutesActives(), 1);
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues());
 });
 
 test("connexion : une désactivation volontaire empêche la reconnexion", () => {
@@ -3898,7 +3915,7 @@ test("connexion : une désactivation volontaire empêche la reconnexion", () => 
 
 test("connexion : avec la configuration intégrée, l'écoute démarre", async () => {
   await appareilConnecte();
-  assert.equal(A.ecoutesActives(), 1);
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues());
 });
 
 test("connexion : le code de synchro utilisé est celui intégré", async () => {
@@ -3909,7 +3926,8 @@ test("connexion : le code de synchro utilisé est celui intégré", async () => 
 test("connexion : se reconnecter ne crée pas une seconde écoute", async () => {
   await appareilConnecte();
   A.run("connectSync(false)");
-  assert.equal(A.ecoutesActives(), 1, "une seule écoute active");
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues(),
+    "une seule écoute par document, jamais deux");
 });
 
 test("connexion : l'état affiché passe à « connecté »", async () => {
@@ -5193,6 +5211,211 @@ test("sans sélection nommée, le nom de fichier reste valide", () => {
   assert.match(S.nomFichier(null, ""), /^deck-kpi-selection\.pptx$/);
 });
 
+__ouvrirGroupe("Empreintes de visuels Power BI");
+/* Tests des empreintes de visuels (js/empreintes.js) : ce que le
+   complément Power BI doit retrouver dans le fichier pour afficher
+   le graphique au lieu de « l'objet visuel n'existe plus ».
+
+   Le comportement décrit ici a été vérifié en conditions réelles sur
+   un fichier ouvert dans PowerPoint :
+     • adresse seule                      → échoue
+     • carte d'identité sans état         → échoue
+     • carte d'identité + état sérialisé  → affiche le graphique
+     • idem sans les champs de session    → affiche le graphique
+   Exécution : node --test  */
+
+
+const E = __module("Empreintes");
+const LIEN = "https://app.powerbi.com/groups/me/reports/"
+  + "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f"
+  + "?ctid=c8d76d42-5d9d-4eea-b5cb-d16d0a04a59e&pbi_source=shareVisual"
+  + "&visual=14bddbd2925c24715a84&height=550.75&width=1254.63"
+  + "&bookmarkGuid=702af139-c1c2-4dca-b44b-2ff37794a5df";
+
+const CLE_VISUEL = "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f/14bddbd2925c24715a84";
+
+/* Un relevé tel qu'il sort d'un complément : valeurs encodées pour XML,
+   guillemets compris — c'est ainsi que Power BI les écrit. */
+const RELEVE = {
+  reportUrl: "&quot;/groups/me/reports/6a4cf353-aac8-48de-a793-9a8066069ffc/"
+    + "faec2927b8728b9fd32f?ctid=c8d76d42-5d9d-4eea-b5cb-d16d0a04a59e"
+    + "&amp;pbi_source=shareVisual&amp;visual=14bddbd2925c24715a84&quot;",
+  embedUrl: "&quot;/reportEmbed?reportId=6a4cf353-aac8-48de-a793-9a8066069ffc&quot;",
+  artifactName: "&quot;Histo empilé&quot;",
+  reportName: "&quot;Pilotage d'exploitation logistique&quot;",
+  pageName: "&quot;faec2927b8728b9fd32f&quot;",
+  pageDisplayName: "&quot;✨Mix&quot;",
+  datasetId: "&quot;55e74324-9265-4887-aa38-37a14b32a847&quot;",
+  bookmark: "&quot;H4sIAAAAAAAAA-etat-serialise&quot;",
+  initialStateBookmark: "&quot;H4sIAAAAAAAAA-etat-serialise&quot;",
+  backgroundColor: "&quot;#FFF&quot;",
+  reportState: "&quot;CONNECTED&quot;",
+  creatorSessionId: "&quot;dd4155af&quot;",
+  creatorUserId: "&quot;1003200592A84FCB&quot;",
+  creatorTenantId: "&quot;c8d76d42&quot;",
+  reportEmbeddedTime: "&quot;2026-08-24T11:23:44.821Z&quot;",
+  numberOfAnnotations: "0",
+  annotationNoteShown: "true"
+};
+
+/* ─── cleVisuel ────────────────────────────────────────────── */
+
+test("la clé d'un visuel réunit le rapport, la page et le visuel", () => {
+  assert.strictEqual(E.cleVisuel(LIEN), CLE_VISUEL);
+});
+
+test("la clé ignore la taille et le signet, qui changent d'un partage à l'autre", () => {
+  const autre = LIEN.replace("height=550.75&width=1254.63", "height=300&width=800")
+    .replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=00000000-0000-0000-0000-000000000000");
+  assert.strictEqual(E.cleVisuel(autre), E.cleVisuel(LIEN));
+});
+
+test("un lien de page, sans visual, n'a pas de clé : il n'y a pas de visuel à retrouver", () => {
+  assert.strictEqual(E.cleVisuel(LIEN.replace(/&visual=[^&]*/, "")), "");
+});
+
+test("un lien vide ou absurde ne fait pas tomber la fonction", () => {
+  ["", null, undefined, "bonjour", "https://exemple.fr"].forEach(v => {
+    assert.strictEqual(E.cleVisuel(v), "");
+  });
+});
+
+/* ─── creerEmpreinte ───────────────────────────────────────── */
+
+test("une empreinte se déduit d'un relevé de complément", () => {
+  const emp = E.creerEmpreinte(RELEVE, { horodatage: 1000, auteur: "clement" });
+  assert.strictEqual(emp.id, CLE_VISUEL);
+  assert.strictEqual(emp.libelle, "Histo empilé");
+  assert.strictEqual(emp._mtime, 1000);
+  assert.strictEqual(emp._by, "clement");
+});
+
+test("les champs propres à la session d'insertion ne sont jamais relevés", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  E.CHAMPS_DE_SESSION.forEach(n => {
+    assert.ok(!(n in emp.proprietes), n + " ne doit pas être relevé");
+  });
+});
+
+test("l'état sérialisé n'est stocké qu'une fois : les deux copies sont identiques", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.ok(emp.proprietes.bookmark, "l'état doit être conservé");
+  assert.ok(!("initialStateBookmark" in emp.proprietes), "la copie ne doit pas être stockée");
+});
+
+test("une diapositive FABRIQUÉE ne produit pas d'empreinte : elle n'a rien appris", () => {
+  const fabriquee = {
+    reportUrl: RELEVE.reportUrl, embedUrl: RELEVE.embedUrl,
+    reportState: RELEVE.reportState, backgroundColor: RELEVE.backgroundColor
+  };
+  assert.strictEqual(E.creerEmpreinte(fabriquee, {}), null);
+});
+
+test("un relevé sans adresse exploitable ne produit pas d'empreinte", () => {
+  assert.strictEqual(E.creerEmpreinte({ artifactName: "&quot;X&quot;" }, {}), null);
+  assert.strictEqual(E.creerEmpreinte(null, {}), null);
+});
+
+/* ─── proprietesPour ───────────────────────────────────────── */
+
+test("la copie de l'état est reconstituée au moment de fabriquer le fichier", () => {
+  const props = E.proprietesPour(E.creerEmpreinte(RELEVE, {}));
+  assert.strictEqual(props.initialStateBookmark, props.bookmark);
+});
+
+test("les valeurs sont rendues telles qu'elles ont été relevées, sans ré-encodage", () => {
+  const props = E.proprietesPour(E.creerEmpreinte(RELEVE, {}));
+  assert.strictEqual(props.artifactName, RELEVE.artifactName);
+  assert.strictEqual(props.pageDisplayName, RELEVE.pageDisplayName);
+});
+
+test("une empreinte vide ne rend aucune propriété", () => {
+  assert.strictEqual(E.proprietesPour(null), null);
+  assert.strictEqual(E.proprietesPour({ proprietes: {} }), null);
+});
+
+/* ─── empreinteComplete ────────────────────────────────────── */
+
+test("une empreinte sans état sérialisé est incomplète — vérifié : elle ne suffit pas", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.ok(E.empreinteComplete(emp));
+  delete emp.proprietes.bookmark;
+  assert.ok(!E.empreinteComplete(emp),
+    "la carte d'identité seule laisse le complément afficher « l'objet visuel n'existe plus »");
+});
+
+/* ─── trouver ──────────────────────────────────────────────── */
+
+test("on retrouve l'empreinte d'un lien, quelle que soit sa taille demandée", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const autre = LIEN.replace("height=550.75&width=1254.63", "height=200&width=400");
+  assert.strictEqual(E.trouver([emp], autre).id, CLE_VISUEL);
+});
+
+test("un lien sans empreinte connue rend null, sans erreur", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const inconnu = LIEN.replace("14bddbd2925c24715a84", "ffffffffffffffffffff");
+  assert.strictEqual(E.trouver([emp], inconnu), null);
+  assert.strictEqual(E.trouver([], LIEN), null);
+  assert.strictEqual(E.trouver(null, LIEN), null);
+});
+
+test("les empreintes se cherchent aussi dans un dictionnaire", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.trouver({ [CLE_VISUEL]: emp }, LIEN).id, CLE_VISUEL);
+});
+
+/* ─── fusionnerEmpreintes ──────────────────────────────────── */
+
+test("la fusion garde la version la plus récente, comme pour les fiches", () => {
+  const ancienne = E.normaliserEmpreinte({ id: CLE_VISUEL, libelle: "ancien",
+    proprietes: { artifactName: "a", bookmark: "b" }, _mtime: 100 });
+  const recente = E.normaliserEmpreinte({ id: CLE_VISUEL, libelle: "récent",
+    proprietes: { artifactName: "z", bookmark: "b" }, _mtime: 900 });
+  assert.strictEqual(E.fusionnerEmpreintes([ancienne], [recente])[0].libelle, "récent");
+  assert.strictEqual(E.fusionnerEmpreintes([recente], [ancienne])[0].libelle, "récent");
+});
+
+test("la fusion réunit les empreintes des deux côtés", () => {
+  const a = E.normaliserEmpreinte({ id: "r/p/a", proprietes: { artifactName: "A" }, _mtime: 1 });
+  const b = E.normaliserEmpreinte({ id: "r/p/b", proprietes: { artifactName: "B" }, _mtime: 1 });
+  assert.strictEqual(E.fusionnerEmpreintes([a], [b]).length, 2);
+});
+
+test("une empreinte sans identifiant est écartée de la fusion", () => {
+  const bonne = E.normaliserEmpreinte({ id: CLE_VISUEL, proprietes: { artifactName: "A" }, _mtime: 1 });
+  assert.strictEqual(E.fusionnerEmpreintes([bonne, { libelle: "orphelin" }], []).length, 1);
+});
+
+test("la fusion accepte l'absence de données des deux côtés", () => {
+  assert.deepStrictEqual(E.fusionnerEmpreintes(null, undefined), []);
+});
+
+/* ─── poids ────────────────────────────────────────────────── */
+
+test("le poids du lot est mesurable : le document partagé est plafonné", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.ok(E.poids([emp]) > 0);
+  assert.ok(E.poids([emp, emp]) > E.poids([emp]));
+  assert.strictEqual(E.poids([]), 0);
+  assert.strictEqual(E.poids(null), 0);
+});
+
+/* ─── normaliserEmpreinte ──────────────────────────────────── */
+
+test("la normalisation comble les champs manquants sans inventer de contenu", () => {
+  const emp = E.normaliserEmpreinte({});
+  assert.deepStrictEqual(emp.proprietes, {});
+  assert.strictEqual(emp.libelle, "");
+  assert.strictEqual(emp._by, "?");
+});
+
+test("la normalisation écarte tout champ hors de la liste relevée", () => {
+  const emp = E.normaliserEmpreinte({ id: CLE_VISUEL,
+    proprietes: { artifactName: "A", creatorUserId: "X", nimporteQuoi: "Y" } });
+  assert.deepStrictEqual(Object.keys(emp.proprietes), ["artifactName"]);
+});
+
 __ouvrirGroupe("Fabrique PowerPoint");
 /* Tests de la fabrique PowerPoint (js/pptx.js).
    On vérifie la STRUCTURE du fichier produit — c'est elle que
@@ -5775,6 +5998,111 @@ test("dans le support, un visuel plat n'est plus réduit à sa barre", async () 
   assert.ok(Number(m[2]) >= P.HAUTEUR_MINI_COMPLEMENT, "hauteur du cadre : " + m[2]);
 });
 
+/* ─── Empreintes : ce qui fait que le complément retrouve le visuel ──
+   Vérifié dans PowerPoint : sans la mémoire relevée sur une insertion
+   manuelle, le complément affiche « l'objet visuel n'existe plus »,
+   même quand l'adresse est rigoureusement la bonne. */
+
+const EmpP = __module("Empreintes");
+/** Empreinte minimale mais complète, pour le lien d'essai. */
+function empreintePour(lien) {
+  return {
+    id: EmpP.cleVisuel(lien),
+    libelle: "Histo empilé",
+    proprietes: {
+      artifactName: "&quot;Histo empilé&quot;",
+      reportName: "&quot;Pilotage&quot;",
+      pageName: "&quot;page1&quot;",
+      pageDisplayName: "&quot;Mix&quot;",
+      datasetId: "&quot;55e74324&quot;",
+      bookmark: "&quot;H4sIEtatSerialise&quot;",
+      embedUrl: "&quot;/reportEmbed?reportId=abc&amp;config=xyz&quot;",
+      backgroundColor: "&quot;#FFF&quot;"
+    },
+    _mtime: 1, _by: "essai"
+  };
+}
+
+const nomsProprietes = xml =>
+  [...xml.matchAll(/<we:property name="([^"]+)"/g)].map(m => m[1]);
+
+test("sans empreinte, le générateur produit exactement ce qu'il produisait", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.deepStrictEqual(noms, P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("avec une empreinte, la mémoire du complément est rendue au fichier", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  ["artifactName", "reportName", "pageName", "pageDisplayName", "datasetId",
+   "bookmark", "initialStateBookmark"].forEach(n => {
+    assert.ok(noms.includes(n), n + " doit être écrit dans le fichier");
+  });
+});
+
+test("aucune propriété n'est écrite deux fois : le complément n'en lirait qu'une", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.strictEqual(new Set(noms).size, noms.length, "doublons : " + noms.join(", "));
+});
+
+test("l'adresse d'incorporation relevée remplace celle que le générateur devine", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const xml = txt("ppt/webextensions/webextension1.xml");
+  const m = xml.match(/name="embedUrl" value="([^"]*)"/);
+  assert.ok(m && m[1].includes("reportId=abc"), "adresse posée : " + (m && m[1]));
+});
+
+test("l'adresse du rapport n'est JAMAIS modifiée par l'empreinte", async () => {
+  const sans = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const avec = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const url = t => t("ppt/webextensions/webextension1.xml").match(/name="reportUrl" value="([^"]*)"/)[1];
+  assert.strictEqual(url(avec.txt), url(sans.txt));
+});
+
+test("une empreinte qui ne correspond à aucun lien n'est pas appliquée", async () => {
+  const autre = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [autre] }
+  ));
+  assert.deepStrictEqual(nomsProprietes(txt("ppt/webextensions/webextension1.xml")),
+    P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("une diapositive en image ignore les empreintes", () => {
+  const d = P.avecEmpreinte({ titre: "A", lien: LIEN_PBI, image: pngP(4, 3) },
+    [empreintePour(LIEN_PBI)]);
+  assert.ok(!d.proprietesComplement);
+});
+
+test("ce qui est posé à la main sur la diapositive prime sur l'empreinte", () => {
+  const d = P.avecEmpreinte(
+    { titre: "A", lien: LIEN_PBI, vivant: true, proprietesComplement: { artifactName: "&quot;Imposé&quot;" } },
+    [empreintePour(LIEN_PBI)]
+  );
+  assert.strictEqual(d.proprietesComplement.artifactName, "&quot;Imposé&quot;");
+  assert.ok(d.proprietesComplement.bookmark, "le reste de l'empreinte est conservé");
+});
+
+test("sans liste d'empreintes, la diapositive est rendue telle quelle", () => {
+  const d = { titre: "A", lien: LIEN_PBI, vivant: true };
+  assert.strictEqual(P.avecEmpreinte(d, null), d);
+  assert.strictEqual(P.avecEmpreinte(d, []), d);
+});
+
 __ouvrirGroupe("Sélection → PowerPoint : flux complet");
 /* Flux complet « sélection de rituel → PowerPoint », sur les fonctions
    RÉELLES d'app.js chargées dans le harnais.
@@ -5806,7 +6134,7 @@ function preparerDeck(opts) {
   A.saisir("deckModeSelect", "vivant");
   A.run(`
     presets = []; selectionIds = []; selectionMode = false; presetCourant = "";
-    capturesDeck = {}; commentairesVolatils = {};
+    empreintes = []; capturesDeck = {}; commentairesVolatils = {};
     rebuildData(false);
     // Modèle PowerPoint minimal : la fabrique complète est éprouvée par pptx.test.js
     modeleDeckCache = ZipMini.ecrireZip([
@@ -6318,8 +6646,30 @@ test("mode : par défaut, le support embarque les visuels vivants", async () => 
   assert.ok(xml.includes("<we:webextensionref"), "le complément Power BI est posé");
 });
 
-test("mode : un lien de visuel est reconnu comme tel dans la liste", () => {
+/* Pose l'empreinte d'un lien : ce que le complément Power BI avait
+   mémorisé lors d'une insertion faite à la main. Sans elle, il affiche
+   « l'objet visuel n'existe plus » — vérifié en conditions réelles. */
+function poserEmpreinte(lien) {
+  A.run(`empreintes = [Empreintes.creerEmpreinte({
+    reportUrl: ${JSON.stringify(lien)},
+    artifactName: "&quot;Histo empilé&quot;",
+    bookmark: "&quot;H4sIEtatSerialise&quot;"
+  }, { horodatage: 1 })]`);
+}
+
+test("mode : un lien de visuel sans empreinte demande d'abord un relevé", () => {
   preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"),
+    "sans empreinte, le complément afficherait « l'objet visuel n'existe plus »");
+});
+
+test("mode : une fois l'empreinte relevée, le visuel est annoncé comme prêt", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  poserEmpreinte(LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.saisir("deckModeSelect", "vivant");
   A.run("renderDeckLignes()");
@@ -6373,12 +6723,22 @@ const LIEN_PAGE = "https://app.powerbi.com/links/UWLu7wc3Ez?pbi_source=linkShare
 test("liens : un lien de visuel au bon format est validé", () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  poserEmpreinte(LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
   const html = A.html("deckList");
   assert.ok(html.includes("⚡ visuel"));
   assert.ok(html.includes("1253×528 px"), "le format du visuel est affiché");
   assert.equal(A.el("deckWarning").style.display, "none", "aucune alerte");
+});
+
+test("liens : un visuel sans empreinte est signalé dans le bilan", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.equal(A.el("deckWarning").style.display, "block");
+  assert.ok(A.texte("deckWarning").includes("sans empreinte"));
 });
 
 test("liens : un lien de PAGE est signalé — il afficherait tout le rapport", () => {
@@ -6437,6 +6797,110 @@ test("liens : en mode image, le diagnostic laisse la place à l'état de capture
   A.saisir("deckModeSelect", "image");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("à capturer"));
+});
+
+/* ─── Empreintes : relevé, partage, génération ──────────────
+   Le relevé se fait dans le navigateur, à partir d'un PowerPoint où le
+   visuel a été inséré à la main. C'est l'unique opération manuelle, et
+   elle n'est à faire qu'une fois par KPI. */
+
+/** Un .pptx minimal portant UN complément Power BI, comme après insertion. */
+function pptxAvecComplement(lien, nom) {
+  const props = [
+    `<we:property name="reportUrl" value="&quot;${lien.replace(/&/g, "&amp;")}&quot;"/>`,
+    `<we:property name="artifactName" value="&quot;${nom || "Histo empilé"}&quot;"/>`,
+    `<we:property name="pageName" value="&quot;p1&quot;"/>`,
+    `<we:property name="datasetId" value="&quot;jeu-1&quot;"/>`,
+    `<we:property name="bookmark" value="&quot;H4sIEtatSerialise&quot;"/>`,
+    `<we:property name="initialStateBookmark" value="&quot;H4sIEtatSerialise&quot;"/>`,
+    `<we:property name="creatorSessionId" value="&quot;session-a-oublier&quot;"/>`
+  ].join("");
+  return A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" },
+    { nom: "ppt/webextensions/webextension1.xml",
+      donnees: ${JSON.stringify(`<we:webextension><we:properties>${props}</we:properties></we:webextension>`)} }
+  ])`);
+}
+
+test("empreintes : un PowerPoint fait à la main livre sa mémoire", async () => {
+  preparerDeck();
+  const octets = pptxAvecComplement(LIEN_VISUEL);
+  const bilan = await A.run("releverEmpreintesDepuis")(octets);
+  assert.equal(bilan.total, 1);
+  assert.equal(bilan.ajoutees, 1);
+  assert.equal(A.run("empreintes.length"), 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("empreintes : les traces de la session d'insertion ne sont pas reprises", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  assert.ok(!("creatorSessionId" in A.run("empreintes[0].proprietes")),
+    "un fichier neuf ne doit pas porter les traces d'un autre");
+});
+
+test("empreintes : relever deux fois le même visuel n'en crée pas deux", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  const second = await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL, "Renommé"));
+  assert.equal(second.ajoutees, 0);
+  assert.equal(A.run("empreintes.length"), 1);
+});
+
+test("empreintes : un PowerPoint sans insertion manuelle ne trompe personne", async () => {
+  preparerDeck();
+  const vide = A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" }])`);
+  const bilan = await A.run("releverEmpreintesDepuis")(vide);
+  assert.equal(bilan.total, 0);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : le relevé est rangé dans le stockage, donc partagé", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  const range = JSON.parse(A.run(`localStorage.getItem("kpiEmpreintes")`));
+  assert.equal(range.length, 1);
+  assert.ok(range[0].proprietes.bookmark, "l'état sérialisé est conservé : sans lui, rien ne s'affiche");
+});
+
+/* Le fichier tel que le navigateur le remet après un clic sur « Parcourir ». */
+function fichierChoisi(octets, nom) {
+  return { name: nom || "support.pptx", arrayBuffer: async () => octets.buffer || octets };
+}
+
+test("empreintes : importer un fichier remet la liste à jour toute seule", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"));
+  await A.run("importerEmpreintes")(fichierChoisi(pptxAvecComplement(LIEN_VISUEL)));
+  assert.ok(A.html("deckList").includes("⚡ visuel"), "la liste se remet à jour toute seule");
+});
+
+test("empreintes : un fichier sans insertion manuelle le dit clairement", async () => {
+  preparerDeck();
+  const vide = A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: "<?xml version=\\"1.0\\"?><Types></Types>" }])`);
+  await A.run("importerEmpreintes")(fichierChoisi(vide));
+  assert.match(A.dernierMessage(), /inséré à la main/);
+});
+
+test("empreintes : le support produit porte bien la mémoire relevée", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const options = A.run(`(function () {
+    const preset = selectionCourante();
+    const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
+    return { diapos: diapos.map(d => ({ lien: d.lien, vivant: true })), empreintes };
+  })()`);
+  const diapo = A.run("PptxDeck.avecEmpreinte")(options.diapos[0], options.empreintes);
+  assert.ok(diapo.proprietesComplement, "l'empreinte est appliquée à la diapositive");
+  assert.equal(diapo.proprietesComplement.artifactName, "&quot;Histo empilé&quot;");
+  assert.ok(diapo.proprietesComplement.initialStateBookmark, "la copie de l'état est reconstituée");
 });
 
 
@@ -6780,7 +7244,7 @@ const CLE = {
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
   PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
-  PRESETS:"kpiPresets"
+  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

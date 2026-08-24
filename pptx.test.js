@@ -579,3 +579,109 @@ test("dans le support, un visuel plat n'est plus réduit à sa barre", async () 
   const m = cadreComplement(txt("ppt/slides/slide2.xml"));
   assert.ok(Number(m[2]) >= P.HAUTEUR_MINI_COMPLEMENT, "hauteur du cadre : " + m[2]);
 });
+
+/* ─── Empreintes : ce qui fait que le complément retrouve le visuel ──
+   Vérifié dans PowerPoint : sans la mémoire relevée sur une insertion
+   manuelle, le complément affiche « l'objet visuel n'existe plus »,
+   même quand l'adresse est rigoureusement la bonne. */
+
+const EmpP = require("./js/empreintes.js");
+
+/** Empreinte minimale mais complète, pour le lien d'essai. */
+function empreintePour(lien) {
+  return {
+    id: EmpP.cleVisuel(lien),
+    libelle: "Histo empilé",
+    proprietes: {
+      artifactName: "&quot;Histo empilé&quot;",
+      reportName: "&quot;Pilotage&quot;",
+      pageName: "&quot;page1&quot;",
+      pageDisplayName: "&quot;Mix&quot;",
+      datasetId: "&quot;55e74324&quot;",
+      bookmark: "&quot;H4sIEtatSerialise&quot;",
+      embedUrl: "&quot;/reportEmbed?reportId=abc&amp;config=xyz&quot;",
+      backgroundColor: "&quot;#FFF&quot;"
+    },
+    _mtime: 1, _by: "essai"
+  };
+}
+
+const nomsProprietes = xml =>
+  [...xml.matchAll(/<we:property name="([^"]+)"/g)].map(m => m[1]);
+
+test("sans empreinte, le générateur produit exactement ce qu'il produisait", async () => {
+  const { txt } = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.deepStrictEqual(noms, P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("avec une empreinte, la mémoire du complément est rendue au fichier", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  ["artifactName", "reportName", "pageName", "pageDisplayName", "datasetId",
+   "bookmark", "initialStateBookmark"].forEach(n => {
+    assert.ok(noms.includes(n), n + " doit être écrit dans le fichier");
+  });
+});
+
+test("aucune propriété n'est écrite deux fois : le complément n'en lirait qu'une", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.strictEqual(new Set(noms).size, noms.length, "doublons : " + noms.join(", "));
+});
+
+test("l'adresse d'incorporation relevée remplace celle que le générateur devine", async () => {
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const xml = txt("ppt/webextensions/webextension1.xml");
+  const m = xml.match(/name="embedUrl" value="([^"]*)"/);
+  assert.ok(m && m[1].includes("reportId=abc"), "adresse posée : " + (m && m[1]));
+});
+
+test("l'adresse du rapport n'est JAMAIS modifiée par l'empreinte", async () => {
+  const sans = await lireP(await deckP([{ titre: "A", lien: LIEN_PBI, vivant: true }]));
+  const avec = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }],
+    { empreintes: [empreintePour(LIEN_PBI)] }
+  ));
+  const url = t => t("ppt/webextensions/webextension1.xml").match(/name="reportUrl" value="([^"]*)"/)[1];
+  assert.strictEqual(url(avec.txt), url(sans.txt));
+});
+
+test("une empreinte qui ne correspond à aucun lien n'est pas appliquée", async () => {
+  const autre = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [autre] }
+  ));
+  assert.deepStrictEqual(nomsProprietes(txt("ppt/webextensions/webextension1.xml")),
+    P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("une diapositive en image ignore les empreintes", () => {
+  const d = P.avecEmpreinte({ titre: "A", lien: LIEN_PBI, image: pngP(4, 3) },
+    [empreintePour(LIEN_PBI)]);
+  assert.ok(!d.proprietesComplement);
+});
+
+test("ce qui est posé à la main sur la diapositive prime sur l'empreinte", () => {
+  const d = P.avecEmpreinte(
+    { titre: "A", lien: LIEN_PBI, vivant: true, proprietesComplement: { artifactName: "&quot;Imposé&quot;" } },
+    [empreintePour(LIEN_PBI)]
+  );
+  assert.strictEqual(d.proprietesComplement.artifactName, "&quot;Imposé&quot;");
+  assert.ok(d.proprietesComplement.bookmark, "le reste de l'empreinte est conservé");
+});
+
+test("sans liste d'empreintes, la diapositive est rendue telle quelle", () => {
+  const d = { titre: "A", lien: LIEN_PBI, vivant: true };
+  assert.strictEqual(P.avecEmpreinte(d, null), d);
+  assert.strictEqual(P.avecEmpreinte(d, []), d);
+});

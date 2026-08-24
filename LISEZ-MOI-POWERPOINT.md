@@ -54,9 +54,74 @@ partage **exactement** tel qu'il est collé, seulement privé de son hôte :
 
 Y glisser `bookmarkUsage=1` et `fromEntryPoint=export` — qui appartiennent au format
 d'export d'une PAGE — le fait échouer à résoudre le visuel **et** la page : il retombe
-alors sur la première page du rapport. De même, lui imposer `pageName` ou `reportName`
-n'apporte rien : il les résout depuis l'adresse, et écrit lui-même `artifactName`,
-`pageDisplayName`, `datasetId` et l'état sérialisé à la première ouverture.
+alors sur la première page du rapport.
+
+#### L'adresse ne suffit pas : il faut l'EMPREINTE du visuel
+
+Voici le point qui a longtemps bloqué, et il est contre-intuitif.
+
+Un support généré dont le `reportUrl` est **octet pour octet identique** à celui d'une
+insertion faite à la main affiche quand même :
+
+> Impossible de charger votre objet visuel — l'objet visuel ajouté ici n'existe plus.
+
+Parce que **le complément ne relit pas l'adresse à l'ouverture**. Il la résout une seule
+fois, à l'insertion, puis mémorise le résultat dans le fichier et se contente ensuite de
+le restaurer. Un fichier fabriqué de toutes pièces n'a rien à restaurer.
+
+Ce qu'il mémorise, et qu'il faut donc lui rendre — l'**empreinte** du visuel :
+
+| Propriété | |
+|---|---|
+| `artifactName` | le nom de l'objet visuel (« Histo empilé ») |
+| `reportName`, `pageName`, `pageDisplayName` | la page où il vit |
+| `datasetId` | le jeu de données |
+| `bookmark`, `initialStateBookmark` | l'état sérialisé de la page — filtres et segments, ~5 Ko |
+| `embedUrl`, `backgroundColor` | relevés aussi : l'adresse d'incorporation porte l'indicatif du locataire |
+
+Vérifié en conditions réelles, une diapositive à la fois, dans PowerPoint :
+
+| Ce que porte la diapositive | Résultat |
+|---|---|
+| l'adresse seule | ❌ « l'objet visuel n'existe plus » |
+| + `artifactName` | ❌ |
+| + page et jeu de données | ❌ |
+| **+ l'état sérialisé** | ✅ **le graphique s'affiche** |
+| tout, y compris les champs de session | ✅ |
+
+Deux conclusions pratiques :
+
+- **l'état sérialisé n'est pas facultatif.** On ne peut pas alléger une empreinte pour
+  gagner de la place : elle deviendrait muette ;
+- **les champs de session ne servent à rien** (`creatorSessionId`, `creatorUserId`,
+  `creatorTenantId`, `reportEmbeddedTime`, annotations). Ils ne sont donc pas relevés :
+  un fichier neuf n'a pas à porter les traces de la session de quelqu'un d'autre.
+
+#### Relever une empreinte
+
+C'est l'unique geste manuel, et il n'est à faire **qu'une fois par KPI** :
+
+1. dans PowerPoint, *Insertion › Compléments › Power BI*, coller le lien du visuel ;
+2. vérifier que le graphique s'affiche, enregistrer le fichier ;
+3. dans l'annuaire : *Sélection & PowerPoint › Générer › **🔎 Relever les empreintes***,
+   choisir ce fichier.
+
+L'empreinte part alors dans la synchronisation : **toute l'équipe en profite**, personne
+n'a à refaire l'insertion. La fenêtre de génération affiche, pour chaque diapositive,
+`⚡ visuel` (empreinte connue) ou `à relever`.
+
+En ligne de commande, pour traiter un lot de fichiers d'un coup :
+
+```bash
+node outils/relever-empreintes.js support1.pptx support2.pptx --sortie empreintes.json
+```
+
+#### Où vivent les empreintes
+
+Dans un **document de synchronisation séparé** — `kpi_sync/{code}__empreintes` — et non
+dans le document principal. L'état sérialisé pèse ~5 Ko par visuel, alors que Firestore
+plafonne un document à 1 Mo : les mêler ferait courir le risque de ne plus pouvoir
+enregistrer l'annuaire du tout. Le document principal n'a pas changé de taille.
 
 #### Le signet, ou pourquoi le bon visuel peut montrer les mauvaises données
 
@@ -166,6 +231,8 @@ rituel avant d'avoir les données.
 | `js/zip.js` | lecture / écriture d'archives ZIP (un .pptx en est une) |
 | `js/pptx.js` | fabrique du support : diapositives, liens, images, sommaire |
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
+| `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
+| `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/capturer-visuels.js` | capture automatique des visuels Power BI |
 | `outils/generer-deck.js` | support PowerPoint depuis une sélection + des captures |
@@ -177,7 +244,7 @@ rituel avant d'avoir les données.
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
 | `outils/diagnostic-complement.js` | support à cinq variantes pour isoler ce que lit le complément |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `deck.test.js`, `outils.test.js` | 233 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 281 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -242,7 +309,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 687 tests (dont 233 pour cette fonctionnalité)
+node --test              # 735 tests (dont 281 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)
@@ -252,6 +319,13 @@ npm run lint
 ```
 
 ## Points restés ouverts
+
+- **Une empreinte est à relever pour chaque KPI.** C'est un geste unique par visuel, mais
+  il reste manuel : le complément n'expose aucun moyen de produire cette mémoire sans
+  passer par une insertion réelle dans PowerPoint.
+- **Une empreinte survit-elle à une refonte du rapport ?** Si un visuel est recréé, son
+  identifiant change et l'empreinte devient orpheline : la ligne repassera à
+  « à relever », ce qui est le bon signal, mais l'ancienne empreinte reste stockée.
 
 - **La colonne Rituel n'est renseignée que sur 3 lignes sur 40.** Sélectionner par
   rituel suppose de la remplir, et de figer un vocabulaire : aujourd'hui le champ est

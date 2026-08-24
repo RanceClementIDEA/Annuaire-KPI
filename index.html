@@ -509,10 +509,12 @@
     <div class="modal-actions">
       <button id="deckGenerateBtn" class="btn-primary">📊 Générer et télécharger</button>
       <button id="deckShotsBtn" class="btn-secondary" title="Charger un dossier de captures produites par l'outil de capture">🖼 Charger les captures</button>
+      <button id="deckEmpreintesBtn" class="btn-secondary" title="Relever, dans un PowerPoint où les visuels ont été insérés à la main, ce que le complément Power BI avait mémorisé. À faire une fois par KPI.">🔎 Relever les empreintes</button>
       <button id="deckExportBtn" class="btn-secondary" title="Décrit la sélection dans un fichier .json pour la capture automatique">⬇ Exporter la sélection</button>
       <button id="closeDeckBtn2" class="btn-secondary" onclick="fermerDeckModal()">Fermer</button>
     </div>
     <input type="file" id="deckShotsInput" accept="image/png,image/jpeg" multiple style="display:none">
+    <input type="file" id="deckEmpreintesInput" accept=".pptx" style="display:none">
   </div>
 </div>
 
@@ -733,6 +735,7 @@
 <script src="js/merge.js"></script>
 <script src="js/carousel.js"></script>
 <script src="js/zip.js"></script>
+<script src="js/empreintes.js"></script>
 <script src="js/pptx.js"></script>
 <script src="js/inspecter-deck.js"></script>
 <script src="js/selection.js"></script>

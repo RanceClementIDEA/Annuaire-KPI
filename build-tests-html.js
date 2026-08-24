@@ -18,6 +18,7 @@ function adapter(src) {
     .replace(/^const (\w+) = require\("\.\/js\/zip\.js"\);\s*$/m, "const $1 = __module(\"ZipMini\");")
     .replace(/^const (\w+) = require\("\.\/js\/pptx\.js"\);\s*$/m, "const $1 = __module(\"PptxDeck\");")
     .replace(/^const (\w+) = require\("\.\/js\/selection\.js"\);\s*$/m, "const $1 = __module(\"Selection\");")
+    .replace(/^const (\w+) = require\("\.\/js\/empreintes\.js"\);\s*$/m, "const $1 = __module(\"Empreintes\");")
     .replace(/^const fs = require\("node:fs"\);\s*$/m, "")
     .replace(/^const path = require\("node:path"\);\s*$/m, "")
     // Le modèle PowerPoint est téléchargé par la coque, pas lu sur le disque
@@ -41,6 +42,7 @@ const groupes = [
   ["Flux complets : synchro, formulaire, persistance", "app-flows.test.js"],
   ["Archive ZIP (fabrique PowerPoint)", "zip.test.js"],
   ["Sélections de rituel", "selection.test.js"],
+  ["Empreintes de visuels Power BI", "empreintes.test.js"],
   ["Fabrique PowerPoint", "pptx.test.js"],
   ["Sélection → PowerPoint : flux complet", "deck.test.js"]
 ];

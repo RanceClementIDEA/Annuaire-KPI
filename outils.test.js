@@ -442,3 +442,69 @@ test("le titre distingue la copie au premier coup d'œil", () => {
 test("un index.html méconnaissable est refusé plutôt que mal transformé", () => {
   assert.throws(() => T.construire("<html><body>rien</body></html>", {}), /introuvable/);
 });
+
+/* ═══ Relevé des empreintes en ligne de commande ═══════════
+   Le même relevé que dans l'annuaire, pour traiter un lot de fichiers
+   d'un coup — par exemple le support d'un rituel entier. */
+
+const R = require("./outils/relever-empreintes.js");
+
+function complementXml(props) {
+  const lignes = Object.keys(props)
+    .map(n => `<we:property name="${n}" value="${props[n]}"/>`).join("");
+  return `<we:webextension><we:properties>${lignes}</we:properties></we:webextension>`;
+}
+
+const LIEN_R = "/groups/me/reports/6a4cf353/faec2927?pbi_source=shareVisual&amp;visual=v42";
+
+function fichierAvec(complements) {
+  const Zip = require("./js/zip.js");
+  return Zip.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: '<?xml version="1.0"?><Types></Types>' },
+    ...complements.map((c, i) => ({ nom: `ppt/webextensions/webextension${i + 1}.xml`, donnees: c }))
+  ]);
+}
+
+test("relevé : les propriétés d'un complément sont lues telles quelles", () => {
+  const props = R.proprietesDe(complementXml({ artifactName: "&quot;Histo&quot;", bookmark: "&quot;B&quot;" }));
+  assert.equal(props.artifactName, "&quot;Histo&quot;");
+  assert.equal(props.bookmark, "&quot;B&quot;");
+});
+
+test("relevé : une insertion manuelle donne une empreinte utilisable", async () => {
+  const octets = fichierAvec([complementXml({
+    reportUrl: `&quot;${LIEN_R}&quot;`, artifactName: "&quot;Histo&quot;",
+    bookmark: "&quot;B&quot;", initialStateBookmark: "&quot;B&quot;"
+  })]);
+  const lot = await R.relever(octets, { horodatage: 7 });
+  assert.equal(lot.length, 1);
+  assert.equal(lot[0].libelle, "Histo");
+  assert.equal(lot[0]._mtime, 7);
+});
+
+test("relevé : une diapositive fabriquée par le générateur est ignorée", async () => {
+  const octets = fichierAvec([complementXml({
+    reportUrl: `&quot;${LIEN_R}&quot;`, reportState: "&quot;CONNECTED&quot;"
+  })]);
+  assert.deepEqual(await R.relever(octets, {}), []);
+});
+
+test("relevé : le même visuel sur deux diapositives ne compte qu'une fois", async () => {
+  const complet = complementXml({
+    reportUrl: `&quot;${LIEN_R}&quot;`, artifactName: "&quot;Histo&quot;", bookmark: "&quot;B&quot;"
+  });
+  const partiel = complementXml({ reportUrl: `&quot;${LIEN_R}&quot;`, artifactName: "&quot;Histo&quot;" });
+  const lot = await R.relever(fichierAvec([partiel, complet]), {});
+  assert.equal(lot.length, 1);
+  assert.ok(lot[0].proprietes.bookmark, "c'est le relevé le plus complet qui est gardé");
+});
+
+test("relevé : les options en ligne de commande sont comprises", () => {
+  const o = R.options(["a.pptx", "b.pptx", "--sortie", "empreintes.json"]);
+  assert.deepEqual(o.fichiers, ["a.pptx", "b.pptx"]);
+  assert.equal(o.sortie, "empreintes.json");
+});
+
+test("relevé : une option inconnue est refusée plutôt que devinée", () => {
+  assert.throws(() => R.options(["--nimporte"]), /Option inconnue/);
+});

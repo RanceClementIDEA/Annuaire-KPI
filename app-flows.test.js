@@ -27,11 +27,22 @@ async function attendre(tours = 30) {
 
 /* ═══ Connexion au cloud ═══ */
 
+/* Deux documents sont écoutés, et deux seulement : l'annuaire partagé, et
+   le document séparé des empreintes de visuels. Ce dernier est à part
+   parce que l'état sérialisé pèse ~5 Ko par visuel, alors que le document
+   principal est plafonné à 1 Mo. Un troisième abonnement signalerait une
+   écoute oubliée à la reconnexion. */
+function ecoutesAttendues() {
+  const code = A.run("BUILTIN_SYNC_CODE");
+  return ["kpi_sync/" + code, "kpi_sync/" + code + "__empreintes"].sort();
+}
+
+
 test("connexion : la configuration intégrée est réinstallée automatiquement", () => {
   A.reset(); A.firebaseSimule();
   A.run(`setSyncConfig(null); connectSync(false);`);
   assert.ok(A.run("getSyncConfig()"), "un appareil vierge se reconfigure tout seul");
-  assert.equal(A.ecoutesActives(), 1);
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues());
 });
 
 test("connexion : une désactivation volontaire empêche la reconnexion", () => {
@@ -47,7 +58,7 @@ test("connexion : une désactivation volontaire empêche la reconnexion", () => 
 
 test("connexion : avec la configuration intégrée, l'écoute démarre", async () => {
   await appareilConnecte();
-  assert.equal(A.ecoutesActives(), 1);
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues());
 });
 
 test("connexion : le code de synchro utilisé est celui intégré", async () => {
@@ -58,7 +69,8 @@ test("connexion : le code de synchro utilisé est celui intégré", async () => 
 test("connexion : se reconnecter ne crée pas une seconde écoute", async () => {
   await appareilConnecte();
   A.run("connectSync(false)");
-  assert.equal(A.ecoutesActives(), 1, "une seule écoute active");
+  assert.deepEqual(A.ecoutesCles().sort(), ecoutesAttendues(),
+    "une seule écoute par document, jamais deux");
 });
 
 test("connexion : l'état affiché passe à « connecté »", async () => {
