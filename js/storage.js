@@ -21,6 +21,7 @@
     PURGED:      "kpiPurgedIds",   // doit rester identique à app.js (savePurged/loadPurged)
     SITES:       "kpiSites",
     ACTIVITY:    "kpiActivity",
+    PRESETS:     "kpiPresets",       // sélections de rituel (voir js/selection.js)
     DATA_CACHE:  "kpiDataCache",
     FILE_B64:    "kpiFileB64",
     FILE_LEGACY: "kpiFile",           // ancien format (tableau de nombres)
