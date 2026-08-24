@@ -47,12 +47,19 @@ function proprietesDe(xml) {
   return out;
 }
 
-/** Extrait le premier complément d'un .pptx fabriqué par Power BI. */
+/**
+ * Propriétés d'un complément de référence.
+ * On privilégie celui qui porte `artifactName` : c'est la marque d'une
+ * insertion portant sur UN visuel, seul cas qui nous intéresse ici.
+ */
 async function complementDeReference(chemin) {
   const pieces = await Zip.lireZip(new Uint8Array(fs.readFileSync(chemin)));
-  const nom = [...pieces.keys()].find(n => /^ppt\/webextensions\/webextension\d+\.xml$/.test(n));
-  if (!nom) throw new Error("Ce fichier ne contient aucun complément Power BI");
-  return proprietesDe(Zip.versTexte(pieces.get(nom)));
+  const noms = [...pieces.keys()]
+    .filter(n => /^ppt\/webextensions\/webextension\d+\.xml$/.test(n))
+    .sort();
+  if (!noms.length) throw new Error("Ce fichier ne contient aucun complément Power BI");
+  const tous = noms.map(n => proprietesDe(Zip.versTexte(pieces.get(n))));
+  return tous.find(p => p.artifactName) || tous[0];
 }
 
 /** Adresse sans le paramètre demandé. */
@@ -140,6 +147,47 @@ function variantes3(lien) {
 }
 
 /**
+ * Quatrième série — le complément dit « l'objet visuel n'existe plus »
+ * alors que la MÊME adresse, insérée à la main, affiche le graphique.
+ * L'hypothèse : il ne résout l'adresse qu'au moment de l'insertion, et
+ * se contente ensuite de restaurer ce qu'il a mémorisé. Ces variantes
+ * lui rendent, par paliers, ce qu'il avait mémorisé.
+ */
+function variantes4(lien, reference) {
+  const ref = reference || {};
+  const prendre = noms => noms.reduce((o, n) => {
+    if (ref[n] !== undefined) o[n] = ref[n];
+    return o;
+  }, {});
+  const vide = Pptx.PROPRIETES_PAR_DEFAUT.reduce((o, n) => { o[n] = null; return o; }, {});
+
+  return [
+    { code: "P", titre: "P — juste le nom de l'objet visuel",
+      explication: ref.artifactName
+        ? "artifactName = " + ref.artifactName.replace(/&quot;/g, "")
+        : "AUCUNE référence : variante sans objet",
+      lien, proprietesComplement: prendre(["artifactName"]) },
+
+    { code: "Q", titre: "Q — le nom, la page et le jeu de données",
+      explication: "artifactName + pageName + pageDisplayName + datasetId",
+      lien, proprietesComplement: prendre(["artifactName", "pageName", "pageDisplayName", "datasetId", "reportName"]) },
+
+    { code: "R", titre: "R — tout, y compris l'état sérialisé",
+      explication: "les précédents + bookmark et initialStateBookmark",
+      lien, proprietesComplement: prendre(["artifactName", "pageName", "pageDisplayName", "datasetId",
+                                           "reportName", "bookmark", "initialStateBookmark"]) },
+
+    { code: "S", titre: "S — témoin : votre insertion, copiée intégralement",
+      explication: "toutes les propriétés relevées sur la diapositive que vous avez faite à la main",
+      lien, proprietesComplement: Object.assign({}, vide, ref) },
+
+    { code: "T", titre: "T — témoin : ce que produit le générateur aujourd'hui",
+      explication: "connu pour échouer — sert de repère",
+      lien }
+  ];
+}
+
+/**
  * Les cinq variantes, à partir d'un lien de KPI et, si on en a un,
  * des propriétés d'un complément fabriqué par Power BI.
  */
@@ -184,7 +232,8 @@ function variantes(lien, reference) {
 
 async function construire(lien, reference, serie) {
   const modele = new Uint8Array(fs.readFileSync(path.join(RACINE, "modele-deck.pptx")));
-  const liste = serie === 3 ? variantes3(lien)
+  const liste = serie === 4 ? variantes4(lien, reference)
+              : serie === 3 ? variantes3(lien)
               : serie === 2 ? variantes2(lien)
               : variantes(lien, reference);
   const diapos = liste.map(v => ({
@@ -197,7 +246,8 @@ async function construire(lien, reference, serie) {
   }));
   return Pptx.construireDeck(modele, {
     titre: "Diagnostic du complément Power BI",
-    sousTitre: serie === 3 ? "Série 3 — quelle adresse ouvre la bonne PAGE ?"
+    sousTitre: serie === 4 ? "Série 4 — que faut-il mémoriser pour retrouver le visuel ?"
+             : serie === 3 ? "Série 3 — quelle adresse ouvre la bonne PAGE ?"
              : serie === 2 ? "Série 2 — quelle forme d'adresse désigne le visuel ?"
              : "Cinq hypothèses, une diapositive chacune",
     periode: "Notez ce que chaque diapositive affiche",
@@ -214,10 +264,10 @@ async function principal() {
     process.exit(1);
   }
 
-  const serie = [2, 3].indexOf(Number(lire("serie"))) >= 0 ? Number(lire("serie")) : 1;
+  const serie = [2, 3, 4].indexOf(Number(lire("serie"))) >= 0 ? Number(lire("serie")) : 1;
   const cheminRef = lire("reference");
   const reference = cheminRef ? await complementDeReference(cheminRef) : null;
-  if (serie === 1) {
+  if (serie === 1 || serie === 4) {
     if (reference) console.log("Référence lue : " + Object.keys(reference).length + " propriété(s)");
     else console.log("Aucune référence fournie — les variantes C et D seront sans objet.");
   }
@@ -226,7 +276,8 @@ async function principal() {
   fs.writeFileSync(sortie, Buffer.from(await construire(lien, reference, serie)));
 
   console.log("\n✓ " + sortie);
-  (serie === 3 ? variantes3(lien) : serie === 2 ? variantes2(lien) : variantes(lien, reference))
+  (serie === 4 ? variantes4(lien, reference) : serie === 3 ? variantes3(lien)
+   : serie === 2 ? variantes2(lien) : variantes(lien, reference))
     .forEach(v => console.log("  " + v.code + " · " + v.explication));
   console.log("\nOuvrez le fichier, laissez les visuels se charger, et dites ce que montre chaque diapositive.");
 }
@@ -235,4 +286,4 @@ if (require.main === module) {
   principal().catch(err => { console.error("✗ " + err.message); process.exit(1); });
 }
 
-module.exports = { proprietesDe, complementDeReference, sansParametre, variantes, variantes2, variantes3, construire };
+module.exports = { proprietesDe, complementDeReference, sansParametre, variantes, variantes2, variantes3, variantes4, construire };
