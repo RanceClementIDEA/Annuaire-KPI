@@ -66,7 +66,15 @@
     if (!m) return "";
     const visuel = txt.match(/[?&]visual=([0-9a-zA-Z-]+)/);
     if (!visuel) return "";
-    return m[1].toLowerCase() + "/" + (m[2] || "") + "/" + visuel[1];
+    /* Le SIGNET fait partie de l'identité, et c'est contre-intuitif.
+       Plusieurs KPI partagent souvent le même visuel : ce qui les
+       distingue, ce sont leurs filtres, portés par `bookmarkGuid`.
+       Vérifié sur huit insertions du même visuel : huit signets, huit
+       états sérialisés tous différents. Une empreinte ne vaut donc que
+       pour SON signet. */
+    const signet = signetDe(txt);
+    return m[1].toLowerCase() + "/" + (m[2] || "") + "/" + visuel[1]
+         + (signet ? "/" + signet : "");
   }
 
   /**
@@ -92,6 +100,9 @@
     return {
       id: String(src.id || o.id || ""),
       libelle: String(src.libelle || o.libelle || "").trim(),
+      /* Le signet dont l'état provient : sans lui on ne peut pas savoir
+         si l'état qu'on s'apprête à poser correspond bien au KPI. */
+      signet: String(src.signet || o.signet || ""),
       proprietes: retenues,
       _mtime: Number(src._mtime) || Number(o.horodatage) || 0,
       _by: String(src._by || o.auteur || "?")
@@ -127,6 +138,7 @@
     if (pageLien && pageMemorisee && pageLien !== pageMemorisee) return null;
 
     const emp = normaliserEmpreinte({ id, proprietes: props }, o);
+    emp.signet = signetDe(dechapper(props.reportUrl || ""));
     if (!emp.libelle) emp.libelle = dechapper(props.artifactName).replace(/^"|"$/g, "");
     return Object.keys(emp.proprietes).length ? emp : null;
   }
@@ -164,10 +176,29 @@
     return pageDeCle(cleVisuel(lien));
   }
 
+  /**
+   * Le signet d'un lien de partage (`bookmarkGuid`).
+   *
+   * C'est LUI qui distingue deux KPI portés par le même visuel : les
+   * filtres et segments vivent dans le signet, pas dans `visual=`. Sur
+   * cet annuaire, trois « Volumétrie » partagent un visuel et quatre
+   * « Taux de service » un autre — seul le signet les sépare.
+   * @returns {string} "" si le lien n'en porte pas
+   */
+  function signetDe(lien) {
+    return (String(lien || "").match(/[?&]bookmarkGuid=([0-9a-zA-Z-]+)/) || [])[1] || "";
+  }
+
   /** La partie « rapport/page » d'une clé déjà construite. */
   function pageDeCle(cle) {
     const bouts = String(cle || "").split("/");
     return bouts.length >= 2 && bouts[1] ? bouts[0] + "/" + bouts[1] : "";
+  }
+
+  /** Le signet porté par une clé, s'il y en a un. */
+  function signetDeCle(cle) {
+    const bouts = String(cle || "").split("/");
+    return bouts.length >= 4 ? bouts[3] : "";
   }
 
   /** Les empreintes sous forme de liste, qu'on en donne une liste ou un dictionnaire. */
@@ -212,19 +243,16 @@
    * @returns {{proprietes:Object, empreinte:Object, emprunt:boolean}|null}
    */
   function resoudre(empreintes, lien) {
+    /* Correspondance EXACTE, signet compris. L'emprunt à un voisin a été
+       essayé puis abandonné : l'état sérialisé porte les filtres du KPI
+       sur lequel il a été relevé, si bien qu'un état emprunté affiche le
+       bon graphique avec les chiffres d'un autre. Mieux vaut annoncer
+       « à relever » qu'une diapositive fausse. */
     const exacte = trouver(empreintes, lien);
-    if (exacte) {
-      const props = proprietesPour(exacte);
-      if (props) return { proprietes: props, empreinte: exacte, emprunt: false };
-    }
-    const voisine = trouverParPage(empreintes, lien);
-    if (!voisine) return null;
-    const props = proprietesPour(voisine);
+    if (!exacte) return null;
+    const props = proprietesPour(exacte);
     if (!props) return null;
-    /* `artifactName` nomme l'AUTRE visuel : le laisser afficherait une
-       étiquette fausse. Vérifié : son absence n'empêche rien. */
-    delete props.artifactName;
-    return { proprietes: props, empreinte: voisine, emprunt: true };
+    return { proprietes: props, empreinte: exacte, emprunt: false, memeSignet: true };
   }
 
   /** Même arbitrage que les sélections : le plus récent l'emporte. */
@@ -275,7 +303,7 @@
 
   const API = {
     CHAMPS, CHAMPS_DE_SESSION, CHAMPS_ETAT,
-    cleVisuel, clePage, pageDeCle, normaliserEmpreinte, creerEmpreinte, proprietesPour,
+    cleVisuel, clePage, pageDeCle, signetDe, signetDeCle, normaliserEmpreinte, creerEmpreinte, proprietesPour,
     trouver, trouverParPage, resoudre, fusionnerEmpreintes, poids,
     empreinteComplete, dechapper
   };
