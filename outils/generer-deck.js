@@ -21,11 +21,17 @@ const Pptx = require("../js/pptx.js");
 
 const RACINE = path.join(__dirname, "..");
 
+/* Les options qui ne prennent JAMAIS de valeur. Les nommer est
+   indispensable : sans cette liste, `--deck selection.json` prenait le
+   nom du fichier pour la valeur de « deck », et la sélection n'était
+   jamais lue. Un drapeau suivi d'un autre drapeau se devinait ; suivi
+   d'un fichier, non. */
+const DRAPEAUX = ["vivant", "deck", "page", "connexion", "visible", "aide", "help"];
+
 /**
  * Lit les arguments `--nom valeur` et les drapeaux `--nom` seuls.
- * Un drapeau suivi d'un autre drapeau (ou en fin de ligne) vaut `true` :
- * sans cela, `--vivant --sortie deck.pptx` avalait « --sortie » comme
- * valeur de « vivant » et le fichier atterrissait ailleurs.
+ * L'ordre des arguments est libre : `--page --deck selection.json` et
+ * `selection.json --page --deck` donnent le même résultat.
  */
 function options(argv) {
   const o = { _: [] };
@@ -33,8 +39,9 @@ function options(argv) {
     if (!argv[i].startsWith("--")) { o._.push(argv[i]); continue; }
     const nom = argv[i].slice(2);
     const suivant = argv[i + 1];
-    if (suivant === undefined || suivant.startsWith("--")) o[nom] = true;
-    else { o[nom] = suivant; i++; }
+    if (DRAPEAUX.indexOf(nom) >= 0 || suivant === undefined || suivant.startsWith("--")) {
+      o[nom] = true;
+    } else { o[nom] = suivant; i++; }
   }
   return o;
 }
@@ -120,4 +127,4 @@ if (require.main === module) {
   principal().catch(err => { console.error("✗ " + err.message); process.exit(1); });
 }
 
-module.exports = { options, lireSelection, assembler, construire };
+module.exports = { options, DRAPEAUX, lireSelection, assembler, construire };
