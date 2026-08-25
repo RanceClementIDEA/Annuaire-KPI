@@ -4057,6 +4057,148 @@ function saveEmpreintes(sync = true) {
   if (sync) pousserEmpreintes();
 }
 
+/* Empreintes ENGENDRÉES : recomposées à partir des empreintes relevées,
+   elles ne durent que la session. On ne les enregistre pas et on ne les
+   partage pas — 156 états de 5 Ko feraient éclater le document commun,
+   et il est de toute façon plus sûr de les recalculer que de les voir
+   vieillir. */
+let empreintesDerivees = {};
+
+/** Toutes les variantes de l'annuaire qui portent un lien Power BI. */
+function variantesAvecLien() {
+  const sites = activeSites();
+  const out = [];
+  [...data, ...personalEntries].forEach(kpi => {
+    sites.forEach(site => {
+      const lien = kpi[site.key];
+      if (typeof lien === "string" && lien) {
+        out.push({ kpiId: kpi.id, titre: kpi.title || "", freq: kpi.freq || "",
+                   site: site.key, lien });
+      }
+    });
+  });
+  return out;
+}
+
+/**
+ * Ce qui distingue deux valeurs d'un même axe — une zone, une
+ * temporalité — appris sur deux empreintes RÉELLES qui ne diffèrent
+ * que par cet axe.
+ *
+ * On n'invente aucune valeur : on relève ce que Power BI a écrit d'un
+ * côté et de l'autre, et on le rejoue ailleurs.
+ *
+ * @returns {Promise<Object>} { "site:a→b": transformation, "freq:x→y": … }
+ */
+async function axesDerivation() {
+  const variantes = variantesAvecLien();
+  const parLien = new Map(variantes.map(v => [Empreintes.cleVisuel(v.lien), v]));
+  const connues = empreintes
+    .filter(e => e.proprietes && e.proprietes.bookmark && parLien.has(e.id))
+    .map(e => ({ emp: e, v: parLien.get(e.id) }));
+
+  const axes = {};
+  for (let i = 0; i < connues.length; i++) {
+    for (let j = 0; j < connues.length; j++) {
+      if (i === j) continue;
+      const a = connues[i], b = connues[j];
+      // Deux empreintes ne servent d'exemple que si UN SEUL axe les sépare.
+      const memeTitre = a.v.titre === b.v.titre;
+      const memeSite = a.v.site === b.v.site;
+      const memeFreq = a.v.freq === b.v.freq;
+      /* Trois axes : l'intitulé — le KPI retenu, celui qui change le
+         graphique —, la zone et la temporalité. Un exemple ne vaut que
+         si UN SEUL axe sépare ses deux termes ; autrement on apprendrait
+         un mélange, et on le rejouerait à tort ailleurs. */
+      const axe = memeTitre && memeFreq && !memeSite ? "site"
+                : memeTitre && memeSite && !memeFreq ? "freq"
+                : memeSite && memeFreq && !memeTitre ? "titre" : "";
+      if (!axe) continue;
+      const cle = axe + ":" + (axe === "site" ? a.v.site + "→" + b.v.site
+                             : axe === "freq" ? a.v.freq + "→" + b.v.freq
+                                              : a.v.titre + "→" + b.v.titre);
+      if (axes[cle]) continue;
+      try {
+        /* Le visuel de l'exemple est passé : son conteneur ne sera pas
+           recopié mais traduit en substitution de colonne, ce qui rend
+           la leçon transposable à un autre visuel. */
+        axes[cle] = Derivation.transformation(
+          await Derivation.lireEtat(a.emp.proprietes.bookmark),
+          await Derivation.lireEtat(b.emp.proprietes.bookmark),
+          a.emp.id.split("/")[2]);
+      } catch (err) { /* état illisible : on passe */ }
+    }
+  }
+  return axes;
+}
+
+/**
+ * Recompose les empreintes manquantes à partir de celles qu'on a.
+ * @returns {Promise<{engendrees:number, restantes:number}>}
+ */
+async function engendrerEmpreintes() {
+  empreintesDerivees = {};
+  const variantes = variantesAvecLien();
+  const axes = await axesDerivation();
+  if (!Object.keys(axes).length) {
+    return { engendrees: 0, restantes: variantes.filter(v => !Empreintes.trouver(empreintes, v.lien)).length };
+  }
+
+  const parCle = new Map(empreintes
+    .filter(e => e.proprietes && e.proprietes.bookmark)
+    .map(e => [e.id, e]));
+  const varianteDe = new Map(variantes.map(v => [Empreintes.cleVisuel(v.lien), v]));
+
+  let engendrees = 0, restantes = 0;
+  for (const cible of variantes) {
+    const cle = Empreintes.cleVisuel(cible.lien);
+    if (!cle || parCle.has(cle)) continue;
+
+    /* Une base, et le chemin le plus court pour l'amener à la cible :
+       moins on transforme, moins on risque de se tromper. */
+    const candidats = [...parCle.values()]
+      .map(e => ({ emp: e, v: varianteDe.get(e.id) }))
+      .filter(x => x.v)
+      .map(x => ({
+        base: x,
+        etapes: [
+          x.v.titre !== cible.titre ? axes["titre:" + x.v.titre + "→" + cible.titre] : null,
+          x.v.site !== cible.site ? axes["site:" + x.v.site + "→" + cible.site] : null,
+          x.v.freq !== cible.freq ? axes["freq:" + x.v.freq + "→" + cible.freq] : null
+        ],
+        manquant: [
+          x.v.titre !== cible.titre && !axes["titre:" + x.v.titre + "→" + cible.titre],
+          x.v.site !== cible.site && !axes["site:" + x.v.site + "→" + cible.site],
+          x.v.freq !== cible.freq && !axes["freq:" + x.v.freq + "→" + cible.freq]
+        ].some(Boolean)
+      }))
+      .filter(c => !c.manquant)
+      .map(c => ({ base: c.base, chemin: c.etapes.filter(Boolean) }))
+      .sort((a, b) => a.chemin.length - b.chemin.length);
+
+    /* Deux axes qui touchent les mêmes segments s'annuleraient l'un
+       l'autre : on préfère annoncer « à relever » qu'une vue fausse. */
+    const retenu = candidats.find(c => !c.chemin.some((t, i) =>
+      c.chemin.slice(i + 1).some(u => Derivation.seChevauchent(t, u))));
+    if (!retenu) { restantes++; continue; }
+    const base = retenu.base;
+    const chemin = retenu.chemin;
+
+    try {
+      const etat = Derivation.appliquerToutes(
+        await Derivation.lireEtat(base.emp.proprietes.bookmark), chemin,
+        cle.split("/")[2]);   // le visuel VISÉ reçoit les substitutions
+      const valeur = await Derivation.ecrireEtat(etat);
+      const props = Object.assign({}, Empreintes.proprietesPour(base.emp),
+        { bookmark: valeur, initialStateBookmark: valeur });
+      delete props.artifactName;   // il nommerait la vue d'origine
+      empreintesDerivees[cle] = { id: cle, libelle: cible.titre, proprietes: props, _derivee: true };
+      engendrees++;
+    } catch (err) { restantes++; }
+  }
+  return { engendrees, restantes };
+}
+
 /**
  * Ce qui sera posé pour ce lien : son empreinte, ou celle d'un voisin de
  * la même page. L'état sérialisé étant un état de PAGE, une insertion
@@ -4064,7 +4206,12 @@ function saveEmpreintes(sync = true) {
  * @returns {{proprietes:Object, empreinte:Object, emprunt:boolean}|null}
  */
 function empreintePour(lien) {
-  return Empreintes.resoudre(empreintes, lien);
+  const exacte = Empreintes.resoudre(empreintes, lien);
+  if (exacte) return exacte;
+  const derivee = empreintesDerivees[Empreintes.cleVisuel(lien)];
+  return derivee
+    ? { proprietes: Empreintes.proprietesPour(derivee), empreinte: derivee, derivee: true }
+    : null;
 }
 
 function loadPresets() {
@@ -4252,6 +4399,14 @@ function remplirListePresets() {
 
 function ouvrirDeckModal() {
   if (!selectionIds.length) { showToast("Sélectionnez d'abord des KPI", 2600); return; }
+  /* Recomposer d'abord : sans cela la fenêtre annoncerait des relevés
+     qui, en réalité, se déduisent de ceux déjà faits. */
+  engendrerEmpreintes().then(bilan => {
+    if (bilan.engendrees) {
+      showToast("✨ " + bilan.engendrees + " empreinte(s) déduites de vos relevés", 3600);
+    }
+    renderDeckLignes();
+  });
   const titre = document.getElementById("deckTitleInput");
   if (titre && !titre.value) {
     const p = presets.find(x => x.id === presetCourant);
@@ -4457,7 +4612,8 @@ function etatVisuel(d) {
   /* L'empreinte vaut pour un lien précis, signet compris : c'est le
      signet qui porte les filtres, et donc ce qui distingue deux KPI
      partageant le même visuel. */
-  if (empreintePour(d.lien)) return { texte: "⚡ visuel", cls: " on" };
+  const emp = empreintePour(d.lien);
+  if (emp) return { texte: emp.derivee ? "✨ déduit" : "⚡ visuel", cls: " on" };
   /* Une empreinte du même visuel sur un autre signet : le lien a été
      repartagé depuis le relevé. Le dire épargne une longue recherche. */
   return Empreintes.empreinteDepassee(empreintes, d.lien)
@@ -4489,6 +4645,14 @@ function renderDeckLignes() {
   /* Le guidage ne s'affiche que tant qu'il reste des empreintes à
      relever : une fois le travail fait, il n'a plus rien à dire. */
   const guide = document.getElementById("deckGuide");
+  const nbDeduites = diapos.filter(d => { const e = empreintePour(d.lien); return e && e.derivee; }).length;
+  const compteur = document.getElementById("deckGuideCompte");
+  if (compteur) {
+    compteur.textContent = nbDeduites
+      ? nbDeduites + " diapositive(s) sont déduites de relevés existants — autant en moins à faire."
+      : "";
+    compteur.style.display = nbDeduites ? "block" : "none";
+  }
   if (guide) {
     const reste = diapos.some(d => d.lien && !empreintePour(d.lien));
     guide.classList.toggle("termine", !reste);

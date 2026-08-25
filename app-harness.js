@@ -5,7 +5,7 @@ const path = require("path");
 const { creerHarnais } = require("./harness-core.js");
 
 const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
-                  "js/zip.js", "js/empreintes.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/zip.js", "js/empreintes.js", "js/derivation.js", "js/pptx.js", "js/inspecter-deck.js",
                   "js/selection.js", "app.js"];
 
 function loadApp() {

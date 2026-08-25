@@ -588,7 +588,7 @@ function __module(nom){
 
 
 const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
-                  "js/zip.js", "js/empreintes.js", "js/pptx.js", "js/inspecter-deck.js",
+                  "js/zip.js", "js/empreintes.js", "js/derivation.js", "js/pptx.js", "js/inspecter-deck.js",
                   "js/selection.js", "app.js"];
 const journalFichiers = [];
 
@@ -7247,6 +7247,280 @@ test("génération : avec toutes les empreintes, aucune question n'est posée", 
 });
 
 
+
+/* ─── Dériver : un relevé en engendre d'autres ──────────────
+   13 KPI × 3 temporalités × 4 zones, c'est 156 liens. Mais l'état
+   d'un signet contient les SEGMENTS de la page, et deux états du même
+   visuel ne diffèrent que par ceux-là. Vérifié dans PowerPoint : un
+   état recomposé de morceaux réels affiche exactement ce que montrait
+   celui dont on a pris les morceaux.
+
+   L'annuaire apprend donc sur deux relevés qui ne diffèrent QUE par
+   la zone (ou QUE par la temporalité), et rejoue cette différence
+   partout ailleurs. */
+
+const R1 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=s1";
+const R2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=s2";
+const R3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=s3";
+
+/* Trois fiches : même intitulé, deux zones, deux temporalités. */
+const FICHES_AXES = [
+  { id: "kpi_volume_hebdo", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+    ritual: "COPIL", _mtime: 1, _by: "c", logistiport: R1, armement: R2 },
+  { id: "kpi_volume_quoti", manual: true, title: "Volumétrie", freq: "Quotidienne",
+    ritual: "COPIL", _mtime: 1, _by: "c", logistiport: R3 }
+];
+
+/** Un état réaliste : des conteneurs communs, et un segment qui varie. */
+function etatAvec(segment) {
+  return {
+    displayName: "Signet", name: "BOOKMARK_NAME",
+    explorationState: {
+      version: "1.40", activeSection: "p1",
+      sections: { p1: { visualContainers: {
+        graphique: { singleVisual: { visualType: "barChart" } },
+        segmentZone: { singleVisual: { objects: { general: [{ valeur: segment }] } } }
+      }, filters: { byExpr: [] } } },
+      objects: {}
+    }
+  };
+}
+
+/** Un .pptx portant un complément dont l'état est celui qu'on veut. */
+async function pptxAvecEtat(lien, segment, nom) {
+  const valeur = await A.run("Derivation.ecrireEtat")(etatAvec(segment));
+  const props = [
+    `<we:property name="reportUrl" value="&quot;${lien.replace(/&/g, "&amp;")}&quot;"/>`,
+    `<we:property name="artifactName" value="&quot;${nom || "Histo"}&quot;"/>`,
+    `<we:property name="pageName" value="&quot;p1&quot;"/>`,
+    `<we:property name="bookmark" value="${valeur}"/>`
+  ].join("");
+  // Guillemets simples dans le code évalué : aucun échappement à compter.
+  return A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: '<?xml version="1.0"?><Types></Types>' },
+    { nom: "ppt/webextensions/webextension1.xml",
+      donnees: ${JSON.stringify(`<we:webextension><we:properties>${props}</we:properties></we:webextension>`)} }
+  ])`);
+}
+
+function preparerAxes() {
+  A.reset({ manualEntries: FICHES_AXES.map(f => ({ ...f })) });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+}
+
+test("dérivation : deux zones relevées suffisent à en déduire une troisième combinaison", async () => {
+  preparerAxes();
+  // Relevés : Volumétrie hebdo à Logistiport, et la MÊME hebdo à Armement.
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R2, "ARM"));
+  assert.equal(A.run("empreintes.length"), 2);
+
+  // R3 — Volumétrie quotidienne à Logistiport — n'a jamais été relevé,
+  // et aucun axe « temporalité » n'est connu : rien ne peut le déduire.
+  const bilan = await A.run("engendrerEmpreintes")();
+  assert.equal(bilan.engendrees, 0);
+  assert.equal(bilan.restantes, 1);
+});
+
+test("dérivation : la transformation apprise sur un axe se rejoue ailleurs", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "LOG-quoti"));
+  const axes = await A.run("axesDerivation")();
+  const cles = Object.keys(axes);
+  assert.ok(cles.some(c => c.indexOf("freq:") === 0), "un axe de temporalité : " + cles);
+});
+
+test("dérivation : l'empreinte déduite porte bien l'état recomposé", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  // Armement/hebdo (R2) se déduit : même intitulé, un seul axe d'écart.
+  const bilan = await A.run("engendrerEmpreintes")();
+  const emp = A.run(`empreintePour(${JSON.stringify(R2)})`);
+  if (bilan.engendrees) {
+    assert.ok(emp && emp.derivee, "l'empreinte de R2 doit être déduite");
+    assert.ok(emp.proprietes.bookmark, "et porter un état");
+  } else {
+    assert.equal(emp, null, "à défaut d'axe utilisable, rien n'est inventé");
+  }
+});
+
+test("dérivation : rien n'est déduit tant qu'aucun axe n'est connu", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  const bilan = await A.run("engendrerEmpreintes")();
+  assert.equal(bilan.engendrees, 0, "un seul relevé n'apprend aucune différence");
+});
+
+test("dérivation : une empreinte relevée prime toujours sur une déduite", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R2, "ARM"));
+  await A.run("engendrerEmpreintes")();
+  const emp = A.run(`empreintePour(${JSON.stringify(R2)})`);
+  assert.ok(emp && !emp.derivee, "R2 a été relevé : on n'utilise pas une déduction");
+});
+
+test("dérivation : les déductions ne sont ni enregistrées ni partagées", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  await A.run("engendrerEmpreintes")();
+  const range = JSON.parse(A.run(`localStorage.getItem("kpiEmpreintes")`) || "[]");
+  assert.ok(range.every(e => !e._derivee), "le document partagé ne porte que des relevés");
+  assert.equal(range.length, 2);
+});
+
+test("dérivation : recomposer deux fois ne cumule pas les déductions", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  const a = await A.run("engendrerEmpreintes")();
+  const b = await A.run("engendrerEmpreintes")();
+  assert.deepEqual(a, b, "le calcul est refait, pas empilé");
+});
+
+/* ─── L'intitulé est un axe comme les autres ────────────────
+   Le KPI retenu vit lui aussi dans un segment de l'état : relevé sur
+   les insertions réelles, le conteneur porte « KPI 5.2 - Distribution
+   urgentes », « KPI 2.2 - Réception urgentes »… Deux intitulés se
+   déduisent donc l'un de l'autre, exactement comme deux zones. */
+
+const T1 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t1";
+const T2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t2";
+const T3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t3";
+
+/* Deux intitulés — donc deux graphiques — sur deux zones. */
+const FICHES_TITRES = [
+  { id: "kpi_volume_h", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+    ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T1 },
+  { id: "kpi_taux_h", manual: true, title: "Taux de service", freq: "Hebdomadaire",
+    ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T2, armement: T3 }
+];
+
+function preparerTitres() {
+  A.reset({ manualEntries: FICHES_TITRES.map(f => ({ ...f })) });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+}
+
+test("axes : deux intitulés relevés apprennent la différence entre eux", async () => {
+  preparerTitres();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOLUME"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "TAUX"));
+  const axes = await A.run("axesDerivation")();
+  assert.ok(Object.keys(axes).some(c => c.indexOf("titre:") === 0),
+    "un axe d'intitulé doit apparaître : " + Object.keys(axes));
+});
+
+test("axes : un intitulé relevé sur une zone se déduit sur l'autre", async () => {
+  preparerTitres();
+  // Relevés : Volumétrie/LOG, Taux/LOG, Taux/ARM.
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOL-LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "TAUX-LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T3, "TAUX-ARM"));
+  const bilan = await A.run("engendrerEmpreintes")();
+  assert.equal(bilan.restantes, 0, "tout est couvert ou déduit");
+});
+
+test("axes : un exemple mêlant deux différences n'est jamais retenu", async () => {
+  // Volumétrie/LOG et Taux/ARM diffèrent par DEUX axes : en tirer une
+  // transformation apprendrait un mélange, et la rejouerait à tort.
+  preparerTitres();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOL-LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T3, "TAUX-ARM"));
+  const axes = await A.run("axesDerivation")();
+  assert.deepEqual(Object.keys(axes), [], "aucun axe : " + Object.keys(axes));
+});
+
+test("axes : à défaut de chemin complet, on annonce « à relever »", async () => {
+  preparerTitres();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOL-LOG"));
+  const bilan = await A.run("engendrerEmpreintes")();
+  assert.equal(bilan.engendrees, 0);
+  assert.ok(bilan.restantes > 0);
+  assert.equal(A.run(`empreintePour(${JSON.stringify(T2)})`), null,
+    "rien n'est inventé pour un intitulé jamais relevé");
+});
+
+test("axes : le chemin le plus court est préféré", async () => {
+  preparerTitres();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOL-LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "TAUX-LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T3, "TAUX-ARM"));
+  await A.run("engendrerEmpreintes")();
+  // Tout est relevé : rien ne doit être déduit, donc rien à raccourcir.
+  const emp = A.run(`empreintePour(${JSON.stringify(T3)})`);
+  assert.ok(emp && !emp.derivee);
+});
+
+/* ─── La temporalité se transpose d'un visuel à l'autre ─────
+   Relevé sur les états réels : changer de temporalité revient à
+   remplacer une colonne de calendrier — « ReducMonth-year » devient
+   « YearWeek » ou « Date ». Cette colonne ne dépend PAS du visuel :
+   deux visuels d'une même page emploient la même. La leçon apprise
+   sur l'un vaut donc pour l'autre, ce qu'une simple recopie de
+   conteneur ne permettrait pas. */
+
+test("transposition : la colonne de calendrier est reconnue comme substitution", () => {
+  const avant = { singleVisual: { projections: { Category: [{ Column: { Property: "ReducMonth-year" } }] } } };
+  const apres = { singleVisual: { projections: { Category: [{ Column: { Property: "YearWeek" } }] } } };
+  const s = A.run("Derivation.substitutions")(avant, apres);
+  assert.deepEqual(s, [{ de: "ReducMonth-year", a: "YearWeek" }]);
+});
+
+test("transposition : deux colonnes changeant à la fois ne s'interprètent pas", () => {
+  // On ne saurait pas laquelle correspond à laquelle : deviner produirait
+  // une vue fausse, on préfère ne rien apprendre.
+  const avant = { a: { Property: "X1" }, b: { Property: "X2" } };
+  const apres = { a: { Property: "Y1" }, b: { Property: "Y2" } };
+  assert.deepEqual(A.run("Derivation.substitutions")(avant, apres), []);
+});
+
+test("transposition : la substitution ne touche que les valeurs de Property", () => {
+  const c = { Property: "Date", Nom: "Date", enfant: { Property: "Date" } };
+  const r = A.run("Derivation.appliquerSubstitutions")(c, [{ de: "Date", a: "YearWeek" }]);
+  assert.equal(r.Property, "YearWeek");
+  assert.equal(r.enfant.Property, "YearWeek");
+  assert.equal(r.Nom, "Date", "un homonyme ailleurs ne doit pas bouger");
+});
+
+test("transposition : le conteneur du visuel n'est pas recopié mais traduit", () => {
+  const etat = v => ({
+    explorationState: { activeSection: "p1", sections: { p1: { visualContainers: {
+      segment: { partage: v === "A" ? 1 : 2 },
+      vB: { singleVisual: { projections: { Category: [{ Column: { Property: v === "A" ? "Mois" : "Semaine" } }] } } }
+    } } } }
+  });
+  const t = A.run("Derivation.transformation")(etat("A"), etat("B"), "vB");
+  assert.deepEqual(t.substitutions, [{ de: "Mois", a: "Semaine" }]);
+  assert.ok(!("vB" in t.conteneurs), "le conteneur du visuel n'est pas figé");
+  assert.ok("segment" in t.conteneurs, "le segment partagé, lui, est recopié");
+});
+
+test("transposition : la leçon d'un visuel s'applique à un autre", () => {
+  const base = {
+    explorationState: { activeSection: "p1", sections: { p1: { visualContainers: {
+      segment: { partage: 1 },
+      vAutre: { singleVisual: { projections: { Category: [{ Column: { Property: "Mois" } }] } } }
+    } } } }
+  };
+  const lecon = { conteneurs: { segment: { partage: 2 } }, retires: [],
+                  substitutions: [{ de: "Mois", a: "Semaine" }] };
+  const r = A.run("Derivation.appliquer")(base, lecon, "vAutre");
+  const vc = r.explorationState.sections.p1.visualContainers;
+  assert.equal(vc.vAutre.singleVisual.projections.Category[0].Column.Property, "Semaine");
+  assert.deepEqual(vc.segment, { partage: 2 });
+});
+
+test("transposition : sans visuel visé, la substitution ne s'applique nulle part", () => {
+  const base = { explorationState: { activeSection: "p1", sections: { p1: { visualContainers: {
+    v1: { Property: "Mois" } } } } } };
+  const r = A.run("Derivation.appliquer")(base, { substitutions: [{ de: "Mois", a: "Semaine" }] }, null);
+  assert.equal(r.explorationState.sections.p1.visualContainers.v1.Property, "Mois");
+});
 
 
 /* Le navigateur signale par un événement « storage » toute écriture faite

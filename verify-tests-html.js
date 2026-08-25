@@ -66,6 +66,11 @@ const sandbox = {
 sandbox.Uint8Array = Uint8Array; sandbox.DataView = DataView;
 sandbox.TextEncoder = TextEncoder; sandbox.TextDecoder = TextDecoder;
 sandbox.Blob = Blob; sandbox.DecompressionStream = DecompressionStream;
+/* La dérivation compresse et décompresse les états : le contexte doit
+   offrir ce que le navigateur offre, sans quoi le banc mesurerait autre
+   chose que la page réelle. */
+sandbox.CompressionStream = CompressionStream;
+sandbox.Response = Response; sandbox.atob = atob; sandbox.btoa = btoa;
 sandbox.window = sandbox; sandbox.globalThis = sandbox; sandbox.self = sandbox;
 vm.createContext(sandbox);
 

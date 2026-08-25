@@ -335,3 +335,90 @@ test("relevé : les options en ligne de commande sont comprises", () => {
 test("relevé : une option inconnue est refusée plutôt que devinée", () => {
   assert.throws(() => R.options(["--nimporte"]), /Option inconnue/);
 });
+
+/* ═══ Dériver une empreinte d'une autre ═════════════════════
+   13 KPI × 3 temporalités × 4 zones, c'est 156 relevés manuels :
+   intenable. Or l'état d'un signet contient les SEGMENTS de la page —
+   KPI, priorité, dimension, code aire — et deux états du même visuel
+   ne diffèrent que par une poignée de conteneurs sur cinquante-quatre.
+
+   Ces tests éprouvent la dérivation. Reste une inconnue qui ne dépend
+   pas du code : le complément accepte-t-il un état ré-encodé ? C'est
+   la diapositive 2 du support produit qui le dira. */
+
+const DV = require("./outils/diagnostic-derivation.js");
+
+/** Un état minimal mais complet, à la forme de ceux de Power BI. */
+function etatDe(page, conteneurs, filtres) {
+  return {
+    displayName: "Signet", name: "BOOKMARK_NAME",
+    explorationState: {
+      version: "1.40", activeSection: page,
+      sections: { [page]: { visualContainers: conteneurs, filters: filtres || { byExpr: [] } } },
+      objects: {}
+    }
+  };
+}
+
+test("dérivation : compresser puis relire redonne l'objet de départ", () => {
+  const e = etatDe("p1", { v1: { a: 1 } });
+  assert.deepEqual(DV.lireEtat(DV.ecrireEtat(e)), e);
+});
+
+test("dérivation : seuls les conteneurs qui diffèrent sont relevés", () => {
+  const a = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "A" } });
+  const b = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "B" } });
+  assert.deepEqual(DV.conteneursDivergents(a, b), ["segment"]);
+});
+
+test("dérivation : l'état dérivé porte les segments de B", () => {
+  const a = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "A" } });
+  const b = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "B" } });
+  const d = DV.deriver(a, b);
+  assert.deepEqual(DV.section(d).visualContainers.segment, { kpi: "B" });
+  assert.deepEqual(DV.conteneursDivergents(d, b), [], "plus rien ne les distingue");
+});
+
+test("dérivation : tout ce qui ne diverge pas reste celui de A", () => {
+  const a = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "A" } }, { byExpr: [{ name: "fA" }] });
+  const b = etatDe("p1", { commun: { x: 1 }, segment: { kpi: "B" } }, { byExpr: [{ name: "fB" }] });
+  const d = DV.deriver(a, b);
+  assert.deepEqual(DV.section(d).filters, { byExpr: [{ name: "fA" }] },
+    "les filtres de section ne sont pas touchés");
+  assert.deepEqual(DV.section(d).visualContainers.commun, { x: 1 });
+});
+
+test("dérivation : l'état de départ n'est jamais modifié au passage", () => {
+  const a = etatDe("p1", { segment: { kpi: "A" } });
+  const avant = JSON.stringify(a);
+  DV.deriver(a, etatDe("p1", { segment: { kpi: "B" } }));
+  assert.equal(JSON.stringify(a), avant);
+});
+
+test("dérivation : un conteneur absent de B disparaît du dérivé", () => {
+  const a = etatDe("p1", { garde: { x: 1 }, parti: { y: 2 } });
+  const b = etatDe("p1", { garde: { x: 1 } });
+  assert.ok(!("parti" in DV.section(DV.deriver(a, b)).visualContainers));
+});
+
+test("dérivation : on choisit deux empreintes du MÊME visuel", () => {
+  const emp = (visuel, signet) => ({
+    id: "r1/p1/" + visuel + "/" + signet, signet,
+    proprietes: { bookmark: "b", artifactName: "a" }
+  });
+  assert.ok(DV.deuxDuMemeVisuel([emp("vA", "s1"), emp("vB", "s2"), emp("vA", "s3")]));
+  assert.equal(DV.deuxDuMemeVisuel([emp("vA", "s1"), emp("vB", "s2")]), null);
+});
+
+test("dérivation : une empreinte sans état n'est pas retenue comme paire", () => {
+  const sansEtat = { id: "r1/p1/vA/s2", signet: "s2", proprietes: { artifactName: "a" } };
+  const avec = { id: "r1/p1/vA/s1", signet: "s1", proprietes: { bookmark: "b", artifactName: "a" } };
+  assert.equal(DV.deuxDuMemeVisuel([avec, sansEtat]), null);
+});
+
+test("dérivation : le lien se reconstitue depuis la clé et le signet", () => {
+  const lien = DV.lienDe({ id: "6a4c/p1/vA/sig-1", signet: "sig-1" });
+  assert.match(lien, /reports\/6a4c\/p1\?/);
+  assert.match(lien, /visual=vA/);
+  assert.match(lien, /bookmarkGuid=sig-1/);
+});

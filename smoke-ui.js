@@ -162,6 +162,35 @@ const serveur = http.createServer((req, res) => {
     if (etats.autreSignet) throw new Error("un autre signet a emprunté à tort");
   });
 
+  await etape("une empreinte relevée en engendre d'autres dans un vrai navigateur", async () => {
+    // La compression du navigateur (CompressionStream) est exercée pour de
+    // bon : c'est elle qui produit l'état de l'empreinte déduite.
+    const r = await page.evaluate(async () => {
+      const base = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1";
+      const etat = {
+        displayName: "S", name: "BOOKMARK_NAME",
+        explorationState: { version: "1.40", activeSection: "p1",
+          sections: { p1: { visualContainers: { g: { t: 1 }, seg: { zone: "LOG" } }, filters: {} } },
+          objects: {} }
+      };
+      const autre = JSON.parse(JSON.stringify(etat));
+      autre.explorationState.sections.p1.visualContainers.seg = { zone: "ARM" };
+
+      const t = Derivation.transformation(etat, autre);
+      const derive = Derivation.appliquer(etat, t);
+      const valeur = await Derivation.ecrireEtat(derive);
+      const relu = await Derivation.lireEtat(valeur);
+      return {
+        zone: relu.explorationState.sections.p1.visualContainers.seg.zone,
+        graphiqueIntact: relu.explorationState.sections.p1.visualContainers.g.t === 1,
+        cle: Empreintes.cleVisuel(base + "&bookmarkGuid=s9")
+      };
+    });
+    if (r.zone !== "ARM") throw new Error("segment non transposé : " + r.zone);
+    if (!r.graphiqueIntact) throw new Error("le reste de l'état a été abîmé");
+    if (!/\/s9$/.test(r.cle)) throw new Error("clé : " + r.cle);
+  });
+
   await etape("le support produit embarque la mémoire du complément", async () => {
     const noms = await page.evaluate(async () => {
       const { diapos } = Selection.resoudrePreset(selectionCourante(),

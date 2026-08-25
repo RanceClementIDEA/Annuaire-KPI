@@ -246,14 +246,16 @@ Pour reprendre un lien fautif : dans Power BI, sur **le visuel**, `…` → **Pa
 | `js/pptx.js` | fabrique du support : diapositives, liens, images, sommaire |
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
+| `js/derivation.js` | recompose une empreinte à partir d'autres : zones et temporalités |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
+| `outils/diagnostic-derivation.js` | une empreinte peut-elle en engendrer d'autres ? |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/verifier-liens.js` | audit des liens : visuel, page ou bandeau |
 | `outils/verifier-deck.js` | contrôle d'un support produit, diapositive par diapositive |
 | `js/inspecter-deck.js` | lecture d'un .pptx produit (partagée page web / ligne de commande) |
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 313 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 331 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -295,7 +297,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 751 tests (dont 313 pour cette fonctionnalité)
+node --test              # 767 tests (dont 331 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)
@@ -303,6 +305,75 @@ node verify-tests-html.js
 npm run smoke            # parcours réel dans Chromium (npx playwright install chromium)
 npm run lint
 ```
+
+## Un relevé en engendre d'autres
+
+13 KPI × 3 temporalités × 4 zones, c'est **156 liens**. Autant de relevés : intenable.
+
+L'état d'un signet contient les **segments de la page** — le KPI retenu, la priorité, la
+dimension d'affichage, le code aire. Deux états du même visuel ne diffèrent que par **2 à
+10 conteneurs sur 54**, exactement ceux-là.
+
+Vérifié dans PowerPoint, et c'est ce qui change tout :
+
+| | |
+|---|---|
+| un état décompressé puis recompressé à l'identique | ✅ s'affiche |
+| un état dont on a recopié les conteneurs divergents d'un autre | ✅ affiche **exactement** ce que montrait le second |
+
+#### Ce qu'est vraiment une temporalité
+
+Relevé sur les états réels : changer de temporalité revient à **remplacer une colonne de
+calendrier**.
+
+| Visuel | Mensuel → autre |
+|---|---|
+| `14bddbd2` | `ReducMonth-year` → `Date` |
+| `d62c8a33` | `ReducMonth-year` → `YearWeek` |
+| `2d4bfd20` | `Groupe Mois Fin Short` → `Groupe Semaine Fin` |
+
+Et cette colonne **ne dépend pas du visuel** : deux visuels d'une même page emploient la
+même. La leçon apprise sur l'un vaut donc pour l'autre — ce qu'une simple recopie de
+conteneur ne permettrait pas, puisque chaque visuel a le sien.
+
+L'annuaire distingue donc deux choses dans une leçon :
+
+- les **segments partagés** de la page, recopiés tels quels ;
+- la **substitution de colonne**, rejouée dans le conteneur du visuel VISÉ.
+
+Une substitution n'est retenue que si une seule colonne change. Au-delà, on ne saurait pas
+laquelle correspond à laquelle, et deviner produirait une vue fausse.
+
+Il y a **trois axes**, et l'intitulé en fait partie : le KPI retenu vit lui aussi dans un
+segment. Relevé sur les insertions réelles, ce conteneur porte
+`'KPI 5.2 - Distribution urgentes'`, `'KPI 2.2 - Réception urgentes'`… Deux intitulés se
+déduisent donc l'un de l'autre, exactement comme deux zones — **même quand le graphique
+n'est pas le même**, car c'est le lien qui désigne le visuel, pas l'état.
+
+L'annuaire apprend sur deux relevés qui ne diffèrent **que** par un axe, et rejoue cette
+différence partout ailleurs. Il choisit le chemin le plus court, et refuse tout chemin dont
+deux étapes toucheraient les mêmes segments — mieux vaut annoncer `à relever` qu'une vue
+fausse. La fenêtre marque `✨ déduit` les diapositives obtenues ainsi.
+
+**Ce qu'il faut relever à la main**, une fois : un KPI de départ, puis **un exemple par
+valeur d'axe** — un par intitulé supplémentaire, un par zone supplémentaire, un par
+temporalité supplémentaire. Sur 13 intitulés, 4 zones et 3 temporalités :
+**1 + 12 + 3 + 2 = 18 relevés au lieu de 156.**
+
+On ne fabrique jamais rien : on **recopie** ce que Power BI a lui-même écrit. Un état
+inventé est rejeté — c'est vérifié — mais un état recomposé de morceaux réels ne l'est pas.
+
+Les empreintes déduites ne durent que la session : ni enregistrées, ni partagées. 156 états
+de 5 Ko feraient éclater le document commun, et il vaut mieux les recalculer que les voir
+vieillir.
+
+## Ce qui reste à faire à la main
+
+Un relevé par intitulé, plus un exemple par zone et par temporalité. Le guidage de la
+fenêtre l'explique, et s'efface quand il n'y a plus rien à relever.
+
+`outils/diagnostic-derivation.js` a servi à établir tout ce qui précède ; il reste au
+dépôt pour qu'on puisse le refaire si le complément Power BI change de comportement.
 
 ## Points restés ouverts
 
