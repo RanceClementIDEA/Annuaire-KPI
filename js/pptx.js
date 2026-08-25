@@ -305,11 +305,12 @@
   function avecEmpreinte(diapo, empreintes) {
     const d = diapo || {};
     if (!empreintes || !Emp || !d.vivant || !d.lien) return d;
-    const emp = Emp.trouver(empreintes, d.lien);
-    const props = emp && Emp.proprietesPour(emp);
-    if (!props) return d;
+    /* À défaut d'empreinte pour CE visuel, celle d'un voisin de la même
+       page fait l'affaire : l'état sérialisé est un état de page. */
+    const resolu = Emp.resoudre(empreintes, d.lien);
+    if (!resolu) return d;
     return Object.assign({}, d, {
-      proprietesComplement: Object.assign({}, props, d.proprietesComplement || {})
+      proprietesComplement: Object.assign({}, resolu.proprietes, d.proprietesComplement || {})
     });
   }
 

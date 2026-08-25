@@ -115,6 +115,17 @@
        masquerait la vraie. */
     if (!props.artifactName) return null;
 
+    /* Garde-fou : la page mémorisée doit être celle du lien.
+       Un support de diagnostic — ou n'importe quel fichier où l'on a posé
+       l'état d'une page sur le visuel d'une autre — porte un complément
+       qui a l'air d'une insertion manuelle mais dont l'état appartient à
+       une AUTRE page. Le relever produirait une empreinte piégée : elle
+       prétendrait couvrir une page dont elle n'a pas l'état, et
+       empêcherait de relever la vraie. */
+    const pageLien = pageDeCle(id).split("/")[1] || "";
+    const pageMemorisee = dechapper(props.pageName || "").replace(/^"|"$/g, "");
+    if (pageLien && pageMemorisee && pageLien !== pageMemorisee) return null;
+
     const emp = normaliserEmpreinte({ id, proprietes: props }, o);
     if (!emp.libelle) emp.libelle = dechapper(props.artifactName).replace(/^"|"$/g, "");
     return Object.keys(emp.proprietes).length ? emp : null;
@@ -143,16 +154,77 @@
   }
 
   /**
+   * Clé de la PAGE d'un lien : rapport + page, sans le visuel.
+   * L'état sérialisé est un état de page — filtres et segments de toute
+   * la page, où le visuel visé n'est qu'un objet parmi les autres. Il
+   * vaut donc pour tous les visuels de cette page.
+   * @returns {string} "" si le lien ne désigne pas une page de rapport
+   */
+  function clePage(lien) {
+    return pageDeCle(cleVisuel(lien));
+  }
+
+  /** La partie « rapport/page » d'une clé déjà construite. */
+  function pageDeCle(cle) {
+    const bouts = String(cle || "").split("/");
+    return bouts.length >= 2 && bouts[1] ? bouts[0] + "/" + bouts[1] : "";
+  }
+
+  /** Les empreintes sous forme de liste, qu'on en donne une liste ou un dictionnaire. */
+  function liste(empreintes) {
+    return Array.isArray(empreintes)
+      ? empreintes
+      : Object.keys(empreintes || {}).map(k => empreintes[k]);
+  }
+
+  /**
    * Empreinte correspondant à un lien, dans une liste ou un dictionnaire.
    * @returns {Object|null}
    */
   function trouver(empreintes, lien) {
     const cle = cleVisuel(lien);
     if (!cle) return null;
-    const liste = Array.isArray(empreintes)
-      ? empreintes
-      : Object.keys(empreintes || {}).map(k => empreintes[k]);
-    return liste.find(e => e && e.id === cle) || null;
+    return liste(empreintes).find(e => e && e.id === cle) || null;
+  }
+
+  /**
+   * Empreinte d'un AUTRE visuel de la même page.
+   *
+   * Vérifié en conditions réelles : l'état relevé sur un visuel restitue
+   * correctement un autre visuel de la même page. C'est ce qui fait toute
+   * la différence de charge de travail — une insertion manuelle par PAGE
+   * au lieu d'une par KPI.
+   *
+   * @returns {Object|null}
+   */
+  function trouverParPage(empreintes, lien) {
+    const page = clePage(lien);
+    if (!page) return null;
+    return liste(empreintes)
+      .filter(e => e && e.proprietes && e.proprietes.bookmark && pageDeCle(e.id) === page)
+      .sort((a, b) => (b._mtime || 0) - (a._mtime || 0))[0] || null;
+  }
+
+  /**
+   * Ce qu'il faut poser sur une diapositive pour ce lien, empreinte de
+   * page comprise.
+   *
+   * @returns {{proprietes:Object, empreinte:Object, emprunt:boolean}|null}
+   */
+  function resoudre(empreintes, lien) {
+    const exacte = trouver(empreintes, lien);
+    if (exacte) {
+      const props = proprietesPour(exacte);
+      if (props) return { proprietes: props, empreinte: exacte, emprunt: false };
+    }
+    const voisine = trouverParPage(empreintes, lien);
+    if (!voisine) return null;
+    const props = proprietesPour(voisine);
+    if (!props) return null;
+    /* `artifactName` nomme l'AUTRE visuel : le laisser afficherait une
+       étiquette fausse. Vérifié : son absence n'empêche rien. */
+    delete props.artifactName;
+    return { proprietes: props, empreinte: voisine, emprunt: true };
   }
 
   /** Même arbitrage que les sélections : le plus récent l'emporte. */
@@ -194,13 +266,18 @@
    */
   function empreinteComplete(empreinte) {
     const props = empreinte && empreinte.proprietes ? empreinte.proprietes : {};
-    return Boolean(props.artifactName && props.bookmark);
+    /* Seul l'état compte. Vérifié : une diapositive privée d'artifactName,
+       mais portant l'état réel, affiche le graphique — ce nom n'est qu'une
+       étiquette. Il sert au relevé (c'est la marque d'une insertion faite à
+       la main), pas à l'affichage. */
+    return Boolean(props.bookmark);
   }
 
   const API = {
     CHAMPS, CHAMPS_DE_SESSION, CHAMPS_ETAT,
-    cleVisuel, normaliserEmpreinte, creerEmpreinte, proprietesPour,
-    trouver, fusionnerEmpreintes, poids, empreinteComplete, dechapper
+    cleVisuel, clePage, pageDeCle, normaliserEmpreinte, creerEmpreinte, proprietesPour,
+    trouver, trouverParPage, resoudre, fusionnerEmpreintes, poids,
+    empreinteComplete, dechapper
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = API;
