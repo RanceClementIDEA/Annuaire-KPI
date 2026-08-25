@@ -17,7 +17,11 @@ export default [
         ZipMini: "readonly", PptxDeck: "readonly", Selection: "readonly", Empreintes: "readonly", Derivation: "readonly",
         InspecteurDeck: "readonly",
         TextEncoder: "readonly", TextDecoder: "readonly",
-        DecompressionStream: "readonly", DataView: "readonly",
+        DecompressionStream: "readonly", CompressionStream: "readonly",
+        Response: "readonly", DataView: "readonly",
+        /* js/derivation.js tourne des deux côtés : gzip par `zlib` sous
+           Node, par les flux du navigateur ailleurs. */
+        Buffer: "readonly",
         fetch: "readonly", alert: "readonly", prompt: "readonly", location: "readonly",
         // Double exposition : fichier <script> dans le navigateur, module sous Node
         module: "readonly", require: "readonly",

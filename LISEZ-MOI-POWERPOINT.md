@@ -133,6 +133,23 @@ L'empreinte mémorise donc le signet dont son état provient, et la fenêtre de 
 prévient : `⚠ autre vue`. L'état reste posé — sans lui le complément ne résout rien —
 mais on ne prétend plus que la diapositive est juste.
 
+#### Les empreintes livrées avec l'annuaire
+
+`empreintes-livrees.json`, déposé à côté d'`index.html`, est chargé au démarrage. Il porte
+les empreintes déjà relevées : **rien à importer**, ces KPI marchent dès le déploiement.
+
+Il ne fait que COMBLER — ce qui est déjà connu localement ou partagé par l'équipe l'emporte
+toujours. Son absence n'est pas une erreur : l'annuaire démarre normalement sans lui.
+
+Pour le régénérer après de nouveaux relevés :
+
+```bash
+node outils/relever-empreintes.js *.pptx --sortie empreintes-livrees.json
+```
+
+⚠️ Ce fichier contient l'état sérialisé des pages du rapport — noms de tables, de colonnes
+et de filtres. C'est de la métadonnée métier : à garder dans un dépôt privé.
+
 #### Relever une empreinte
 
 L'unique geste manuel, **une fois par KPI**. La fenêtre de génération le guide en trois
@@ -248,6 +265,7 @@ Pour reprendre un lien fautif : dans Power BI, sur **le visuel**, `…` → **Pa
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
 | `js/derivation.js` | recompose une empreinte à partir d'autres : zones et temporalités |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
+| `empreintes-livrees.json` | empreintes déjà relevées, chargées au démarrage — **doit être déployé** |
 | `outils/diagnostic-derivation.js` | une empreinte peut-elle en engendrer d'autres ? |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/verifier-liens.js` | audit des liens : visuel, page ou bandeau |

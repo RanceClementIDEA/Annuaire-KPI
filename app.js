@@ -4088,7 +4088,12 @@ function variantesAvecLien() {
  * On n'invente aucune valeur : on relève ce que Power BI a écrit d'un
  * côté et de l'autre, et on le rejoue ailleurs.
  *
- * @returns {Promise<Object>} { "site:a→b": transformation, "freq:x→y": … }
+ * Une leçon ne vaut QUE sur la page de rapport où elle a été apprise :
+ * les conteneurs sont identifiés page par page, et rejouer ceux d'une
+ * page sur une autre n'ajouterait que du bruit. La clé porte donc la
+ * page en tête.
+ *
+ * @returns {Promise<Object>} { "rapport/page|site:a→b": transformation, … }
  */
 async function axesDerivation() {
   const variantes = variantesAvecLien();
@@ -4102,6 +4107,9 @@ async function axesDerivation() {
     for (let j = 0; j < connues.length; j++) {
       if (i === j) continue;
       const a = connues[i], b = connues[j];
+      /* Même page, sinon les conteneurs ne parlent pas de la même chose. */
+      const page = Empreintes.pageDeCle(a.emp.id);
+      if (!page || page !== Empreintes.pageDeCle(b.emp.id)) continue;
       // Deux empreintes ne servent d'exemple que si UN SEUL axe les sépare.
       const memeTitre = a.v.titre === b.v.titre;
       const memeSite = a.v.site === b.v.site;
@@ -4114,9 +4122,10 @@ async function axesDerivation() {
                 : memeTitre && memeSite && !memeFreq ? "freq"
                 : memeSite && memeFreq && !memeTitre ? "titre" : "";
       if (!axe) continue;
-      const cle = axe + ":" + (axe === "site" ? a.v.site + "→" + b.v.site
-                             : axe === "freq" ? a.v.freq + "→" + b.v.freq
-                                              : a.v.titre + "→" + b.v.titre);
+      const cle = page + "|" + axe + ":"
+                + (axe === "site" ? a.v.site + "→" + b.v.site
+                 : axe === "freq" ? a.v.freq + "→" + b.v.freq
+                                  : a.v.titre + "→" + b.v.titre);
       if (axes[cle]) continue;
       try {
         /* Le visuel de l'exemple est passé : son conteneur ne sera pas
@@ -4155,21 +4164,25 @@ async function engendrerEmpreintes() {
     if (!cle || parCle.has(cle)) continue;
 
     /* Une base, et le chemin le plus court pour l'amener à la cible :
-       moins on transforme, moins on risque de se tromper. */
+       moins on transforme, moins on risque de se tromper.
+       La base doit vivre sur la MÊME page de rapport que la cible :
+       hors de sa page, un conteneur ne désigne plus rien. */
+    const page = Empreintes.pageDeCle(cle);
+    const lecon = axe => axes[page + "|" + axe];
     const candidats = [...parCle.values()]
       .map(e => ({ emp: e, v: varianteDe.get(e.id) }))
-      .filter(x => x.v)
+      .filter(x => x.v && Empreintes.pageDeCle(x.emp.id) === page)
       .map(x => ({
         base: x,
         etapes: [
-          x.v.titre !== cible.titre ? axes["titre:" + x.v.titre + "→" + cible.titre] : null,
-          x.v.site !== cible.site ? axes["site:" + x.v.site + "→" + cible.site] : null,
-          x.v.freq !== cible.freq ? axes["freq:" + x.v.freq + "→" + cible.freq] : null
+          x.v.titre !== cible.titre ? lecon("titre:" + x.v.titre + "→" + cible.titre) : null,
+          x.v.site !== cible.site ? lecon("site:" + x.v.site + "→" + cible.site) : null,
+          x.v.freq !== cible.freq ? lecon("freq:" + x.v.freq + "→" + cible.freq) : null
         ],
         manquant: [
-          x.v.titre !== cible.titre && !axes["titre:" + x.v.titre + "→" + cible.titre],
-          x.v.site !== cible.site && !axes["site:" + x.v.site + "→" + cible.site],
-          x.v.freq !== cible.freq && !axes["freq:" + x.v.freq + "→" + cible.freq]
+          x.v.titre !== cible.titre && !lecon("titre:" + x.v.titre + "→" + cible.titre),
+          x.v.site !== cible.site && !lecon("site:" + x.v.site + "→" + cible.site),
+          x.v.freq !== cible.freq && !lecon("freq:" + x.v.freq + "→" + cible.freq)
         ].some(Boolean)
       }))
       .filter(c => !c.manquant)
@@ -4562,11 +4575,34 @@ async function importerEmpreintes(fichier) {
  * @returns {Promise<{nom:string, diapos:number}|null>}
  */
 async function preparerReleve() {
-  const preset = selectionCourante();
-  const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
-  const aFaire = diapos.filter(d => d.lien && !empreintePour(d.lien));
+  /* D'abord déduire : inutile de réclamer ce que l'annuaire sait déjà
+     recomposer. Ce qui reste est le strict nécessaire. */
+  await engendrerEmpreintes();
+
+  const sites = activeSites();
+  const nomZone = c => (sites.find(s => s.key === c) || {}).name || c;
+  const aFaire = variantesAvecLien()
+    .filter(v => !empreintePour(v.lien))
+    .map(v => ({
+      titre: [v.titre, v.freq, nomZone(v.site)].filter(Boolean).join(" · "),
+      lien: v.lien
+    }))
+    .sort((a, b) => a.titre.localeCompare(b.titre, "fr"));
+
+  /* Deux lignes peuvent porter le même intitulé et pointer ailleurs :
+     on les numérote, sinon on ne saurait pas laquelle on remplit. */
+  const compte = {};
+  aFaire.forEach(d => { compte[d.titre] = (compte[d.titre] || 0) + 1; });
+  const vus = {};
+  aFaire.forEach(d => {
+    if (compte[d.titre] < 2) return;
+    vus[d.titre] = (vus[d.titre] || 0) + 1;
+    d.titre += " (vue " + vus[d.titre] + "/" + compte[d.titre] + ")";
+  });
+  aFaire.forEach((d, i) => { d.titre = (i + 1) + ". " + d.titre; });
+
   if (!aFaire.length) {
-    showToast("Tous les KPI sélectionnés ont déjà leur empreinte 👍", 3000);
+    showToast("Tout l'annuaire a son empreinte 👍", 3000);
     return null;
   }
 
@@ -4595,7 +4631,7 @@ async function preparerReleve() {
     return null;
   }
 
-  const nom = "releve-empreintes-" + Selection.slug(preset.name || "selection") + ".pptx";
+  const nom = "releve-empreintes.pptx";
   telechargerOctets(octets, nom);
   showToast("📋 " + aFaire.length + " diapositive(s) à compléter — "
     + "collez le lien affiché dans le complément Power BI, puis relevez le fichier", 6000);

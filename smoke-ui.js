@@ -60,6 +60,19 @@ const serveur = http.createServer((req, res) => {
     catch (e) { console.log("  ✗ " + nom + " → " + e.message); process.exitCode = 1; }
   };
 
+  await etape("les empreintes livrées sont chargées au démarrage", async () => {
+    // empreintes-livrees.json est déposé à côté d'index.html : rien à
+    // importer, les visuels déjà relevés marchent dès le déploiement.
+    const etat = await page.evaluate(() => ({
+      nb: empreintes.length,
+      avecEtat: empreintes.every(e => !!e.proprietes.bookmark),
+      avecSignet: empreintes.every(e => e.id.split("/").length === 4)
+    }));
+    if (!etat.nb) throw new Error("aucune empreinte livrée n'a été chargée");
+    if (!etat.avecEtat) throw new Error("une empreinte livrée n'a pas d'état sérialisé");
+    if (!etat.avecSignet) throw new Error("une empreinte livrée n'est pas rattachée à un signet");
+  });
+
   await etape("l'annuaire affiche les 3 KPI", async () => {
     const n = await page.locator("#kpiContainer .card").count();
     if (n !== 3) throw new Error("cartes affichées : " + n);

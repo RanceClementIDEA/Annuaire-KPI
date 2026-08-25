@@ -883,55 +883,64 @@ test("signet : deux KPI d'un même visuel gardent chacun son empreinte", async (
 });
 
 /* ─── Le support de relevé ─────────────────────────────────
-   Une insertion par KPI reste nécessaire : autant la rendre courte.
-   Le support porte, pour chaque KPI encore sans empreinte, son nom et
-   son lien EN CLAIR — celui de l'annuaire, pas un lien repartagé. */
+   Une insertion par lien reste nécessaire : autant la rendre courte
+   et sans ambiguïté.
 
-test("relevé : une diapositive par KPI encore dépourvu d'empreinte", async () => {
+   Le support couvre TOUT l'annuaire, pas la seule sélection : c'est
+   l'annuaire qui détient les liens à jour, et une empreinte relevée
+   sert ensuite à n'importe quelle sélection. Chaque diapositive porte
+   son numéro, son intitulé, sa temporalité, sa zone — et le lien EN
+   CLAIR, celui de l'annuaire, jamais un lien repartagé. */
+
+test("relevé : le support couvre tout l'annuaire, pas la seule sélection", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");   // une seule fiche cochée
   const r = await A.run("preparerReleve")();
-  assert.equal(r.diapos, 2);
-  assert.match(r.nom, /^releve-empreintes-.*\.pptx$/);
+  assert.equal(r.diapos, 3, "les trois fiches porteuses d'un lien, pas une");
+  assert.equal(r.nom, "releve-empreintes.pptx");
+});
+
+test("relevé : chaque diapositive se nomme intitulé · temporalité · zone", async () => {
+  preparerDeck();
+  const titres = await A.run(`(async function () {
+    await engendrerEmpreintes();
+    const sites = activeSites();
+    const nomZone = c => (sites.find(s => s.key === c) || {}).name || c;
+    return variantesAvecLien().filter(v => !empreintePour(v.lien))
+      .map(v => [v.titre, v.freq, nomZone(v.site)].filter(Boolean).join(" · "))
+      .sort((a, b) => a.localeCompare(b, "fr"));
+  })()`);
+  assert.ok(titres.every(t => t.split(" · ").length === 3), "trois parties : " + titres);
+  assert.ok(titres.some(t => /^Volumétrie Logistiport · Hebdomadaire · /.test(t)), titres);
 });
 
 test("relevé : les KPI déjà couverts n'y figurent pas", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
-  assert.equal((await A.run("preparerReleve")()).diapos, 1);
+  assert.equal((await A.run("preparerReleve")()).diapos, 2, "il en restait trois, une est relevée");
 });
 
 test("relevé : quand tout est couvert, rien n'est produit et on le dit", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  preparerDeck({ manualEntries: [{ id: "kpi_seul", manual: true, title: "Volumétrie Logistiport",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 100, _by: "marie", logistiport: SIGNET_KPI }] });
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
   assert.equal(await A.run("preparerReleve")(), null);
-  assert.match(A.dernierMessage(), /déjà leur empreinte/);
+  assert.match(A.dernierMessage(), /Tout l'annuaire/);
 });
 
 test("relevé : le lien est écrit en clair, prêt à être copié", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  const diapos = A.run(`(function () {
-    const { diapos } = Selection.resoudrePreset(selectionCourante(),
-      [...data, ...personalEntries], activeSites());
-    return diapos.filter(d => d.lien && !empreintePour(d.lien)).map(d => d.lien);
-  })()`);
-  assert.deepEqual(diapos, [SIGNET_KPI], "c'est bien le lien de l'annuaire qui sera affiché");
+  preparerDeck({ manualEntries: [{ id: "kpi_seul", manual: true, title: "Volumétrie Logistiport",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 100, _by: "marie", logistiport: SIGNET_KPI }] });
+  const liens = A.run(`variantesAvecLien().filter(v => !empreintePour(v.lien)).map(v => v.lien)`);
+  assert.deepEqual(liens, [SIGNET_KPI], "c'est bien le lien de l'annuaire qui sera affiché");
 });
 
 test("relevé : un KPI sans lien n'encombre pas le support", async () => {
-  preparerDeck();
-  A.basculerSelection("kpi_anticipation_mensuelle");   // sans lien
+  preparerDeck({ manualEntries: [{ id: "kpi_anticipation_mensuelle", manual: true,
+    title: "Anticipation des demandes", freq: "Mensuelle", ritual: "Revue mensuelle",
+    _mtime: 100, _by: "marie" }] });
   assert.equal(await A.run("preparerReleve")(), null);
 });
 
@@ -992,27 +1001,30 @@ const FICHES_AXES = [
 ];
 
 /** Un état réaliste : des conteneurs communs, et un segment qui varie. */
-function etatAvec(segment) {
+function etatAvec(segment, page) {
+  const p = page || "p1";
+  const conteneurs = {
+    graphique: { singleVisual: { visualType: "barChart" } },
+    segmentZone: { singleVisual: { objects: { general: [{ valeur: segment }] } } }
+  };
   return {
     displayName: "Signet", name: "BOOKMARK_NAME",
     explorationState: {
-      version: "1.40", activeSection: "p1",
-      sections: { p1: { visualContainers: {
-        graphique: { singleVisual: { visualType: "barChart" } },
-        segmentZone: { singleVisual: { objects: { general: [{ valeur: segment }] } } }
-      }, filters: { byExpr: [] } } },
+      version: "1.40", activeSection: p,
+      sections: { [p]: { visualContainers: conteneurs, filters: { byExpr: [] } } },
       objects: {}
     }
   };
 }
 
 /** Un .pptx portant un complément dont l'état est celui qu'on veut. */
-async function pptxAvecEtat(lien, segment, nom) {
-  const valeur = await A.run("Derivation.ecrireEtat")(etatAvec(segment));
+async function pptxAvecEtat(lien, segment, nom, page) {
+  const p = page || "p1";
+  const valeur = await A.run("Derivation.ecrireEtat")(etatAvec(segment, p));
   const props = [
     `<we:property name="reportUrl" value="&quot;${lien.replace(/&/g, "&amp;")}&quot;"/>`,
     `<we:property name="artifactName" value="&quot;${nom || "Histo"}&quot;"/>`,
-    `<we:property name="pageName" value="&quot;p1&quot;"/>`,
+    `<we:property name="pageName" value="&quot;${p}&quot;"/>`,
     `<we:property name="bookmark" value="${valeur}"/>`
   ].join("");
   // Guillemets simples dans le code évalué : aucun échappement à compter.
@@ -1049,7 +1061,7 @@ test("dérivation : la transformation apprise sur un axe se rejoue ailleurs", as
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "LOG-quoti"));
   const axes = await A.run("axesDerivation")();
   const cles = Object.keys(axes);
-  assert.ok(cles.some(c => c.indexOf("freq:") === 0), "un axe de temporalité : " + cles);
+  assert.ok(cles.some(c => /\|freq:/.test(c)), "un axe de temporalité, porté par sa page : " + cles);
 });
 
 test("dérivation : l'empreinte déduite porte bien l'état recomposé", async () => {
@@ -1065,6 +1077,36 @@ test("dérivation : l'empreinte déduite porte bien l'état recomposé", async (
   } else {
     assert.equal(emp, null, "à défaut d'axe utilisable, rien n'est inventé");
   }
+});
+
+/* Une leçon vaut pour SA page de rapport et pour elle seule : les
+   conteneurs sont identifiés page par page, et rejouer ceux d'une page
+   sur une autre ne produirait que du bruit. Les KPI de l'annuaire
+   couvrent deux pages : le garde-fou n'est pas théorique. */
+
+const P2A = "https://app.powerbi.com/groups/me/reports/r1/p2?pbi_source=shareVisual&visual=v9&bookmarkGuid=s9";
+const P2B = "https://app.powerbi.com/groups/me/reports/r1/p2?pbi_source=shareVisual&visual=v9&bookmarkGuid=s10";
+
+test("dérivation : une leçon apprise sur une page ne s'applique pas à une autre", async () => {
+  A.reset({ manualEntries: [
+    { id: "kpi_v_hebdo", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: R1, armement: P2A },
+    { id: "kpi_v_quoti", manual: true, title: "Volumétrie", freq: "Quotidienne",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: R3, armement: P2B }
+  ] });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+
+  // La temporalité est apprise sur la page p1…
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "LOG-quoti"));
+  // …et une base existe sur p2, mais aucune leçon n'y a été apprise.
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(P2A, "ARM", "Histo", "p2"));
+
+  const bilan = await A.run("engendrerEmpreintes")();
+  assert.equal(A.run(`empreintePour(${JSON.stringify(P2B)})`), null,
+    "hors de sa page, la leçon ne vaut rien : mieux vaut réclamer un relevé");
+  assert.equal(bilan.restantes, 1);
 });
 
 test("dérivation : rien n'est déduit tant qu'aucun axe n'est connu", async () => {
@@ -1131,7 +1173,7 @@ test("axes : deux intitulés relevés apprennent la différence entre eux", asyn
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "VOLUME"));
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "TAUX"));
   const axes = await A.run("axesDerivation")();
-  assert.ok(Object.keys(axes).some(c => c.indexOf("titre:") === 0),
+  assert.ok(Object.keys(axes).some(c => /\|titre:/.test(c)),
     "un axe d'intitulé doit apparaître : " + Object.keys(axes));
 });
 
