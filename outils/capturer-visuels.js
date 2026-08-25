@@ -51,9 +51,26 @@ const SELECTEURS = [
   ".exploreCanvas"
 ];
 
+/* La PAGE entière du rapport : le canevas, sélecteurs de dates et
+   filtres compris. C'est ce qu'on veut quand le visuel seul ne suffit
+   pas à comprendre ce qu'on regarde. */
+const SELECTEURS_PAGE = ["#pvExplorationHost", ".exploreCanvas", "#reportCanvas"];
+
+/**
+ * Les conteneurs à essayer, du plus précis au plus large.
+ * En mode page entière, le canevas du rapport passe DEVANT : sans cela
+ * le conteneur du visuel serait trouvé le premier, et on capturerait le
+ * graphique seul — précisément ce qu'on cherchait à éviter.
+ */
+function ciblesPour(entiere) {
+  if (!entiere) return SELECTEURS.slice();
+  const vus = new Set(SELECTEURS_PAGE);
+  return SELECTEURS_PAGE.concat(SELECTEURS.filter(s => !vus.has(s)));
+}
+
 /** Attend qu'un des conteneurs connus soit visible et stable. */
-async function attendreVisuel(page, attenteMs) {
-  for (const sel of SELECTEURS) {
+async function attendreVisuel(page, attenteMs, entiere) {
+  for (const sel of ciblesPour(entiere)) {
     try {
       const cible = page.locator(sel).first();
       await cible.waitFor({ state: "visible", timeout: 12000 });
@@ -89,6 +106,7 @@ async function principal() {
       "  --profil <dir>     profil de navigateur conservé (défaut : ~/.annuaire-kpi-profil)\n" +
       "  --attente <ms>     délai de rendu après affichage (défaut : 4000)\n" +
       "  --selecteur <css>  forcer le conteneur à capturer\n" +
+      "  --page             capturer la PAGE entière : sélecteurs de dates et filtres compris\n" +
       "  --visible          montrer le navigateur pendant la capture\n" +
       "  --deck             enchaîner sur la génération du PowerPoint\n");
     process.exit(1);
@@ -134,7 +152,7 @@ async function principal() {
 
       const cible = o.selecteur
         ? page.locator(o.selecteur).first()
-        : await attendreVisuel(page, attente);
+        : await attendreVisuel(page, attente, o.page === true);
 
       const chemin = path.join(dossier, d.fichier);
       if (cible) await cible.screenshot({ path: chemin });
@@ -166,4 +184,4 @@ if (require.main === module) {
   principal().catch(err => { console.error("✗ " + err.message); process.exit(1); });
 }
 
-module.exports = { SELECTEURS, attendreVisuel };
+module.exports = { SELECTEURS, SELECTEURS_PAGE, ciblesPour, attendreVisuel };
