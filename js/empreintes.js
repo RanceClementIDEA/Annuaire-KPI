@@ -255,6 +255,26 @@
     return { proprietes: props, empreinte: exacte, emprunt: false, memeSignet: true };
   }
 
+  /**
+   * Une empreinte existe-t-elle pour ce visuel, mais sur un AUTRE signet ?
+   *
+   * C'est le signe qu'on a repartagé le lien depuis Power BI : chaque
+   * partage crée un nouveau `bookmarkGuid`, et l'empreinte relevée sur
+   * l'ancien ne vaut plus. Le dire évite de chercher longtemps pourquoi
+   * un KPI qui marchait hier réclame soudain un relevé.
+   *
+   * @returns {Object|null} l'empreinte devenue orpheline, s'il y en a une
+   */
+  function empreinteDepassee(empreintes, lien) {
+    const cle = cleVisuel(lien);
+    if (!cle || trouver(empreintes, cle ? lien : "")) return null;
+    const bouts = cle.split("/");
+    if (bouts.length < 4) return null;              // pas de signet : rien à dépasser
+    const sansSignet = bouts.slice(0, 3).join("/");
+    return liste(empreintes).find(e =>
+      e && e.id && e.id !== cle && e.id.indexOf(sansSignet + "/") === 0) || null;
+  }
+
   /** Même arbitrage que les sélections : le plus récent l'emporte. */
   function fusionnerEmpreintes(locales, distantes) {
     const propre = liste => (Array.isArray(liste) ? liste : [])
@@ -304,7 +324,7 @@
   const API = {
     CHAMPS, CHAMPS_DE_SESSION, CHAMPS_ETAT,
     cleVisuel, clePage, pageDeCle, signetDe, signetDeCle, normaliserEmpreinte, creerEmpreinte, proprietesPour,
-    trouver, trouverParPage, resoudre, fusionnerEmpreintes, poids,
+    trouver, trouverParPage, resoudre, empreinteDepassee, fusionnerEmpreintes, poids,
     empreinteComplete, dechapper
   };
 
