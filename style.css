@@ -1411,3 +1411,10 @@ body.mode-selection .card { padding-top: 42px; }
 }
 .deck-shot.on { color: #0B7355; background: rgba(16,185,129,.16); font-weight: 600; }
 .deck-shot.alerte { color: #9A5B08; background: rgba(255,176,32,.18); font-weight: 600; }
+
+/* Ligne visée par le prochain collage de capture */
+.deck-tools .btn-tool.actif {
+  background: var(--gold-dim);
+  border-color: var(--gold);
+  color: var(--gold);
+}

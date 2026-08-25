@@ -732,3 +732,255 @@ test("options : chaque drapeau connu est bien déclaré sans valeur", () => {
     assert.equal(G.options(["--" + nom, "fichier.json"])[nom], true, nom);
   });
 });
+
+/* ═══ Le lanceur Windows ════════════════════════════════════
+   La ligne de commande est la dernière friction : un fichier à
+   double-cliquer, ou sur lequel glisser selection.json, la supprime.
+   Ces contrôles portent sur ce que le fichier PROMET — s'il change,
+   la documentation doit changer avec. */
+
+const BAT = fsO.readFileSync(pathO.join(__dirname, "powerpoint.bat"), "utf8");
+
+test("lanceur : les trois étapes sont enchaînées dans l'ordre", () => {
+  const ordre = ["installer:navigateur", "npm run connexion", "npm run powerpoint"]
+    .map(m => BAT.indexOf(m));
+  ordre.forEach((i, n) => assert.ok(i > 0, "étape absente : " + n));
+  assert.ok(ordre[0] < ordre[1] && ordre[1] < ordre[2], "les étapes sont dans le désordre");
+});
+
+test("lanceur : les deux étapes d'installation ne se refont pas à chaque fois", () => {
+  assert.match(BAT, /if not exist "node_modules\\playwright"/);
+  assert.match(BAT, /if not exist "%USERPROFILE%\\\.annuaire-kpi-profil"/);
+});
+
+test("lanceur : un poste sans Node.js reçoit une consigne, pas une erreur brute", () => {
+  assert.match(BAT, /where npm/);
+  assert.match(BAT, /nodejs\.org/);
+});
+
+test("lanceur : un fichier de sélection absent est refusé avant tout travail", () => {
+  assert.match(BAT, /if not exist "%SELECTION%"/);
+  assert.ok(BAT.indexOf('if not exist "%SELECTION%"') < BAT.indexOf("installer:navigateur"),
+    "le contrôle doit précéder l'installation");
+});
+
+test("lanceur : chaque échec s'arrête au lieu de continuer sur sa lancée", () => {
+  assert.equal((BAT.match(/\|\| goto :erreur/g) || []).length, 3);
+  assert.match(BAT, /:erreur/);
+});
+
+test("lanceur : la fenêtre ne se referme pas sans avoir été lue", () => {
+  assert.ok((BAT.match(/^pause$/gm) || []).length >= 2, "pause manquante");
+});
+
+/* ═══ Export officiel Power BI ══════════════════════════════
+   L'API `exportToFile` rend une page ou un visuel en image, et
+   accepte NATIVEMENT `pageName` et un signet — le modèle même de
+   l'annuaire. C'est la seule voie vraiment automatique. Sa condition,
+   incontournable : le rapport doit vivre dans un espace adossé à une
+   capacité. Ces tests éprouvent tout SAUF cette condition, qui ne
+   dépend pas du code. */
+
+const X = require("./outils/exporter-powerbi.js");
+
+const LIEN_X = "https://app.powerbi.com/groups/me/reports/6a4cf353-aac8-48de-a793-9a8066069ffc"
+  + "/faec2927b8728b9fd32f?ctid=c8d7&pbi_source=shareVisual&visual=14bddbd2925c24715a84"
+  + "&height=550.75&width=1254.63&bookmarkGuid=36cc4e7f-8950-48e0-98ea-7c59d8fce76e";
+
+test("export : le lien de l'annuaire se lit sans rien deviner", () => {
+  const i = X.analyser(LIEN_X);
+  assert.equal(i.rapport, "6a4cf353-aac8-48de-a793-9a8066069ffc");
+  assert.equal(i.page, "faec2927b8728b9fd32f");
+  assert.equal(i.visuel, "14bddbd2925c24715a84");
+  assert.equal(i.signet, "36cc4e7f-8950-48e0-98ea-7c59d8fce76e");
+  assert.equal(i.groupe, "me");
+});
+
+test("export : le signet du lien devient le bookmark de la demande", () => {
+  // C'est le cœur de l'affaire : Microsoft documente `bookmark.name`
+  // comme étant le bookmarkGuid lu dans l'URL. Rien à traduire.
+  const page = X.construireDemande(LIEN_X, {}).powerBIReportConfiguration.pages[0];
+  assert.equal(page.pageName, "faec2927b8728b9fd32f");
+  assert.equal(page.bookmark.name, "36cc4e7f-8950-48e0-98ea-7c59d8fce76e");
+  assert.equal(page.visualName, "14bddbd2925c24715a84");
+});
+
+test("export : « page entière » retire le visuel mais garde le signet", () => {
+  const page = X.construireDemande(LIEN_X, { pageEntiere: true }).powerBIReportConfiguration.pages[0];
+  assert.ok(!("visualName" in page), "le visuel ne doit plus être imposé");
+  assert.equal(page.bookmark.name, "36cc4e7f-8950-48e0-98ea-7c59d8fce76e");
+});
+
+test("export : un lien sans signet n'invente pas de bookmark", () => {
+  const sans = LIEN_X.replace(/&bookmarkGuid=[^&]*/, "");
+  assert.ok(!("bookmark" in X.construireDemande(sans, {}).powerBIReportConfiguration.pages[0]));
+});
+
+test("export : un lien sans rapport est refusé tout de suite", () => {
+  assert.throws(() => X.construireDemande("https://exemple.fr", {}), /identifiant de rapport/);
+});
+
+test("export : l'espace personnel et un espace nommé n'ont pas la même adresse", () => {
+  assert.match(X.urlExport(X.analyser(LIEN_X)), /\/myorg\/reports\/6a4cf353[^/]*\/ExportTo$/);
+  const nomme = LIEN_X.replace("/groups/me/", "/groups/abc-123/");
+  assert.match(X.urlExport(X.analyser(nomme)), /\/myorg\/groups\/abc-123\/reports\//);
+});
+
+test("export : l'attente entre deux interrogations s'allonge, puis plafonne", () => {
+  assert.ok(X.attente(0) < X.attente(3), "elle doit croître");
+  assert.ok(X.attente(50) <= 15000, "et plafonner : " + X.attente(50));
+});
+
+test("export : le 403 explique la vraie cause, la capacité", () => {
+  const m = X.messageErreur(403, "");
+  assert.match(m, /capacité/);
+  assert.match(m, /Fabric/);
+  assert.match(m, /PPU|par utilisateur/, "PPU ne convient pas : il faut le dire");
+});
+
+test("export : un jeton expiré dit comment le renouveler", () => {
+  assert.match(X.messageErreur(401, ""), /jeton-powerbi/);
+});
+
+/* Un faux service Power BI : lancement, deux attentes, puis l'image.
+   Tout le protocole est éprouvé sans toucher au vrai service. */
+function fauxService(scenario) {
+  const appels = [];
+  let interrogations = 0;
+  const reponse = (ok, status, corps, octets) => ({
+    ok, status,
+    json: async () => corps,
+    text: async () => JSON.stringify(corps),
+    arrayBuffer: async () => (octets || new Uint8Array([1, 2, 3])).buffer
+  });
+  const appeler = async (url, init) => {
+    appels.push({ url, methode: (init && init.method) || "GET", corps: init && init.body });
+    if (/\/ExportTo$/.test(url)) {
+      if (scenario === "refus") return reponse(false, 403, { error: { code: "PowerBIEntityNotFound" } });
+      return reponse(true, 202, { id: "exp-1" });
+    }
+    if (/\/file$/.test(url)) return reponse(true, 200, null, new Uint8Array([137, 80, 78, 71]));
+    interrogations++;
+    if (scenario === "echec") return reponse(true, 200, { status: "Failed", error: { message: "visuel absent" } });
+    return reponse(true, 200, { status: interrogations < 3 ? "Running" : "Succeeded" });
+  };
+  return { appeler, appels };
+}
+
+const sansAttendre = () => Promise.resolve();
+
+test("export : la chaîne complète rend l'image du KPI", async () => {
+  const s = fauxService("ok");
+  const { octets, tours } = await X.exporterUn(s.appeler, sansAttendre, LIEN_X, {});
+  assert.deepEqual([...octets], [137, 80, 78, 71], "c'est bien un PNG");
+  assert.equal(tours, 3, "deux attentes, puis le succès");
+});
+
+test("export : la demande envoyée porte le format et la langue", async () => {
+  const s = fauxService("ok");
+  await X.exporterUn(s.appeler, sansAttendre, LIEN_X, { format: "PDF", langue: "fr-FR" });
+  const corps = JSON.parse(s.appels[0].corps);
+  assert.equal(corps.format, "PDF");
+  assert.equal(corps.powerBIReportConfiguration.settings.locale, "fr-FR");
+  assert.equal(s.appels[0].methode, "POST");
+});
+
+test("export : un refus de capacité remonte tel quel, sans réessai inutile", async () => {
+  const s = fauxService("refus");
+  await assert.rejects(() => X.exporterUn(s.appeler, sansAttendre, LIEN_X, {}), /capacité/);
+  assert.equal(s.appels.length, 1, "on n'interroge pas un export qui n'a jamais démarré");
+});
+
+test("export : un échec côté Power BI est rapporté avec sa raison", async () => {
+  const s = fauxService("echec");
+  await assert.rejects(() => X.exporterUn(s.appeler, sansAttendre, LIEN_X, {}), /visuel absent/);
+});
+
+test("export : on n'interroge pas indéfiniment", async () => {
+  const appeler = async url => ({
+    ok: true, status: 200,
+    json: async () => (/\/ExportTo$/.test(url) ? { id: "e" } : { status: "Running" }),
+    text: async () => "", arrayBuffer: async () => new Uint8Array().buffer
+  });
+  await assert.rejects(() => X.exporterUn(appeler, sansAttendre, LIEN_X, { maxTours: 4 }),
+    /n'a pas abouti/);
+});
+
+test("export : chaque KPI reçoit un nom de fichier stable", () => {
+  assert.equal(X.nomFichier({ fichier: "kpi3.png" }, 0, "PNG"), "kpi3.png");
+  assert.equal(X.nomFichier({ fichier: "kpi3.png" }, 0, "PDF"), "kpi3.pdf");
+  assert.equal(X.nomFichier({}, 4, "PNG"), "kpi5.png");
+});
+
+/* ═══ Connexion par code d'appareil ═════════════════════════
+   Aucun secret sur le poste : un code s'affiche, vous l'entrez dans
+   un navigateur, le jeton arrive. « authorization_pending » n'est pas
+   une erreur — c'est l'état normal tant que personne n'a validé. */
+
+const J = require("./outils/jeton-powerbi.js");
+
+test("jeton : les adresses visent le bon locataire", () => {
+  const a = J.adresses("contoso.onmicrosoft.com");
+  assert.match(a.code, /contoso\.onmicrosoft\.com\/oauth2\/v2\.0\/devicecode$/);
+  assert.match(a.jeton, /contoso\.onmicrosoft\.com\/oauth2\/v2\.0\/token$/);
+  assert.match(J.adresses(null).code, /\/organizations\//, "à défaut, le locataire de l'utilisateur");
+});
+
+test("jeton : la portée demandée est celle de l'API Power BI", () => {
+  assert.match(J.PORTEE, /analysis\.windows\.net\/powerbi\/api/);
+});
+
+test("jeton : le corps est un formulaire, pas du JSON — Entra refuse le JSON", () => {
+  assert.equal(J.formulaire({ a: "1", b: "x y" }), "a=1&b=x%20y");
+});
+
+test("jeton : l'attente traverse « autorisation en attente » sans broncher", async () => {
+  let passe = 0;
+  const appeler = async () => {
+    passe++;
+    return passe < 3
+      ? { ok: false, json: async () => ({ error: "authorization_pending" }) }
+      : { ok: true, json: async () => ({ access_token: "eyJ0", expires_in: 3600 }) };
+  };
+  const jeton = await J.attendreJeton(appeler, () => Promise.resolve(), "org", "cli",
+    { interval: 0, expires_in: 900, device_code: "d" });
+  assert.equal(jeton.access_token, "eyJ0");
+  assert.equal(passe, 3);
+});
+
+test("jeton : « slow_down » est traité comme une attente, pas comme un refus", async () => {
+  let passe = 0;
+  const appeler = async () => {
+    passe++;
+    return passe < 2
+      ? { ok: false, json: async () => ({ error: "slow_down" }) }
+      : { ok: true, json: async () => ({ access_token: "t" }) };
+  };
+  assert.ok(await J.attendreJeton(appeler, () => Promise.resolve(), "org", "cli",
+    { interval: 0, expires_in: 900, device_code: "d" }));
+});
+
+test("jeton : un vrai refus s'arrête tout de suite, avec son motif", async () => {
+  const appeler = async () => ({
+    ok: false, json: async () => ({ error: "access_denied", error_description: "refusé par l'utilisateur" })
+  });
+  await assert.rejects(() => J.attendreJeton(appeler, () => Promise.resolve(), "org", "cli",
+    { interval: 0, expires_in: 900, device_code: "d" }), /refusé par l'utilisateur/);
+});
+
+test("jeton : un code expiré le dit clairement", async () => {
+  const appeler = async () => ({ ok: false, json: async () => ({ error: "authorization_pending" }) });
+  await assert.rejects(() => J.attendreJeton(appeler, () => Promise.resolve(), "org", "cli",
+    { interval: 1, expires_in: 2, device_code: "d" }), /expiré/);
+});
+
+test("jeton : la demande de code porte l'application et la portée", async () => {
+  let vu = null;
+  const appeler = async (url, init) => {
+    vu = init.body;
+    return { ok: true, json: async () => ({ user_code: "ABC", verification_uri: "https://x" }) };
+  };
+  await J.demanderCode(appeler, "org", "mon-app");
+  assert.match(vu, /client_id=mon-app/);
+  assert.match(vu, /scope=https%3A%2F%2Fanalysis/);
+});

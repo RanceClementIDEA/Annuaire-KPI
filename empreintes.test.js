@@ -306,3 +306,31 @@ test("deux KPI d'un même visuel cohabitent sans s'écraser", () => {
                                     [E.creerEmpreinte(autre, { horodatage: 2 })]);
   assert.strictEqual(lot.length, 2);
 });
+
+/* ─── Le lien repartagé ────────────────────────────────────
+   Chaque partage depuis Power BI crée un NOUVEAU bookmarkGuid.
+   L'empreinte relevée sur l'ancien devient orpheline : le KPI qui
+   marchait hier réclame soudain un relevé, sans raison apparente. */
+
+test("une empreinte du même visuel sur un autre signet est signalée comme dépassée", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const repartage = LIEN.replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=nouveau-partage");
+  assert.strictEqual(E.empreinteDepassee([emp], repartage).id, CLE_VISUEL);
+});
+
+test("sur son propre signet, rien n'est dépassé", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.empreinteDepassee([emp], LIEN), null);
+});
+
+test("un autre visuel n'est pas un lien repartagé", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const autre = LIEN.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee");
+  assert.strictEqual(E.empreinteDepassee([emp], autre), null);
+});
+
+test("sans aucune empreinte, il n'y a rien à dépasser", () => {
+  assert.strictEqual(E.empreinteDepassee([], LIEN), null);
+  assert.strictEqual(E.empreinteDepassee(null, LIEN), null);
+  assert.strictEqual(E.empreinteDepassee([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
+});

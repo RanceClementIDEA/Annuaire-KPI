@@ -26,7 +26,9 @@
     "diagnostic": "node outils/diagnostic-complement.js",
     "powerpoint": "node outils/capturer-visuels.js --page --deck",
     "connexion": "node outils/capturer-visuels.js --connexion",
-    "installer:navigateur": "npm i -D playwright && npx playwright install chromium"
+    "installer:navigateur": "npm i -D playwright && npx playwright install chromium",
+    "jeton": "node outils/jeton-powerbi.js",
+    "exporter": "node outils/exporter-powerbi.js --deck"
   },
   "license": "UNLICENSED"
 }

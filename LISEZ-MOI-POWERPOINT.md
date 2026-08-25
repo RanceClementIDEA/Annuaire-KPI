@@ -141,6 +141,11 @@ clair**.
 un **nouveau** `bookmarkGuid` : l'empreinte obtenue ne correspondrait à aucun KPI. C'est
 l'erreur la plus facile à commettre, et la plus difficile à voir.
 
+⚠️ **Et une fois l'empreinte relevée, ne repartagez plus ce lien.** Remplacer le lien
+d'un KPI par un partage neuf change son signet et périme son empreinte du même coup. La
+fenêtre le signale alors par `⟳ lien repartagé` plutôt que par un simple « à relever » :
+on sait tout de suite qu'il ne s'agit pas d'un oubli.
+
 Une fois relevées, les empreintes partent dans la synchronisation : personne d'autre n'a
 à refaire l'insertion.
 
@@ -232,6 +237,44 @@ format et le cadre obtenu — puis conclut « Aucune anomalie » ou liste ce qui
 Pour reprendre un lien fautif : dans Power BI, sur **le visuel**, `…` → **Partager** →
 **Lien vers cet élément visuel**, puis collez-le dans la fiche du KPI.
 
+#### 0. Export officiel Power BI — la seule voie vraiment automatique
+
+C'est la réponse de Microsoft à exactement ce problème, et je ne l'avais pas assez creusée
+au départ. L'API **`exportToFile`** rend une page ou un visuel en PNG, PDF ou PPTX, et
+accepte **nativement `pageName` et un signet** — le modèle même de l'annuaire, où un KPI
+est une page plus un `bookmarkGuid`. Microsoft documente d'ailleurs de lire ce signet dans
+l'URL après `bookmarkGuid=` : rien à traduire.
+
+Aucun relevé, aucune insertion, aucune capture d'écran, aucun navigateur.
+
+```bash
+node outils/jeton-powerbi.js --client <id d'application>   # connexion, une fois par jour
+PBI_TOKEN=… npm run exporter -- selection.json             # export + PowerPoint
+```
+
+**Sa condition, unique et incontournable :** le rapport doit vivre dans un espace de
+travail adossé à une **capacité** — Premium, Embedded ou **Fabric**. Une licence Pro seule
+ne suffit pas, et **Premium par utilisateur (PPU) est explicitement exclu** pour les
+rapports interactifs — c'est le piège coûteux à connaître avant d'acheter une licence.
+
+Trois façons d'y accéder :
+
+| | |
+|---|---|
+| **Essai Fabric** | 60 jours, gratuit. De quoi tout éprouver avant de décider. |
+| **Capacité F2 en pause** | reprise le temps de l'export, puis pause : de l'ordre de 1 €/mois. |
+| **Capacité existante** | si l'entreprise en a déjà une, il suffit d'y rattacher l'espace de travail. |
+
+L'espace personnel *Mon espace de travail* **peut** être rattaché à une capacité — c'est
+documenté — mais l'opération demande un administrateur Fabric.
+
+Il faut aussi une **inscription d'application** dans Entra ID (client public, autorisations
+déléguées `Report.Read.All` et `Dataset.Read.All`). Là encore, l'affaire d'un
+administrateur, une fois.
+
+Quand une erreur 403 tombe, c'est presque toujours la capacité qui manque : l'outil le dit
+en toutes lettres plutôt que de rendre le code brut.
+
 #### La page entière plutôt que le visuel seul
 
 Un lien de VISUEL exige une empreinte, et cette empreinte est propre à son signet : une
@@ -265,17 +308,62 @@ vivant ne peut pas être automatisé**. Il reste deux chemins, et deux seulement
 
 Le second est le seul qui tienne la promesse « rien à faire ».
 
-#### 2. Image — capture automatique de la PAGE (aucune empreinte)
+#### 2. Image — coller une capture, ou la faire prendre automatiquement
+
+**Deux voies, toutes deux gratuites, aucune empreinte.**
+
+**a. Capture guidée — automatique, et rien à installer.** La meilleure des voies
+gratuites. Bouton **🎥 Capture guidée** :
+
+1. une fenêtre Power BI s'ouvre ;
+2. le navigateur demande quoi partager — désignez **cette fenêtre**, une seule fois ;
+3. l'annuaire la promène de KPI en KPI et saisit chaque page.
+
+Comment c'est possible alors qu'une page web ne peut pas photographier un autre site :
+elle ne le photographie pas. Le navigateur **partage** une fenêtre, avec votre accord
+explicite (`getDisplayMedia`), et c'est lui qui rend l'image. L'annuaire ne lit jamais le
+contenu de cette fenêtre — il n'en a pas le droit et n'en a pas besoin : il la navigue.
+
+Demande Edge ou Chrome, et que les fenêtres surgissantes soient autorisées. Ne masquez pas
+la fenêtre partagée pendant l'opération. Le partage est coupé à la fin, même si une
+capture rate.
+
+**b. Coller — rien à installer non plus.** Si vous préférez cadrer vous-même :
+
+1. sur la page Power BI, `Win+Maj+S`, cadrez, la capture part au presse-papiers ;
+2. dans la fenêtre de génération, cliquez **📋** sur la ligne du KPI ;
+3. `Ctrl+V`.
+
+La ligne passe à `🖼 capture`. On peut aussi **déposer** des fichiers image sur la
+fenêtre : ils se rangent dans l'ordre des KPI qui en manquent. Le **✕** retire une
+capture pour la refaire.
+
+**c. Capture automatique en ligne de commande — Node.js sur le poste.** Utile pour
+enchaîner sans ouvrir l'annuaire, ou pour planifier.
+
+
 
 **C'est le seul mode sans travail manuel**, et celui qui reproduit exactement ce qu'on
 voit dans Power BI : titre, sélecteurs de mois et de semaines, année, filtres, puis le
 graphique. Trois commandes, dont deux une seule fois dans la vie :
+
+**Le plus simple, sous Windows : glissez `selection.json` sur `powerpoint.bat`.** Le
+lanceur installe le navigateur et ouvre la connexion Power BI la première fois seulement,
+puis capture et assemble. Rien à taper.
+
+En ligne de commande, si vous préférez :
 
 ```bash
 npm run installer:navigateur                      # une fois, jamais plus
 npm run connexion -- selection.json               # une fois : se connecter à Power BI
 npm run powerpoint -- selection.json              # chaque semaine
 ```
+
+⚠️ **L'annuaire ne peut pas photographier Power BI lui-même.** C'est une page web : elle n'a pas le
+droit de photographier Power BI, qui vit sur une autre origine. Choisir « Image » dans la
+fenêtre de génération sans avoir fourni d'images produit donc des **cadres cliquables**,
+pas des graphiques — la fenêtre le dit maintenant, et demande confirmation. Les images se
+produisent sur votre poste, par le lanceur ou la commande ci-dessus.
 
 `selection.json` s'obtient dans l'annuaire par *Sélection & PowerPoint › Générer ›
 **⬇ Exporter la sélection***. La session Power BI est conservée d'une fois sur l'autre.
@@ -331,6 +419,9 @@ rituel avant d'avoir les données.
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
+| `powerpoint.bat` | lanceur Windows : glisser `selection.json` dessus suffit |
+| `outils/exporter-powerbi.js` | export officiel `exportToFile` : page ou visuel, signet compris |
+| `outils/jeton-powerbi.js` | connexion Entra par code d'appareil, sans secret sur le poste |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/capturer-visuels.js` | capture automatique des visuels Power BI |
 | `outils/generer-deck.js` | support PowerPoint depuis une sélection + des captures |
@@ -346,7 +437,7 @@ rituel avant d'avoir les données.
 | `outils/diagnostic-signet.js` | le signet du lien peut-il l'emporter sur l'état mémorisé ? |
 | `outils/diagnostic-page-entiere.js` | la page entière s'affiche-t-elle sans empreinte ? |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 358 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 449 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -430,7 +521,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 797 tests (dont 358 pour cette fonctionnalité)
+node --test              # 864 tests (dont 449 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)

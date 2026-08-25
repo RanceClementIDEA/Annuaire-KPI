@@ -5538,6 +5538,34 @@ test("deux KPI d'un même visuel cohabitent sans s'écraser", () => {
   assert.strictEqual(lot.length, 2);
 });
 
+/* ─── Le lien repartagé ────────────────────────────────────
+   Chaque partage depuis Power BI crée un NOUVEAU bookmarkGuid.
+   L'empreinte relevée sur l'ancien devient orpheline : le KPI qui
+   marchait hier réclame soudain un relevé, sans raison apparente. */
+
+test("une empreinte du même visuel sur un autre signet est signalée comme dépassée", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const repartage = LIEN.replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=nouveau-partage");
+  assert.strictEqual(E.empreinteDepassee([emp], repartage).id, CLE_VISUEL);
+});
+
+test("sur son propre signet, rien n'est dépassé", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.empreinteDepassee([emp], LIEN), null);
+});
+
+test("un autre visuel n'est pas un lien repartagé", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const autre = LIEN.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee");
+  assert.strictEqual(E.empreinteDepassee([emp], autre), null);
+});
+
+test("sans aucune empreinte, il n'y a rien à dépasser", () => {
+  assert.strictEqual(E.empreinteDepassee([], LIEN), null);
+  assert.strictEqual(E.empreinteDepassee(null, LIEN), null);
+  assert.strictEqual(E.empreinteDepassee([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
+});
+
 __ouvrirGroupe("Fabrique PowerPoint");
 /* Tests de la fabrique PowerPoint (js/pptx.js).
    On vérifie la STRUCTURE du fichier produit — c'est elle que
@@ -7232,15 +7260,36 @@ test("signet : une empreinte relevée sur le bon signet annonce « visuel »", a
   assert.ok(A.html("deckList").includes("⚡ visuel"));
 });
 
-test("signet : sur un AUTRE signet, la ligne réclame un relevé", async () => {
+test("signet : sur un AUTRE signet, la ligne dit que le lien a été repartagé", async () => {
+  // Chaque partage depuis Power BI crée un nouveau signet : l'empreinte
+  // d'hier ne vaut plus. Le dire épargne une longue recherche.
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_VOISIN);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
   A.run("renderDeckLignes()");
   const html = A.html("deckList");
-  assert.ok(html.includes("à relever"), html);
+  assert.ok(html.includes("lien repartagé"), html);
   assert.ok(!html.includes("⚡ visuel"), "surtout pas de « ⚡ visuel » rassurant");
+});
+
+test("signet : un visuel jamais relevé dit simplement « à relever »", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  const html = A.html("deckList");
+  assert.ok(html.includes("à relever"));
+  assert.ok(!html.includes("repartagé"), "rien n'a été repartagé ici");
+});
+
+test("signet : le bilan nomme les liens repartagés à part", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  A.run("renderDeckLignes()");
+  assert.match(A.texte("deckWarning"), /REPARTAGÉ/);
 });
 
 test("signet : rien n'est posé sur la diapositive plutôt qu'une vue fausse", async () => {
@@ -7369,6 +7418,271 @@ test("génération : avec toutes les empreintes, aucune question n'est posée", 
   A.saisir("deckModeSelect", "vivant");
   A.confirmer(false);   // un refus ne doit rien changer : la question n'est pas posée
   assert.equal((await A.run("genererDeck")()).diapos, 1);
+});
+
+/* ─── Mode image : l'annuaire ne capture pas lui-même ───────
+   C'est une page web : elle ne peut pas photographier Power BI, qui
+   vit sur une autre origine. Sans image fournie, chaque diapositive
+   reçoit un cadre cliquable — le repli prévu, qui ressemble à une
+   panne. L'annuaire doit donc le dire, et où trouver les images. */
+
+test("image : le bilan dit combien de KPI n'ont pas d'image, et quoi faire", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run("renderDeckLignes()");
+  const bilan = A.texte("deckWarning");
+  assert.match(bilan, /1 KPI sans image/);
+  assert.match(bilan, /Ctrl\+V/, "la voie sans installation doit être proposée en premier");
+  assert.match(bilan, /powerpoint\.bat/, "la voie automatique aussi");
+});
+
+test("image : générer sans aucune image demande confirmation", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.confirmer(false);
+  assert.equal(await A.run("genererDeck")(), null);
+});
+
+test("image : avec les images chargées, aucune question n'est posée", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run(`capturesDeck["kpi_volumetrie_hebdomadaire"] = { donnees: new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4]), nom: "x.png" }`);
+  A.confirmer(false);   // un refus ne doit rien changer : la question n'est pas posée
+  assert.equal((await A.run("genererDeck")()).diapos, 1);
+});
+
+test("image : le bilan se tait quand toutes les images sont là", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run(`capturesDeck["kpi_volumetrie_hebdomadaire"] = { donnees: new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4]), nom: "x.png" }`);
+  A.run("renderDeckLignes()");
+  assert.ok(!/sans image/.test(A.texte("deckWarning")));
+});
+
+/* ─── Coller une capture : la voie gratuite sans rien installer ─
+   Win+Maj+S sur la page Power BI, un clic sur la ligne du KPI,
+   Ctrl+V. Ni complément, ni capacité, ni Node.js. */
+
+const PNG_ESSAI = "new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4])";
+
+/** Un presse-papiers qui porte une image, comme le navigateur en fournit. */
+function pressePapiers(type) {
+  return {
+    items: [{
+      type: type || "image/png",
+      getAsFile: () => ({
+        type: type || "image/png",
+        arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10,
+          0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 4]).buffer
+      })
+    }]
+  };
+}
+
+test("collage : viser une ligne puis coller y pose l'image", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`);
+  const servi = await A.run("collerCapture")(pressePapiers());
+  assert.equal(servi, "kpi_volumetrie_hebdomadaire");
+  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
+});
+
+test("collage : sans ligne visée, l'image va au premier KPI qui en manque", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  assert.equal(await A.run("collerCapture")(pressePapiers()), "kpi_volumetrie_hebdomadaire");
+  assert.equal(await A.run("collerCapture")(pressePapiers()), "kpi_taux_service_hebdomadaire");
+});
+
+test("collage : un presse-papiers sans image le dit au lieu de se taire", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  assert.equal(await A.run("collerCapture")({ items: [{ type: "text/plain", getAsFile: () => null }] }), "");
+  assert.match(A.dernierMessage(), /copiez une IMAGE/);
+});
+
+test("collage : viser deux fois la même ligne annule la visée", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  assert.equal(A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`), "kpi_volumetrie_hebdomadaire");
+  assert.equal(A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`), "");
+});
+
+test("collage : une capture posée peut être retirée pour être refaite", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  await A.run("collerCapture")(pressePapiers());
+  A.run(`retirerCapture("kpi_volumetrie_hebdomadaire")`);
+  assert.ok(A.run(`!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
+});
+
+test("collage : la ligne annonce la capture dès qu'elle est posée", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à capturer"));
+  await A.run("collerCapture")(pressePapiers());
+  assert.ok(A.html("deckList").includes("🖼 capture"));
+});
+
+test("collage : une fois toutes les images posées, la génération ne pose plus de question", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  await A.run("collerCapture")(pressePapiers());
+  A.confirmer(false);
+  assert.equal((await A.run("genererDeck")()).diapos, 1);
+});
+
+test("collage : un JPEG est accepté aussi bien qu'un PNG", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+  assert.ok(await A.run("collerCapture")(pressePapiers("image/jpeg")));
+});
+
+/* ─── Capture guidée : automatique et sans installation ─────
+   Une page web ne peut pas photographier un autre site. Mais le
+   navigateur sait PARTAGER une fenêtre, si l'utilisateur y consent.
+   L'annuaire ouvre une fenêtre, l'utilisateur la désigne une fois,
+   puis l'annuaire la promène de KPI en KPI. Il ne lit jamais cette
+   fenêtre — il la navigue, et le navigateur lui rend l'image. */
+
+/** Des services de navigateur simulés, qui racontent ce qu'on leur a demandé. */
+function servicesFactices(opts) {
+  const o = opts || {};
+  const journal = { ouverts: [], navigations: [], saisies: 0, fermetures: 0 };
+  return {
+    journal,
+    services: {
+      ouvrir: async lien => { journal.ouverts.push(lien); return o.fenetreBloquee ? null : { closed: false }; },
+      partager: async () => { if (o.partageRefuse) throw new Error("partage refusé"); return { getTracks: () => [] }; },
+      naviguer: (f, lien) => journal.navigations.push(lien),
+      attendre: () => Promise.resolve(),
+      saisir: async () => {
+        journal.saisies++;
+        if (o.saisieRatee && journal.saisies === o.saisieRatee) throw new Error("image vide");
+        return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 4]);
+      },
+      fermer: () => { journal.fermetures++; }
+    }
+  };
+}
+
+function deuxKpiSansCapture() {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.saisir("deckModeSelect", "image");
+}
+
+test("guidée : chaque KPI est affiché puis saisi", async () => {
+  deuxKpiSansCapture();
+  const f = servicesFactices();
+  const r = await A.run("captureGuidee")(f.services, {});
+  assert.equal(r.faites, 2);
+  assert.deepEqual(r.echecs, []);
+  assert.equal(f.journal.saisies, 2);
+});
+
+test("guidée : la fenêtre s'ouvre AVANT qu'on demande de la partager", async () => {
+  // On ne peut pas désigner une fenêtre qui n'existe pas encore.
+  deuxKpiSansCapture();
+  const f = servicesFactices();
+  await A.run("captureGuidee")(f.services, {});
+  assert.equal(f.journal.ouverts.length, 1, "une seule fenêtre, réutilisée ensuite");
+  assert.equal(f.journal.navigations.length, 1, "le premier KPI est déjà à l'écran");
+});
+
+test("guidée : les images se rangent sur les bons KPI", async () => {
+  deuxKpiSansCapture();
+  await A.run("captureGuidee")(servicesFactices().services, {});
+  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
+  assert.ok(A.run(`!!capturesDeck["kpi_taux_service_hebdomadaire"]`));
+});
+
+test("guidée : une fenêtre bloquée le dit, au lieu d'échouer sans raison", async () => {
+  deuxKpiSansCapture();
+  const r = await A.run("captureGuidee")(servicesFactices({ fenetreBloquee: true }).services, {});
+  assert.equal(r.faites, 0);
+  assert.match(A.dernierMessage(), /fenêtres surgissantes/);
+});
+
+test("guidée : un partage refusé n'entame rien et le dit", async () => {
+  deuxKpiSansCapture();
+  const f = servicesFactices({ partageRefuse: true });
+  const r = await A.run("captureGuidee")(f.services, {});
+  assert.equal(r.faites, 0);
+  assert.equal(f.journal.saisies, 0);
+  assert.equal(r.echecs.length, 2, "les deux KPI restent à faire");
+});
+
+test("guidée : une image ratée n'interrompt pas les suivantes", async () => {
+  deuxKpiSansCapture();
+  const r = await A.run("captureGuidee")(servicesFactices({ saisieRatee: 1 }).services, {});
+  assert.equal(r.faites, 1);
+  assert.equal(r.echecs.length, 1);
+});
+
+test("guidée : le partage est toujours coupé, même en cas d'échec", async () => {
+  deuxKpiSansCapture();
+  const f = servicesFactices({ saisieRatee: 1 });
+  await A.run("captureGuidee")(f.services, {});
+  assert.equal(f.journal.fermetures, 1, "on ne laisse pas un partage d'écran ouvert");
+});
+
+test("guidée : les KPI déjà capturés sont sautés", async () => {
+  deuxKpiSansCapture();
+  await A.run("collerCapture")(pressePapiers(), "kpi_volumetrie_hebdomadaire");
+  const f = servicesFactices();
+  const r = await A.run("captureGuidee")(f.services, {});
+  assert.equal(r.faites, 1);
+  assert.equal(f.journal.saisies, 1);
+});
+
+test("guidée : sans rien à faire, on n'ouvre même pas de fenêtre", async () => {
+  deuxKpiSansCapture();
+  await A.run("collerCapture")(pressePapiers(), "kpi_volumetrie_hebdomadaire");
+  await A.run("collerCapture")(pressePapiers(), "kpi_taux_service_hebdomadaire");
+  const f = servicesFactices();
+  const r = await A.run("captureGuidee")(f.services, {});
+  assert.equal(r.faites, 0);
+  assert.equal(f.journal.ouverts.length, 0);
+  assert.match(A.dernierMessage(), /déjà là/);
+});
+
+test("guidée : un navigateur sans partage d'écran est reconnu", () => {
+  preparerDeck();
+  A.run(`navigator = { onLine: true, serviceWorker: { register: () => Promise.resolve() } }`);
+  assert.equal(A.run("partageDisponible()"), false);
+  A.run(`navigator = globalThis.__origine.navigator`);
 });
 
 
