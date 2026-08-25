@@ -4394,6 +4394,61 @@ async function importerEmpreintes(fichier) {
   }
 }
 
+/**
+ * Fabrique le support de RELEVÉ : une diapositive par KPI dépourvu
+ * d'empreinte, portant son nom et son lien en toutes lettres.
+ *
+ * C'est le seul travail manuel qui reste, et il faut le rendre court :
+ * pour chaque diapositive, sélectionner le lien affiché, le coller dans
+ * *Insertion › Compléments › Power BI*, passer à la suivante. Puis
+ * enregistrer et relever le fichier d'un coup.
+ *
+ * Le lien doit être celui de l'ANNUAIRE : repartager le visuel depuis
+ * Power BI crée un nouveau signet, qui ne correspondrait à rien.
+ *
+ * @returns {Promise<{nom:string, diapos:number}|null>}
+ */
+async function preparerReleve() {
+  const preset = selectionCourante();
+  const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
+  const aFaire = diapos.filter(d => d.lien && !empreintePour(d.lien));
+  if (!aFaire.length) {
+    showToast("Tous les KPI sélectionnés ont déjà leur empreinte 👍", 3000);
+    return null;
+  }
+
+  let modele;
+  try { modele = await chargerModeleDeck(); }
+  catch (err) {
+    showToast("❌ Modèle PowerPoint introuvable — " + (err.message || ""), 4000);
+    return null;
+  }
+
+  let octets;
+  try {
+    octets = await PptxDeck.construireDeck(modele, {
+      titre: "Relevé des empreintes",
+      sousTitre: "Une insertion par diapositive : Insertion › Compléments › Power BI",
+      periode: aFaire.length + " KPI à insérer, puis enregistrer et relever ce fichier",
+      diapos: aFaire.map(d => ({
+        titre: d.titre,
+        // Le lien EN CLAIR : c'est ce qu'il faut copier dans le complément.
+        commentaire: d.lien,
+        lien: d.lien
+      }))
+    });
+  } catch (err) {
+    showToast("❌ Préparation impossible : " + (err.message || ""), 4000);
+    return null;
+  }
+
+  const nom = "releve-empreintes-" + Selection.slug(preset.name || "selection") + ".pptx";
+  telechargerOctets(octets, nom);
+  showToast("📋 " + aFaire.length + " diapositive(s) à compléter — "
+    + "collez le lien affiché dans le complément Power BI, puis relevez le fichier", 6000);
+  return { nom, diapos: aFaire.length };
+}
+
 /** Ce qui sera posé dans le cadre du visuel, selon le mode choisi. */
 function etatVisuel(d) {
   const mode = modeDeck();
@@ -4404,11 +4459,12 @@ function etatVisuel(d) {
   /* Sans empreinte, le visuel s'affiche parfois, mais dans son état par
      défaut : filtres et segments perdus. L'état relevé est ce qui garantit
      les BONNES données — c'est lui qu'on suit ici. */
-  const emp = empreintePour(d.lien);
-  if (!emp) return { texte: "à relever", cls: " alerte" };
-  return emp.emprunt
-    ? { texte: "⚡ visuel (page)", cls: " on" }
-    : { texte: "⚡ visuel", cls: " on" };
+  /* L'empreinte vaut pour un lien précis, signet compris : c'est le
+     signet qui porte les filtres, et donc ce qui distingue deux KPI
+     partageant le même visuel. */
+  return empreintePour(d.lien)
+    ? { texte: "⚡ visuel", cls: " on" }
+    : { texte: "à relever", cls: " alerte" };
 }
 
 function renderDeckLignes() {
@@ -4446,11 +4502,13 @@ function renderDeckLignes() {
     if (modeDeck() === "vivant") {
       const sansEmpreinte = diapos.filter(d => diagnosticLien(d).ok && !empreintePour(d.lien));
       if (sansEmpreinte.length) {
-        // Une insertion par PAGE suffit : on annonce donc des pages, pas des KPI.
-        const pages = new Set(sansEmpreinte.map(d => Empreintes.clePage(d.lien)).filter(Boolean));
-        parties.push(`${sansEmpreinte.length} visuel(s) sans empreinte : leurs filtres et segments `
-          + `ne seront pas restitués. Il suffit d'insérer ${pages.size || 1} visuel(s) à la main `
-          + `— un par page de rapport — puis de relever le fichier ci-dessous.`);
+        /* Une empreinte vaut pour UN lien, signet compris : chaque KPI
+           demande donc sa propre insertion. Autant le dire franchement,
+           plutôt que d'annoncer un chiffre rassurant et faux. */
+        parties.push(`${sansEmpreinte.length} KPI sans empreinte : leur visuel ne s'affichera pas. `
+          + `Deux issues — soit « 📋 Préparer le relevé » et une insertion à la main par KPI, `
+          + `en collant LE LIEN DE L'ANNUAIRE et jamais un lien repartagé ; `
+          + `soit le mode « Image », qui capture la page entière sans aucune empreinte.`);
       }
     }
     avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";
@@ -4640,6 +4698,7 @@ async function genererDeck() {
 
 /* ─── Branchements ───────────────────────────────────────── */
 
+document.getElementById("deckPreparerBtn")?.addEventListener("click", () => preparerReleve());
 document.getElementById("deckEmpreintesBtn")?.addEventListener("click",
   () => document.getElementById("deckEmpreintesInput")?.click());
 document.getElementById("deckEmpreintesInput")?.addEventListener("change", async e => {

@@ -575,3 +575,129 @@ test("diagnostic : les deux copies de l'état sont posées ensemble", () => {
   const v = DE.variantes(lien, { id: "r1/p1/v1", proprietes: { artifactName: "&quot;H&quot;" } });
   assert.equal(v[0].proprietesComplement.initialStateBookmark, v[0].proprietesComplement.bookmark);
 });
+
+/* ═══ Ce que le complément a réellement affiché ════════════
+   Le complément réécrit dans le fichier ce qu'il a résolu. Renvoyer
+   le support après l'avoir ouvert suffit donc à savoir, sans rien
+   deviner, ce que chaque diapositive a montré. */
+
+const VR = require("./outils/verifier-rendu.js");
+const zlibO = require("node:zlib");
+
+const etatDe = (page, visuels) => "&quot;" + zlibO.gzipSync(Buffer.from(JSON.stringify({
+  explorationState: { activeSection: page,
+    sections: { [page]: { visualContainers: Object.fromEntries(visuels.map(v => [v, {}])) } } }
+}))).toString("base64") + "&quot;";
+
+const urlDe = (page, visuel) =>
+  "&quot;/groups/me/reports/r1/" + page + "?pbi_source=shareVisual&amp;visual=" + visuel + "&quot;";
+
+test("rendu : une diapositive jamais ouverte est signalée comme telle", () => {
+  const r = VR.examiner({ reportUrl: urlDe("p1", "v1") });
+  assert.equal(r.resolu.ouvert, false);
+  assert.match(r.alertes.join(" "), /n'a pas ouvert/);
+});
+
+test("rendu : le nom écrit par le complément est rendu tel qu'il l'a résolu", () => {
+  const r = VR.examiner({ reportUrl: urlDe("p1", "v1"),
+    artifactName: "&quot;Histo empilé&quot;", creatorSessionId: "&quot;s&quot;" });
+  assert.equal(r.resolu.nom, "Histo empilé");
+  assert.equal(r.demande.visuel, "v1");
+  assert.deepEqual(r.alertes, []);
+});
+
+test("rendu : un état venu d'une autre page est signalé", () => {
+  const r = VR.examiner({ reportUrl: urlDe("p2", "v9"),
+    creatorSessionId: "&quot;s&quot;", bookmark: etatDe("p1", ["v9"]) });
+  assert.match(r.alertes.join(" "), /page p1, pas p2/);
+});
+
+test("rendu : un état qui ne décrit pas le visuel demandé est signalé", () => {
+  // Le bon graphique peut s'afficher avec les filtres d'un voisin : rien
+  // n'a l'air cassé, mais les chiffres sont faux.
+  const r = VR.examiner({ reportUrl: urlDe("p1", "vAbsent"),
+    creatorSessionId: "&quot;s&quot;", bookmark: etatDe("p1", ["v1", "v2"]) });
+  assert.equal(r.etat.porteLeVisuel, false);
+  assert.match(r.alertes.join(" "), /filtres et segments sont ceux d'un voisin/);
+});
+
+test("rendu : un état cohérent ne déclenche aucune alerte", () => {
+  const r = VR.examiner({ reportUrl: urlDe("p1", "v1"),
+    artifactName: "&quot;Histo&quot;", creatorSessionId: "&quot;s&quot;",
+    bookmark: etatDe("p1", ["v1", "v2"]) });
+  assert.equal(r.etat.porteLeVisuel, true);
+  assert.deepEqual(r.alertes, []);
+});
+
+test("rendu : un état illisible ne fait pas tomber l'analyse", () => {
+  const r = VR.examiner({ reportUrl: urlDe("p1", "v1"),
+    creatorSessionId: "&quot;s&quot;", bookmark: "&quot;pas du gzip&quot;" });
+  assert.equal(r.etat.section, "");
+  assert.equal(VR.etatDe("&quot;n'importe quoi&quot;"), null);
+});
+
+/* ═══ La page entière, sans empreinte ══════════════════════
+   Un lien de VISUEL exige une empreinte propre à son signet, donc une
+   insertion manuelle par KPI. Désigner la PAGE supprime peut-être ce
+   besoin — il n'y a plus d'objet à retrouver — et apporte en prime les
+   sélecteurs de dates et de filtres. */
+
+const PE = require("./outils/diagnostic-page-entiere.js");
+
+const LIEN_KPI = "https://app.powerbi.com/groups/me/reports/6a4cf353/faec2927"
+  + "?ctid=c8d7&pbi_source=shareVisual&visual=14bddbd2&height=550.75&width=1254.63"
+  + "&bookmarkGuid=36cc4e7f";
+
+test("page entière : aucune variante ne désigne plus un visuel", () => {
+  PE.variantes(LIEN_KPI).slice(0, 4).forEach(v =>
+    assert.ok(!/[?&]visual=/.test(v.lien), v.code + " désigne encore un visuel : " + v.lien));
+});
+
+test("page entière : le signet est conservé là où il doit l'être", () => {
+  const v = PE.variantes(LIEN_KPI);
+  ["A", "C", "D"].forEach(code =>
+    assert.match(v.find(x => x.code === code).lien, /bookmarkGuid=36cc4e7f/));
+  assert.ok(!/bookmarkGuid/.test(v.find(x => x.code === "B").lien),
+    "B doit montrer la page SANS sélection");
+});
+
+test("page entière : le témoin garde le lien d'origine, intact", () => {
+  assert.strictEqual(PE.variantes(LIEN_KPI).find(v => v.code === "E").lien, LIEN_KPI);
+});
+
+test("page entière : la variante la plus simple ne garde que l'essentiel", () => {
+  const d = PE.variantes(LIEN_KPI).find(v => v.code === "D").lien;
+  assert.match(d, /^https:\/\/app\.powerbi\.com\/groups\/me\/reports\/6a4cf353\/faec2927\?/);
+  ["visual=", "pbi_source=", "height=", "width="].forEach(p =>
+    assert.ok(d.indexOf(p) < 0, p + " ne devrait plus être là : " + d));
+});
+
+test("page entière : retirer un paramètre laisse une adresse valide", () => {
+  assert.strictEqual(PE.sansParametre("https://x/y?a=1&b=2", "a"), "https://x/y?b=2");
+  assert.strictEqual(PE.sansParametre("https://x/y?a=1", "a"), "https://x/y");
+  assert.strictEqual(PE.sansParametre("https://x/y", "a"), "https://x/y");
+});
+
+test("page entière : ne garder aucun paramètre donne l'adresse nue", () => {
+  assert.strictEqual(PE.seulement("https://x/y?a=1&b=2", ["c"]), "https://x/y");
+  assert.strictEqual(PE.seulement("https://x/y", ["a"]), "https://x/y");
+});
+
+const C = require("./outils/capturer-visuels.js");
+
+test("capture : par défaut, on vise le conteneur du visuel", () => {
+  assert.deepEqual(C.ciblesPour(false), C.SELECTEURS);
+});
+
+test("capture : en mode page entière, le canevas passe devant le visuel", () => {
+  // Sans cette priorité, le conteneur du visuel serait trouvé le premier
+  // et on capturerait le graphique seul — ce qu'on cherchait à éviter.
+  const cibles = C.ciblesPour(true);
+  assert.deepEqual(cibles.slice(0, C.SELECTEURS_PAGE.length), C.SELECTEURS_PAGE);
+  assert.ok(cibles.indexOf(".visualContainer") > 0, "les autres restent en repli");
+});
+
+test("capture : aucun conteneur n'est essayé deux fois", () => {
+  const cibles = C.ciblesPour(true);
+  assert.equal(new Set(cibles).size, cibles.length);
+});

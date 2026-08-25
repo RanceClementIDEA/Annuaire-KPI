@@ -656,41 +656,38 @@ test("l'adresse du rapport n'est JAMAIS modifiée par l'empreinte", async () => 
   assert.strictEqual(url(avec.txt), url(sans.txt));
 });
 
-/* L'état sérialisé est un état de PAGE : filtres et segments de toute la
-   page, où le visuel visé n'est qu'un objet parmi les autres. Vérifié dans
-   PowerPoint : l'état relevé sur un visuel restitue correctement un autre
-   visuel de la même page — d'où une insertion manuelle par PAGE, et non
-   par KPI. */
+/* L'empreinte vaut pour UN lien, signet compris. Vérifié dans PowerPoint :
+   huit insertions du même visuel donnent huit états sérialisés
+   différents — l'état porte les filtres du KPI relevé. L'emprunter à un
+   voisin afficherait le bon graphique avec les mauvais chiffres. */
 
-test("l'empreinte d'un AUTRE visuel de la même page est empruntée", async () => {
+test("l'empreinte d'un autre visuel de la même page n'est PAS empruntée", async () => {
   const voisin = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
   const { txt } = await lireP(await deckP(
     [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [voisin] }
-  ));
-  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
-  assert.ok(noms.includes("bookmark"), "l'état du voisin est repris");
-  assert.ok(noms.includes("initialStateBookmark"), "sa copie aussi");
-  assert.ok(!noms.includes("artifactName"),
-    "mais pas son nom : il désigne un autre visuel, l'étiquette serait fausse");
-});
-
-test("l'empreinte d'une AUTRE page n'est pas appliquée", async () => {
-  const autre = empreintePour(LIEN_PBI.replace("/faec2927?", "/pageDifferente?"));
-  const { txt } = await lireP(await deckP(
-    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [autre] }
   ));
   assert.deepStrictEqual(nomsProprietes(txt("ppt/webextensions/webextension1.xml")),
     P.PROPRIETES_PAR_DEFAUT);
 });
 
-test("l'empreinte exacte prime toujours sur celle d'un voisin", async () => {
-  const voisin = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
-  const exacte = empreintePour(LIEN_PBI);
+test("l'empreinte d'un autre SIGNET du même visuel n'est pas appliquée", async () => {
+  const lienA = LIEN_PBI + "&bookmarkGuid=aaaa";
+  const lienB = LIEN_PBI + "&bookmarkGuid=bbbb";
   const { txt } = await lireP(await deckP(
-    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [voisin, exacte] }
+    [{ titre: "A", lien: lienB, vivant: true }], { empreintes: [empreintePour(lienA)] }
+  ));
+  assert.deepStrictEqual(nomsProprietes(txt("ppt/webextensions/webextension1.xml")),
+    P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("l'empreinte du bon signet, elle, est appliquée intégralement", async () => {
+  const lien = LIEN_PBI + "&bookmarkGuid=aaaa";
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien, vivant: true }], { empreintes: [empreintePour(lien)] }
   ));
   const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
-  assert.ok(noms.includes("artifactName"), "le nom du bon visuel est conservé");
+  ["artifactName", "bookmark", "initialStateBookmark"].forEach(n =>
+    assert.ok(noms.includes(n), n + " doit être écrit"));
 });
 
 test("une diapositive en image ignore les empreintes", () => {

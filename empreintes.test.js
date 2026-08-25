@@ -19,14 +19,20 @@ const LIEN = "https://app.powerbi.com/groups/me/reports/"
   + "&visual=14bddbd2925c24715a84&height=550.75&width=1254.63"
   + "&bookmarkGuid=702af139-c1c2-4dca-b44b-2ff37794a5df";
 
-const CLE_VISUEL = "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f/14bddbd2925c24715a84";
+/* La clé porte le SIGNET : plusieurs KPI partagent souvent le même
+   visuel, et ce sont leurs filtres — donc leur `bookmarkGuid` — qui les
+   distinguent. Vérifié sur huit insertions du même visuel : huit
+   signets, huit états sérialisés tous différents. */
+const CLE_VISUEL = "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f"
+  + "/14bddbd2925c24715a84/702af139-c1c2-4dca-b44b-2ff37794a5df";
 
 /* Un relevé tel qu'il sort d'un complément : valeurs encodées pour XML,
    guillemets compris — c'est ainsi que Power BI les écrit. */
 const RELEVE = {
   reportUrl: "&quot;/groups/me/reports/6a4cf353-aac8-48de-a793-9a8066069ffc/"
     + "faec2927b8728b9fd32f?ctid=c8d76d42-5d9d-4eea-b5cb-d16d0a04a59e"
-    + "&amp;pbi_source=shareVisual&amp;visual=14bddbd2925c24715a84&quot;",
+    + "&amp;pbi_source=shareVisual&amp;visual=14bddbd2925c24715a84"
+    + "&amp;bookmarkGuid=702af139-c1c2-4dca-b44b-2ff37794a5df&quot;",
   embedUrl: "&quot;/reportEmbed?reportId=6a4cf353-aac8-48de-a793-9a8066069ffc&quot;",
   artifactName: "&quot;Histo empilé&quot;",
   reportName: "&quot;Pilotage d'exploitation logistique&quot;",
@@ -47,14 +53,24 @@ const RELEVE = {
 
 /* ─── cleVisuel ────────────────────────────────────────────── */
 
-test("la clé d'un visuel réunit le rapport, la page et le visuel", () => {
+test("la clé réunit le rapport, la page, le visuel ET le signet", () => {
   assert.strictEqual(E.cleVisuel(LIEN), CLE_VISUEL);
 });
 
-test("la clé ignore la taille et le signet, qui changent d'un partage à l'autre", () => {
-  const autre = LIEN.replace("height=550.75&width=1254.63", "height=300&width=800")
-    .replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=00000000-0000-0000-0000-000000000000");
+test("la clé ignore la taille demandée, qui change d'un partage à l'autre", () => {
+  const autre = LIEN.replace("height=550.75&width=1254.63", "height=300&width=800");
   assert.strictEqual(E.cleVisuel(autre), E.cleVisuel(LIEN));
+});
+
+test("deux signets du même visuel sont deux KPI distincts", () => {
+  const autre = LIEN.replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=36cc4e7f-8950-48e0-98ea-7c59d8fce76e");
+  assert.notStrictEqual(E.cleVisuel(autre), E.cleVisuel(LIEN));
+});
+
+test("un lien sans signet garde une clé, réduite au visuel", () => {
+  const sans = LIEN.replace(/&bookmarkGuid=[^&]*/, "");
+  assert.strictEqual(E.cleVisuel(sans),
+    "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f/14bddbd2925c24715a84");
 });
 
 test("un lien de page, sans visual, n'a pas de clé : il n'y a pas de visuel à retrouver", () => {
@@ -210,79 +226,6 @@ test("la normalisation écarte tout champ hors de la liste relevée", () => {
   assert.deepStrictEqual(Object.keys(emp.proprietes), ["artifactName"]);
 });
 
-/* ─── Empreintes de page ───────────────────────────────────
-   L'état sérialisé est un état de PAGE : filtres et segments de toute
-   la page, où le visuel visé n'est qu'un objet parmi les autres.
-   Vérifié dans PowerPoint : l'état relevé sur un visuel restitue
-   correctement un AUTRE visuel de la même page. C'est ce qui ramène
-   le travail manuel à une insertion par page au lieu d'une par KPI. */
-
-const VOISIN = LIEN.replace("visual=14bddbd2925c24715a84", "visual=aaaabbbbccccddddeeee");
-const AUTRE_PAGE = LIEN.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a");
-
-test("la clé de page réunit le rapport et la page, sans le visuel", () => {
-  assert.strictEqual(E.clePage(LIEN),
-    "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f");
-  assert.strictEqual(E.clePage(LIEN), E.clePage(VOISIN));
-  assert.notStrictEqual(E.clePage(LIEN), E.clePage(AUTRE_PAGE));
-});
-
-test("un voisin de la même page est trouvé quand le visuel n'a pas la sienne", () => {
-  const emp = E.creerEmpreinte(RELEVE, {});
-  assert.strictEqual(E.trouver([emp], VOISIN), null, "aucune empreinte exacte");
-  assert.strictEqual(E.trouverParPage([emp], VOISIN).id, CLE_VISUEL);
-});
-
-test("un visuel d'une autre page n'emprunte rien", () => {
-  const emp = E.creerEmpreinte(RELEVE, {});
-  assert.strictEqual(E.trouverParPage([emp], AUTRE_PAGE), null);
-  assert.strictEqual(E.resoudre([emp], AUTRE_PAGE), null);
-});
-
-test("l'empreinte exacte prime sur celle d'un voisin", () => {
-  const exacte = E.creerEmpreinte(RELEVE, { horodatage: 10 });
-  const voisin = E.creerEmpreinte(
-    Object.assign({}, RELEVE, { reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee"),
-                                artifactName: "&quot;Voisin&quot;" }), { horodatage: 99 });
-  const r = E.resoudre([voisin, exacte], LIEN);
-  assert.strictEqual(r.emprunt, false);
-  assert.strictEqual(r.proprietes.artifactName, RELEVE.artifactName);
-});
-
-test("un emprunt garde l'état mais laisse le nom de l'autre visuel", () => {
-  const emp = E.creerEmpreinte(RELEVE, {});
-  const r = E.resoudre([emp], VOISIN);
-  assert.strictEqual(r.emprunt, true);
-  assert.ok(r.proprietes.bookmark, "l'état de page est repris");
-  assert.ok(!r.proprietes.artifactName, "l'étiquette de l'autre visuel serait fausse");
-  assert.strictEqual(r.proprietes.pageDisplayName, RELEVE.pageDisplayName,
-    "le contexte de page, lui, est bien commun");
-});
-
-test("un emprunt ne se fait jamais sur une empreinte sans état", () => {
-  const emp = E.creerEmpreinte(RELEVE, {});
-  delete emp.proprietes.bookmark;
-  assert.strictEqual(E.trouverParPage([emp], VOISIN), null);
-});
-
-test("entre plusieurs voisins, c'est le relevé le plus récent qui sert", () => {
-  const faire = (visuel, nom, quand) => E.creerEmpreinte(
-    Object.assign({}, RELEVE, {
-      reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", visuel),
-      pageDisplayName: "&quot;" + nom + "&quot;"
-    }), { horodatage: quand });
-  const vieux = faire("1111111111111111aaaa", "vieux", 100);
-  const neuf  = faire("2222222222222222bbbb", "neuf", 900);
-  assert.strictEqual(E.trouverParPage([vieux, neuf], VOISIN).proprietes.pageDisplayName,
-    "&quot;neuf&quot;");
-});
-
-test("sans aucune empreinte, la résolution rend null plutôt que d'échouer", () => {
-  assert.strictEqual(E.resoudre([], LIEN), null);
-  assert.strictEqual(E.resoudre(null, LIEN), null);
-  assert.strictEqual(E.resoudre([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
-});
-
 /* ─── Garde-fou : l'état doit être celui de la bonne page ───
    Un support de diagnostic porte des compléments où l'état d'une page a
    été posé sur le visuel d'une autre. Relevés tels quels, ils
@@ -309,4 +252,57 @@ test("sans pageName mémorisé, on ne peut rien vérifier : le relevé passe", (
   const sansPage = Object.assign({}, RELEVE);
   delete sansPage.pageName;
   assert.ok(E.creerEmpreinte(sansPage, {}));
+});
+
+/* ─── Le signet, ce qui distingue deux KPI d'un même visuel ─
+   Sur l'annuaire réel, trois KPI « Volumétrie » partagent un visuel et
+   quatre « Taux de service » un autre. Vérifié en conditions réelles :
+   huit insertions du même visuel donnent huit états différents. Une
+   empreinte ne vaut donc QUE pour son signet — l'emprunter à un voisin
+   afficherait le bon graphique avec les chiffres d'un autre KPI. */
+
+const SIGNET_AUTRE = LIEN.replace(/bookmarkGuid=[^&]*/, "bookmarkGuid=36cc4e7f-8950-48e0-98ea-7c59d8fce76e");
+
+test("le signet d'un lien est lu, et son absence ne casse rien", () => {
+  assert.strictEqual(E.signetDe(LIEN), "702af139-c1c2-4dca-b44b-2ff37794a5df");
+  assert.strictEqual(E.signetDe(LIEN.replace(/&bookmarkGuid=[^&]*/, "")), "");
+  assert.strictEqual(E.signetDe(null), "");
+});
+
+test("l'empreinte mémorise le signet dont son état provient", () => {
+  assert.strictEqual(E.creerEmpreinte(RELEVE, {}).signet,
+    "702af139-c1c2-4dca-b44b-2ff37794a5df");
+});
+
+test("sur son propre signet, l'empreinte s'applique", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const r = E.resoudre([emp], LIEN);
+  assert.ok(r && r.proprietes.bookmark);
+  assert.strictEqual(r.memeSignet, true);
+});
+
+test("sur un AUTRE signet, rien n'est posé : mieux vaut rien qu'une vue fausse", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.resoudre([emp], SIGNET_AUTRE), null);
+});
+
+test("un autre visuel de la même page n'emprunte plus rien", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const voisin = LIEN.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee");
+  assert.strictEqual(E.resoudre([emp], voisin), null);
+});
+
+test("le signet survit à la normalisation et à la fusion", () => {
+  const emp = E.creerEmpreinte(RELEVE, { horodatage: 5 });
+  assert.strictEqual(E.normaliserEmpreinte(emp).signet, emp.signet);
+  assert.strictEqual(E.fusionnerEmpreintes([emp], [])[0].signet, emp.signet);
+});
+
+test("deux KPI d'un même visuel cohabitent sans s'écraser", () => {
+  const autre = Object.assign({}, RELEVE, {
+    reportUrl: RELEVE.reportUrl.replace("702af139-c1c2-4dca-b44b-2ff37794a5df",
+                                        "36cc4e7f-8950-48e0-98ea-7c59d8fce76e") });
+  const lot = E.fusionnerEmpreintes([E.creerEmpreinte(RELEVE, { horodatage: 1 })],
+                                    [E.creerEmpreinte(autre, { horodatage: 2 })]);
+  assert.strictEqual(lot.length, 2);
 });

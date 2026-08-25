@@ -782,36 +782,19 @@ test("empreintes : un fichier sans insertion manuelle le dit clairement", async 
   assert.match(A.dernierMessage(), /inséré à la main/);
 });
 
-test("empreintes : relever UN visuel couvre les autres visuels de la même page", async () => {
+test("empreintes : relever un KPI ne couvre pas son voisin de la même page", () => {
+  // Vérifié : huit insertions du même visuel donnent huit états. L'état
+  // porte les filtres du KPI relevé, jamais ceux du voisin.
   preparerDeck();
-  // Les deux KPI pointent vers deux visuels de la MÊME page de rapport.
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.basculerSelection("kpi_taux_service_hebdomadaire");
   A.run("renderDeckLignes()");
   assert.equal((A.html("deckList").match(/à relever/g) || []).length, 2);
-
-  // Une seule insertion manuelle, sur le premier visuel.
-  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
-  A.run("renderDeckLignes()");
-  const html = A.html("deckList");
-  assert.ok(!/à relever/.test(html), "les deux lignes sont couvertes : " + html);
-  assert.ok(html.includes("⚡ visuel (page)"), "l'emprunt est annoncé comme tel");
 });
 
-test("empreintes : un visuel d'une autre page reste à relever", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
-  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("/p1?", "/p2?"));
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
-  A.run("renderDeckLignes()");
-  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 1);
-});
-
-test("empreintes : le bilan compte les PAGES à insérer, pas les KPI", async () => {
+test("empreintes : le bilan annonce des KPI à insérer, pas des pages", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
@@ -819,8 +802,8 @@ test("empreintes : le bilan compte les PAGES à insérer, pas les KPI", async ()
   A.basculerSelection("kpi_taux_service_hebdomadaire");
   A.run("renderDeckLignes()");
   const bilan = A.texte("deckWarning");
-  assert.match(bilan, /2 visuel\(s\) sans empreinte/);
-  assert.match(bilan, /insérer 1 visuel\(s\) à la main/);
+  assert.match(bilan, /2 KPI sans empreinte/);
+  assert.match(bilan, /LIEN DE L'ANNUAIRE/);
 });
 
 test("empreintes : le support produit porte bien la mémoire relevée", async () => {
@@ -862,14 +845,16 @@ test("empreintes : un relevé .json s'importe comme un PowerPoint", async () => 
   assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
 });
 
-test("empreintes : un relevé .json couvre aussitôt les visuels de la page", async () => {
+test("empreintes : un relevé .json couvre le KPI qu'il décrit, et lui seul", async () => {
   preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à relever"));
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
   await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
-  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+  const html = A.html("deckList");
+  assert.equal((html.match(/⚡ visuel/g) || []).length, 1);
+  assert.equal((html.match(/à relever/g) || []).length, 1);
 });
 
 test("empreintes : un relevé sans état est écarté plutôt qu'accepté à moitié", () => {
@@ -927,13 +912,15 @@ test("livraison : les empreintes livrées sont chargées au démarrage", async (
   assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
 });
 
-test("livraison : elles couvrent aussitôt toute la page", async () => {
+test("livraison : elles couvrent le KPI qu'elles décrivent", async () => {
   preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"));
   A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
   await A.run("chargerEmpreintesLivrees")();
-  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+  assert.ok(A.html("deckList").includes("⚡ visuel"));
 });
 
 test("livraison : un relevé local plus récent n'est jamais écrasé", async () => {
@@ -972,4 +959,101 @@ test("livraison : recharger deux fois n'ajoute rien la seconde", async () => {
   assert.equal(await A.run("chargerEmpreintesLivrees")(), 1);
   assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
   assert.equal(A.run("empreintes.length"), 1);
+});
+
+/* ─── Le signet : ne jamais afficher les chiffres d'un autre KPI ──
+   Plusieurs KPI de l'annuaire partagent un même visuel Power BI ; c'est
+   leur signet — donc leurs filtres — qui les distingue. Vérifié : huit
+   insertions du même visuel donnent huit états différents. Une empreinte
+   relevée ailleurs afficherait le bon graphique avec les mauvais
+   chiffres : on préfère ne rien poser et l'annoncer. */
+
+const SIGNET_KPI = LIEN_VISUEL + "&bookmarkGuid=aaaa1111";
+const SIGNET_VOISIN = LIEN_VISUEL + "&bookmarkGuid=bbbb2222";
+
+test("signet : une empreinte relevée sur le bon signet annonce « visuel »", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("⚡ visuel"));
+});
+
+test("signet : sur un AUTRE signet, la ligne réclame un relevé", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  A.run("renderDeckLignes()");
+  const html = A.html("deckList");
+  assert.ok(html.includes("à relever"), html);
+  assert.ok(!html.includes("⚡ visuel"), "surtout pas de « ⚡ visuel » rassurant");
+});
+
+test("signet : rien n'est posé sur la diapositive plutôt qu'une vue fausse", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_VOISIN);
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  assert.strictEqual(A.run(`Empreintes.resoudre(empreintes, ${JSON.stringify(SIGNET_VOISIN)})`), null);
+});
+
+test("signet : deux KPI d'un même visuel gardent chacun son empreinte", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI, "Vue A"));
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_VOISIN, "Vue B"));
+  assert.equal(A.run("empreintes.length"), 2);
+});
+
+/* ─── Le support de relevé ─────────────────────────────────
+   Une insertion par KPI reste nécessaire : autant la rendre courte.
+   Le support porte, pour chaque KPI encore sans empreinte, son nom et
+   son lien EN CLAIR — celui de l'annuaire, pas un lien repartagé. */
+
+test("relevé : une diapositive par KPI encore dépourvu d'empreinte", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  const r = await A.run("preparerReleve")();
+  assert.equal(r.diapos, 2);
+  assert.match(r.nom, /^releve-empreintes-.*\.pptx$/);
+});
+
+test("relevé : les KPI déjà couverts n'y figurent pas", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  assert.equal((await A.run("preparerReleve")()).diapos, 1);
+});
+
+test("relevé : quand tout est couvert, rien n'est produit et on le dit", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  assert.equal(await A.run("preparerReleve")(), null);
+  assert.match(A.dernierMessage(), /déjà leur empreinte/);
+});
+
+test("relevé : le lien est écrit en clair, prêt à être copié", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  const diapos = A.run(`(function () {
+    const { diapos } = Selection.resoudrePreset(selectionCourante(),
+      [...data, ...personalEntries], activeSites());
+    return diapos.filter(d => d.lien && !empreintePour(d.lien)).map(d => d.lien);
+  })()`);
+  assert.deepEqual(diapos, [SIGNET_KPI], "c'est bien le lien de l'annuaire qui sera affiché");
+});
+
+test("relevé : un KPI sans lien n'encombre pas le support", async () => {
+  preparerDeck();
+  A.basculerSelection("kpi_anticipation_mensuelle");   // sans lien
+  assert.equal(await A.run("preparerReleve")(), null);
 });

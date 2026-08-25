@@ -620,7 +620,7 @@
     <label class="modal-label" for="deckModeSelect">Contenu des visuels</label>
     <select id="deckModeSelect" class="modal-input">
       <option value="vivant">Visuel vivant — complément Power BI (se rafraîchit tout seul)</option>
-      <option value="image">Image — capture collée ou chargée</option>
+      <option value="image">Image — capture de la page entière (aucune empreinte nécessaire)</option>
       <option value="lien">Cadre cliquable seul</option>
     </select>
 
@@ -631,6 +631,7 @@
     <div class="modal-actions">
       <button id="deckGenerateBtn" class="btn-primary">📊 Générer et télécharger</button>
       <button id="deckShotsBtn" class="btn-secondary" title="Charger un dossier de captures produites par l'outil de capture">🖼 Charger les captures</button>
+      <button id="deckPreparerBtn" class="btn-secondary" title="Fabrique un PowerPoint avec une diapositive par KPI encore sans empreinte, son lien affiché en clair, prêt à coller dans le complément Power BI.">📋 Préparer le relevé</button>
       <button id="deckEmpreintesBtn" class="btn-secondary" title="Relever, dans un PowerPoint où les visuels ont été insérés à la main, ce que le complément Power BI avait mémorisé. Une seule insertion par page de rapport suffit. Accepte aussi un relevé .json déjà constitué.">🔎 Relever les empreintes</button>
       <button id="deckExportBtn" class="btn-secondary" title="Décrit la sélection dans un fichier .json pour la capture automatique">⬇ Exporter la sélection</button>
       <button id="closeDeckBtn2" class="btn-secondary" onclick="fermerDeckModal()">Fermer</button>

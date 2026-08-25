@@ -105,61 +105,44 @@ Quatre conclusions pratiques :
   `creatorTenantId`, `reportEmbeddedTime`, annotations). Ils ne sont donc pas relevés :
   un fichier neuf n'a pas à porter les traces de la session de quelqu'un d'autre.
 
-#### Une insertion par PAGE, pas par KPI
+#### Le signet : ce qui distingue deux KPI d'un même visuel
 
-Cet état n'est pas un état de visuel : c'est l'état de la **page** — filtres, segments,
-et les 54 objets qu'elle porte, où le visuel visé n'apparaît qu'une fois. Il vaut donc
-pour tous les visuels de cette page.
+Attention — c'est le piège le plus coûteux, et il a fallu un support réel pour le voir.
 
-Vérifié : l'état relevé sur un visuel restitue correctement **un autre visuel de la même
-page**, et n'a aucun effet sur un visuel d'une autre page.
+Plusieurs KPI peuvent pointer vers **le même visuel Power BI**. Sur cet annuaire, trois
+« Volumétrie » partagent `14bddbd2…` et quatre « Taux de service » partagent `2d4bfd20…`.
+Ce qui les distingue n'est pas `visual=`, c'est **`bookmarkGuid=`** : le signet, donc les
+filtres et les segments.
 
-C'est ce qui décide de la charge de travail réelle. Sur cet annuaire, 22 liens tiennent
-sur **2 pages** d'un seul rapport : il faut donc **2 insertions manuelles**, pas 22.
+Or l'état mémorisé **écrase le signet du lien**. Une empreinte relevée sur un signet et
+appliquée à un autre affiche donc le bon graphique **avec les chiffres d'un autre KPI** —
+et rien n'a l'air cassé.
 
-L'annuaire applique cette règle tout seul : à défaut d'empreinte pour un visuel, il
-emprunte celle d'un voisin de la même page — en laissant de côté son `artifactName`, qui
-désignerait le mauvais visuel. Une empreinte exacte prime toujours sur un emprunt, et la
-fenêtre de génération distingue les deux cas :
-
-| | |
-|---|---|
-| `⚡ visuel` | empreinte relevée sur ce visuel précis |
-| `⚡ visuel (page)` | état emprunté à un voisin de la même page |
-| `à relever` | aucune empreinte : filtres et segments ne seront pas restitués |
-
-Le bilan de la fenêtre annonce d'ailleurs le nombre de **pages** à insérer, pas de KPI.
-
-#### Les empreintes livrées avec l'annuaire
-
-`empreintes-livrees.json`, déposé à côté d'`index.html`, est chargé au démarrage. Il
-contient les empreintes déjà relevées : **rien à importer, ça marche dès le
-déploiement**.
-
-Il ne fait que COMBLER — ce qui est déjà connu localement ou partagé par l'équipe
-l'emporte toujours, et une empreinte livrée ne peut donc jamais écraser un relevé plus
-récent. Son absence n'est pas une erreur : l'annuaire démarre normalement sans lui.
-
-Pour le mettre à jour après une nouvelle insertion :
-
-```bash
-node outils/relever-empreintes.js support.pptx --sortie empreintes-livrees.json
-```
-
-⚠️ Ce fichier contient l'état sérialisé des pages du rapport — noms de tables, de
-colonnes et de filtres. C'est de la métadonnée métier : à garder dans un dépôt privé.
+L'empreinte mémorise donc le signet dont son état provient, et la fenêtre de génération
+prévient : `⚠ autre vue`. L'état reste posé — sans lui le complément ne résout rien —
+mais on ne prétend plus que la diapositive est juste.
 
 #### Relever une empreinte
 
 C'est l'unique geste manuel, et il n'est à faire **qu'une fois par KPI** :
 
-1. dans PowerPoint, *Insertion › Compléments › Power BI*, coller le lien **d'un** visuel
-   par page de rapport ;
-2. vérifier que le graphique s'affiche, enregistrer le fichier ;
-3. dans l'annuaire : *Sélection & PowerPoint › Générer › **🔎 Relever les empreintes***,
-   choisir ce fichier.
+**Une empreinte par KPI**, c'est-à-dire par lien de l'annuaire. Le bouton
+**📋 Préparer le relevé** fabrique le support qui rend ce travail court : une
+diapositive par KPI encore dépourvu d'empreinte, portant son nom et **son lien en
+clair**.
 
-Vous pouvez mettre toutes les pages dans un même fichier et le relever d'un seul coup.
+1. cliquer sur *Sélection & PowerPoint › Générer › **📋 Préparer le relevé*** ;
+2. pour chaque diapositive : sélectionner le lien affiché, *Insertion › Compléments ›
+   Power BI*, le coller, vérifier que le graphique s'affiche ;
+3. enregistrer le fichier ;
+4. *Générer › **🔎 Relever les empreintes*** et le choisir.
+
+⚠️ **Toujours coller le lien de l'annuaire.** Repartager le visuel depuis Power BI crée
+un **nouveau** `bookmarkGuid` : l'empreinte obtenue ne correspondrait à aucun KPI. C'est
+l'erreur la plus facile à commettre, et la plus difficile à voir.
+
+Une fois relevées, les empreintes partent dans la synchronisation : personne d'autre n'a
+à refaire l'insertion.
 
 Le même bouton accepte aussi un **relevé `.json`** déjà constitué — celui que produit
 `outils/relever-empreintes.js --sortie`, ou le contenu du document partagé. C'est le
@@ -249,7 +232,59 @@ format et le cadre obtenu — puis conclut « Aucune anomalie » ou liste ce qui
 Pour reprendre un lien fautif : dans Power BI, sur **le visuel**, `…` → **Partager** →
 **Lien vers cet élément visuel**, puis collez-le dans la fiche du KPI.
 
-#### 2. Image — capture automatique ou collée
+#### La page entière plutôt que le visuel seul
+
+Un lien de VISUEL exige une empreinte, et cette empreinte est propre à son signet : une
+insertion manuelle par KPI. Désigner la **PAGE** change la donne — il n'y a plus d'objet
+à retrouver, donc peut-être plus rien à mémoriser — et apporte en prime ce que le visuel
+seul ne montre pas : les sélecteurs de mois et de semaines, l'année, les filtres.
+
+`outils/diagnostic-page-entiere.js` fabrique le support qui tranche : quatre formes
+d'adresse de page, **aucune empreinte nulle part**, plus un témoin.
+
+```bash
+node outils/diagnostic-page-entiere.js --lien "<url d'un KPI>"
+```
+
+| | |
+|---|---|
+| **A** | la page, avec le signet du KPI — la sélection de ce KPI, sélecteurs compris |
+| **B** | la page, sans signet — l'état par défaut |
+| **C** | la page, sans `pbi_source=shareVisual` — une adresse de rapport ordinaire |
+| **D** | l'adresse nue : rapport, page, signet |
+| **E** | témoin : le visuel seul sans empreinte, connu pour échouer |
+
+**Résultat : aucune ne s'affiche.** Le complément exige une empreinte quelle que soit la
+forme de l'adresse — visuel ou page. C'est donc établi une fois pour toutes : **le visuel
+vivant ne peut pas être automatisé**. Il reste deux chemins, et deux seulement.
+
+| | empreinte | données | travail manuel |
+|---|---|---|---|
+| **Visuel vivant** | une par KPI | se rafraîchissent chez le lecteur | une insertion par KPI, une fois |
+| **Image, page entière** | aucune | figées à la génération | aucun |
+
+Le second est le seul qui tienne la promesse « rien à faire ».
+
+#### 2. Image — capture automatique de la PAGE (aucune empreinte)
+
+**C'est le seul mode sans travail manuel**, et celui qui reproduit exactement ce qu'on
+voit dans Power BI : titre, sélecteurs de mois et de semaines, année, filtres, puis le
+graphique. Trois commandes, dont deux une seule fois dans la vie :
+
+```bash
+npm i -D playwright && npx playwright install chromium   # une fois
+node outils/capturer-visuels.js selection.json --connexion   # une fois : se connecter
+node outils/capturer-visuels.js selection.json --page --deck # chaque semaine
+```
+
+`selection.json` s'obtient dans l'annuaire par *Sélection & PowerPoint › Générer ›
+**⬇ Exporter la sélection***. La session Power BI est conservée d'une fois sur l'autre.
+
+`--page` vise le canevas du rapport plutôt que le conteneur du graphique. La priorité
+compte : sans elle le conteneur du visuel serait trouvé le premier, et on capturerait le
+graphique seul.
+
+
 
 Pour un support qui doit rester lisible **hors de l'entreprise** (ou par quelqu'un sans
 accès Power BI), il faut de vraies images.
@@ -261,6 +296,9 @@ navigateur, avec **votre** session Power BI, attend le rendu et enregistre l'ima
 
 ```bash
 npm i -D playwright && npx playwright install chromium
+
+# --page capture la PAGE entière : sélecteurs de dates et filtres compris,
+# et surtout : aucune empreinte n'est nécessaire dans ce mode.
 
 # Une seule fois : se connecter à Power BI (la session est conservée)
 node outils/capturer-visuels.js selection.json --connexion
@@ -293,7 +331,6 @@ rituel avant d'avoir les données.
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
-| `empreintes-livrees.json` | empreintes déjà relevées, chargées au démarrage — **doit être déployé** |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/capturer-visuels.js` | capture automatique des visuels Power BI |
 | `outils/generer-deck.js` | support PowerPoint depuis une sélection + des captures |
@@ -305,8 +342,11 @@ rituel avant d'avoir les données.
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
 | `outils/diagnostic-complement.js` | support à cinq variantes pour isoler ce que lit le complément |
 | `outils/diagnostic-etat.js` | l'état peut-il être fabriqué ? partagé entre visuels d'une page ? |
+| `outils/verifier-rendu.js` | ce que le complément a RÉELLEMENT affiché, relu sur un support rouvert |
+| `outils/diagnostic-signet.js` | le signet du lien peut-il l'emporter sur l'état mémorisé ? |
+| `outils/diagnostic-page-entiere.js` | la page entière s'affiche-t-elle sans empreinte ? |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 322 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 358 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -320,6 +360,25 @@ dont trois jetons sont substitués à la génération : `{{TITRE}}`, `{{SOUS_TIT
 ou la couverture, enregistrez — **en conservant les trois jetons**.
 
 ## Quand le visuel affiché n'est pas celui attendu
+
+Premier réflexe, avant toute hypothèse : **ouvrir le support, le réenregistrer, et le
+relire**. À l'ouverture, le complément réécrit dans le fichier ce qu'il a résolu — le nom
+du visuel, la page, l'horodatage. On sait donc sans rien deviner ce que chaque
+diapositive a montré :
+
+```bash
+node outils/verifier-rendu.js support-ouvert.pptx
+```
+
+Il signale les trois façons dont un support peut mentir :
+
+| | |
+|---|---|
+| *le complément n'a pas ouvert cette diapositive* | le fichier a été renvoyé sans être affiché : le relevé ne veut rien dire |
+| *l'état appliqué est celui d'une autre page* | le support montrera la mauvaise page |
+| *l'état ne décrit pas ce visuel* | le bon graphique s'affiche, **avec les filtres d'un voisin** — les chiffres peuvent être faux sans que rien n'ait l'air cassé |
+
+
 
 Le complément est une boîte noire : on ne peut pas savoir de l'extérieur comment il
 interprète l'adresse qu'on lui donne. `outils/diagnostic-complement.js` fabrique donc un
@@ -371,7 +430,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 773 tests (dont 322 pour cette fonctionnalité)
+node --test              # 797 tests (dont 358 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)
@@ -382,10 +441,11 @@ npm run lint
 
 ## Points restés ouverts
 
-- **Une empreinte est à relever pour chaque PAGE de rapport.** C'est un geste unique par
-  page, mais il reste manuel : le complément valide l'état auprès du service, et n'expose
-  aucun moyen de produire cette mémoire sans une insertion réelle dans PowerPoint. Ni
-  l'API REST de Power BI ni le SDK JavaScript ne donnent l'état d'un lien de partage.
+- **Une empreinte est à relever pour chaque KPI**, c'est-à-dire pour chaque lien. C'est un
+  geste unique par KPI, mais il reste manuel : le complément valide l'état auprès du
+  service, et n'expose aucun moyen de produire cette mémoire sans une insertion réelle
+  dans PowerPoint. Ni l'API REST de Power BI ni le SDK JavaScript ne donnent l'état d'un
+  lien de partage.
 - **Une empreinte survit-elle à une refonte du rapport ?** Si un visuel est recréé, son
   identifiant change et l'empreinte devient orpheline : la ligne repassera à
   « à relever », ce qui est le bon signal, mais l'ancienne empreinte reste stockée.
