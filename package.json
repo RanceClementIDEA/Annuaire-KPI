@@ -23,7 +23,10 @@
     "verifier:deck": "node outils/verifier-deck.js",
     "build:essai": "node outils/construire-annuaire-test.js",
     "smoke:essai": "node smoke-essai.js",
-    "diagnostic": "node outils/diagnostic-complement.js"
+    "diagnostic": "node outils/diagnostic-complement.js",
+    "powerpoint": "node outils/capturer-visuels.js --page --deck",
+    "connexion": "node outils/capturer-visuels.js --connexion",
+    "installer:navigateur": "npm i -D playwright && npx playwright install chromium"
   },
   "license": "UNLICENSED"
 }

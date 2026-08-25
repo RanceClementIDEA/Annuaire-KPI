@@ -618,7 +618,7 @@
     </div>
 
     <label class="modal-label" for="deckModeSelect">Contenu des visuels</label>
-    <select id="deckModeSelect" class="modal-input">
+    <select id="deckModeSelect" class="modal-input" onchange="this.dataset.choisi='1'">
       <option value="vivant">Visuel vivant — complément Power BI (se rafraîchit tout seul)</option>
       <option value="image">Image — capture de la page entière (aucune empreinte nécessaire)</option>
       <option value="lien">Cadre cliquable seul</option>

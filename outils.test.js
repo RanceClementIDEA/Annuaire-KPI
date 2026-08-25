@@ -701,3 +701,34 @@ test("capture : aucun conteneur n'est essayé deux fois", () => {
   const cibles = C.ciblesPour(true);
   assert.equal(new Set(cibles).size, cibles.length);
 });
+
+/* ═══ L'ordre des arguments doit être libre ═════════════════
+   `npm run powerpoint -- selection.json` place le fichier APRÈS les
+   drapeaux. Sans liste des options sans valeur, « --deck » prenait le
+   nom du fichier pour sa valeur et la sélection n'était jamais lue. */
+
+test("options : un drapeau ne mange pas le fichier qui le suit", () => {
+  const o = G.options(["--page", "--deck", "selection.json"]);
+  assert.deepEqual(o._, ["selection.json"]);
+  assert.equal(o.page, true);
+  assert.equal(o.deck, true);
+});
+
+test("options : l'ordre des arguments ne change rien", () => {
+  const a = G.options(["selection.json", "--page", "--deck"]);
+  const b = G.options(["--page", "--deck", "selection.json"]);
+  assert.deepEqual(a, b);
+});
+
+test("options : les options à valeur gardent la leur", () => {
+  const o = G.options(["selection.json", "--page", "--captures", "./img", "--sortie", "d.pptx"]);
+  assert.equal(o.captures, "./img");
+  assert.equal(o.sortie, "d.pptx");
+  assert.deepEqual(o._, ["selection.json"]);
+});
+
+test("options : chaque drapeau connu est bien déclaré sans valeur", () => {
+  G.DRAPEAUX.forEach(nom => {
+    assert.equal(G.options(["--" + nom, "fichier.json"])[nom], true, nom);
+  });
+});

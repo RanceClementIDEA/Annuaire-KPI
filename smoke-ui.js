@@ -121,12 +121,15 @@ const serveur = http.createServer((req, res) => {
     if (lignes !== 2) throw new Error("lignes : " + lignes);
   });
 
-  await etape("le mode « visuel vivant » est proposé par défaut", async () => {
+  await etape("sans empreinte, c'est le mode Image qui est proposé", async () => {
+    // Le visuel vivant afficherait « l'objet visuel n'existe plus » :
+    // l'annuaire ne le propose pas tant qu'aucune empreinte ne le permet.
     const v = await page.inputValue("#deckModeSelect");
-    if (v !== "vivant") throw new Error("mode par défaut : " + v);
+    if (v !== "image") throw new Error("mode par défaut : " + v);
   });
 
   await etape("sans empreinte, chaque ligne réclame un relevé", async () => {
+    await page.selectOption("#deckModeSelect", "vivant");
     // Le lien peut être parfait : sans la mémoire du complément, PowerPoint
     // afficherait « l'objet visuel n'existe plus ». La liste doit le dire.
     const lignes = await page.locator(".deck-shot").allTextContents();

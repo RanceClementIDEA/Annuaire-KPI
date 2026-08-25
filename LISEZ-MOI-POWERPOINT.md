@@ -272,9 +272,9 @@ voit dans Power BI : titre, sélecteurs de mois et de semaines, année, filtres,
 graphique. Trois commandes, dont deux une seule fois dans la vie :
 
 ```bash
-npm i -D playwright && npx playwright install chromium   # une fois
-node outils/capturer-visuels.js selection.json --connexion   # une fois : se connecter
-node outils/capturer-visuels.js selection.json --page --deck # chaque semaine
+npm run installer:navigateur                      # une fois, jamais plus
+npm run connexion -- selection.json               # une fois : se connecter à Power BI
+npm run powerpoint -- selection.json              # chaque semaine
 ```
 
 `selection.json` s'obtient dans l'annuaire par *Sélection & PowerPoint › Générer ›

@@ -121,6 +121,12 @@ const FICHES = [
     await p.click("#selectionModeBtn"); await p.waitForTimeout(300);
     await p.click("#selectAllBtn"); await p.waitForTimeout(300);
     await p.click("#deckBtn"); await p.waitForTimeout(500);
+    /* Sans empreinte l'annuaire propose désormais le mode image : on
+       impose le visuel vivant, car c'est la chaîne complète — complément
+       et signet — qu'on veut éprouver ici. Le garde-fou demande alors
+       confirmation, ce qui est précisément son rôle. */
+    await p.selectOption("#deckModeSelect", "vivant");
+    p.once("dialog", d => d.accept());
     const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 20000 }), p.click("#deckGenerateBtn")]);
     await dl.saveAs("/tmp/essai.pptx");
     const buf = fs.readFileSync("/tmp/essai.pptx");

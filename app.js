@@ -4258,6 +4258,7 @@ function ouvrirDeckModal() {
     const p = presets.find(x => x.id === presetCourant);
     titre.value = p ? "Indicateurs — " + p.name : "Indicateurs KPI";
   }
+  choisirModeParDefaut();
   renderDeckLignes();
   document.getElementById("deckModal")?.classList.remove("hidden");
 }
@@ -4273,6 +4274,23 @@ function diaposCourantes() {
     [...data, ...personalEntries],
     activeSites()
   );
+}
+
+/**
+ * Propose le mode qui a une chance de produire quelque chose.
+ *
+ * Le visuel vivant exige une empreinte par KPI, relevée à la main. Sans
+ * empreinte, chaque diapositive affiche « l'objet visuel ajouté ici
+ * n'existe plus » : autant ne pas le proposer par défaut. L'utilisateur
+ * reste libre de le choisir.
+ */
+function choisirModeParDefaut() {
+  const sel = document.getElementById("deckModeSelect");
+  if (!sel || sel.dataset.choisi === "1") return sel && sel.value;
+  const { diapos } = diaposCourantes();
+  const vivantPossible = diapos.some(d => d.lien && empreintePour(d.lien));
+  sel.value = vivantPossible ? "vivant" : "image";
+  return sel.value;
 }
 
 /** Mode de génération choisi dans la fenêtre. */
@@ -4659,6 +4677,23 @@ async function genererDeck() {
 
   const lire = id => document.getElementById(id);
   const mode = (lire("deckModeSelect") && lire("deckModeSelect").value) || "vivant";
+
+  /* Garde-fou : en visuel vivant, un KPI sans empreinte affichera
+     « l'objet visuel ajouté ici n'existe plus ». Mieux vaut le dire
+     avant de produire le support que de le découvrir en séance. */
+  if (mode === "vivant") {
+    const muets = diapos.filter(d => d.lien && !empreintePour(d.lien));
+    if (muets.length) {
+      const suite = confirm(
+        muets.length + " KPI sur " + diapos.length + " n'ont pas d'empreinte.\n\n"
+        + "Leur diapositive affichera « L'objet visuel ajouté ici n'existe plus ».\n\n"
+        + "Deux façons d'y remédier :\n"
+        + "  • « 📋 Préparer le relevé », puis une insertion à la main par KPI ;\n"
+        + "  • le mode « Image », qui capture la page entière sans aucune empreinte.\n\n"
+        + "Produire quand même le support ?");
+      if (!suite) return null;
+    }
+  }
   const options = {
     titre:     (lire("deckTitleInput") && lire("deckTitleInput").value) || "Indicateurs KPI",
     sousTitre: (lire("deckSubtitleInput") && lire("deckSubtitleInput").value) || "",

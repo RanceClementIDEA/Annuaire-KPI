@@ -7310,6 +7310,67 @@ test("relevé : un KPI sans lien n'encombre pas le support", async () => {
   assert.equal(await A.run("preparerReleve")(), null);
 });
 
+/* ─── Ne plus produire un support qui affichera des erreurs ─
+   Le visuel vivant exige une empreinte par KPI. Sans elle, chaque
+   diapositive affiche « L'objet visuel ajouté ici n'existe plus ».
+   L'annuaire doit le dire AVANT, pas le laisser découvrir en séance. */
+
+test("mode : sans aucune empreinte, c'est l'image qui est proposée", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("ouvrirDeckModal()");
+  assert.equal(A.el("deckModeSelect").value, "image");
+});
+
+test("mode : dès qu'une empreinte existe, le visuel vivant reprend la main", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  A.run("ouvrirDeckModal()");
+  assert.equal(A.el("deckModeSelect").value, "vivant");
+});
+
+test("mode : un choix explicite de l'utilisateur n'est jamais écrasé", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "lien");
+  A.run(`document.getElementById("deckModeSelect").dataset.choisi = "1"`);
+  A.run("ouvrirDeckModal()");
+  assert.equal(A.el("deckModeSelect").value, "lien");
+});
+
+test("génération : produire un support muet demande confirmation", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  A.confirmer(false);
+  assert.equal(await A.run("genererDeck")(), null, "refusée, rien n'est produit");
+});
+
+test("génération : confirmée, elle produit tout de même le support", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.saisir("deckModeSelect", "vivant");
+  A.confirmer(true);
+  const r = await A.run("genererDeck")();
+  assert.equal(r.diapos, 1);
+});
+
+test("génération : avec toutes les empreintes, aucune question n'est posée", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
+  A.saisir("deckModeSelect", "vivant");
+  A.confirmer(false);   // un refus ne doit rien changer : la question n'est pas posée
+  assert.equal((await A.run("genererDeck")()).diapos, 1);
+});
+
 
 /* Le navigateur signale par un événement « storage » toute écriture faite
    depuis un AUTRE onglet du même site. C'est une attribution certaine :
