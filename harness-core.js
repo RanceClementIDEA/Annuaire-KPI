@@ -63,6 +63,9 @@
     const memoire = {};                  // localStorage simulé
     const captures = { ouvertures: [], alertes: [], fichiers: [] };
     let reponseConfirm = false;
+    /* Fichiers servis par fetch() : un test peut déposer le contenu que
+       l'application ira chercher (empreintes-livrees.json, par exemple). */
+    let fichiersServis = {};
 
     const elementPourId = id => {
       if (!registre.has(id)) registre.set(id, creerElement(id));
@@ -132,7 +135,15 @@
       function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
       function () {},
       { createObjectURL: () => "blob:x", revokeObjectURL() {} },
-      () => Promise.resolve({ ok: true, json: () => ({}), text: () => "" }),
+      url => {
+        const chemin = String(url).replace(/^\.\//, "");
+        if (Object.prototype.hasOwnProperty.call(fichiersServis, chemin)) {
+          const contenu = fichiersServis[chemin];
+          if (contenu === null) return Promise.resolve({ ok: false, status: 404 });
+          return Promise.resolve({ ok: true, json: () => JSON.parse(contenu), text: () => contenu });
+        }
+        return Promise.resolve({ ok: true, json: () => ({}), text: () => "" });
+      },
       () => {}, () => {}, () => ({ matches: false, addListener() {}, addEventListener() {} }),
       () => 0, () => 0, () => {},
       { log() {}, warn() {}, error() {}, info() {} }
@@ -146,7 +157,8 @@
     // Un test peut remplacer confirm/alert/XLSX/FileReader : on garde l'original
     // pour les rétablir à chaque reset et éviter toute contamination entre tests.
     run(`globalThis.__origine = { confirm: confirm, alert: alert, XLSX: XLSX,
-                                  FileReader: FileReader, navigator: navigator };`);
+                                  FileReader: FileReader, navigator: navigator,
+                                  fetch: fetch };`);
 
     const outils = {
       run,
@@ -187,7 +199,8 @@
           ? {} : {});
         run(`confirm = globalThis.__origine.confirm; alert = globalThis.__origine.alert;
              XLSX = globalThis.__origine.XLSX; FileReader = globalThis.__origine.FileReader;
-             navigator = globalThis.__origine.navigator;`);
+             navigator = globalThis.__origine.navigator;
+             fetch = globalThis.__origine.fetch;`);
         stockageSim.setItem = stockageOrigine.setItem;
         stockageSim.getItem = stockageOrigine.getItem;
         stockageSim.removeItem = stockageOrigine.removeItem;
@@ -269,6 +282,10 @@
 
       /* --- interactions simulées --- */
       confirmer(v) { reponseConfirm = !!v; return this; },
+      /* Dépose un fichier que fetch() servira. Une valeur null simule une
+         absence (404), ce qui doit rester sans conséquence. */
+      servir(chemin, contenu) { fichiersServis[String(chemin).replace(/^\.\//, "")] = contenu; return this; },
+      oublierFichiers() { fichiersServis = {}; return this; },
       messages: () => run("globalThis.__msg.slice()"),
       dernierMessage: () => { const m = run("globalThis.__msg.slice()"); return m[m.length - 1] || ""; },
       alertes: () => captures.alertes.slice(),

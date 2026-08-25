@@ -131,6 +131,13 @@ test("une empreinte sans état sérialisé est incomplète — vérifié : elle 
     "la carte d'identité seule laisse le complément afficher « l'objet visuel n'existe plus »");
 });
 
+test("le nom du visuel n'entre pas dans le compte : seul l'état fait s'afficher le graphique", () => {
+  // Vérifié dans PowerPoint : l'état réel privé d'artifactName s'affiche.
+  const emp = E.creerEmpreinte(RELEVE, {});
+  delete emp.proprietes.artifactName;
+  assert.ok(E.empreinteComplete(emp));
+});
+
 /* ─── trouver ──────────────────────────────────────────────── */
 
 test("on retrouve l'empreinte d'un lien, quelle que soit sa taille demandée", () => {
@@ -201,4 +208,105 @@ test("la normalisation écarte tout champ hors de la liste relevée", () => {
   const emp = E.normaliserEmpreinte({ id: CLE_VISUEL,
     proprietes: { artifactName: "A", creatorUserId: "X", nimporteQuoi: "Y" } });
   assert.deepStrictEqual(Object.keys(emp.proprietes), ["artifactName"]);
+});
+
+/* ─── Empreintes de page ───────────────────────────────────
+   L'état sérialisé est un état de PAGE : filtres et segments de toute
+   la page, où le visuel visé n'est qu'un objet parmi les autres.
+   Vérifié dans PowerPoint : l'état relevé sur un visuel restitue
+   correctement un AUTRE visuel de la même page. C'est ce qui ramène
+   le travail manuel à une insertion par page au lieu d'une par KPI. */
+
+const VOISIN = LIEN.replace("visual=14bddbd2925c24715a84", "visual=aaaabbbbccccddddeeee");
+const AUTRE_PAGE = LIEN.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a");
+
+test("la clé de page réunit le rapport et la page, sans le visuel", () => {
+  assert.strictEqual(E.clePage(LIEN),
+    "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f");
+  assert.strictEqual(E.clePage(LIEN), E.clePage(VOISIN));
+  assert.notStrictEqual(E.clePage(LIEN), E.clePage(AUTRE_PAGE));
+});
+
+test("un voisin de la même page est trouvé quand le visuel n'a pas la sienne", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.trouver([emp], VOISIN), null, "aucune empreinte exacte");
+  assert.strictEqual(E.trouverParPage([emp], VOISIN).id, CLE_VISUEL);
+});
+
+test("un visuel d'une autre page n'emprunte rien", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.trouverParPage([emp], AUTRE_PAGE), null);
+  assert.strictEqual(E.resoudre([emp], AUTRE_PAGE), null);
+});
+
+test("l'empreinte exacte prime sur celle d'un voisin", () => {
+  const exacte = E.creerEmpreinte(RELEVE, { horodatage: 10 });
+  const voisin = E.creerEmpreinte(
+    Object.assign({}, RELEVE, { reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee"),
+                                artifactName: "&quot;Voisin&quot;" }), { horodatage: 99 });
+  const r = E.resoudre([voisin, exacte], LIEN);
+  assert.strictEqual(r.emprunt, false);
+  assert.strictEqual(r.proprietes.artifactName, RELEVE.artifactName);
+});
+
+test("un emprunt garde l'état mais laisse le nom de l'autre visuel", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const r = E.resoudre([emp], VOISIN);
+  assert.strictEqual(r.emprunt, true);
+  assert.ok(r.proprietes.bookmark, "l'état de page est repris");
+  assert.ok(!r.proprietes.artifactName, "l'étiquette de l'autre visuel serait fausse");
+  assert.strictEqual(r.proprietes.pageDisplayName, RELEVE.pageDisplayName,
+    "le contexte de page, lui, est bien commun");
+});
+
+test("un emprunt ne se fait jamais sur une empreinte sans état", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  delete emp.proprietes.bookmark;
+  assert.strictEqual(E.trouverParPage([emp], VOISIN), null);
+});
+
+test("entre plusieurs voisins, c'est le relevé le plus récent qui sert", () => {
+  const faire = (visuel, nom, quand) => E.creerEmpreinte(
+    Object.assign({}, RELEVE, {
+      reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", visuel),
+      pageDisplayName: "&quot;" + nom + "&quot;"
+    }), { horodatage: quand });
+  const vieux = faire("1111111111111111aaaa", "vieux", 100);
+  const neuf  = faire("2222222222222222bbbb", "neuf", 900);
+  assert.strictEqual(E.trouverParPage([vieux, neuf], VOISIN).proprietes.pageDisplayName,
+    "&quot;neuf&quot;");
+});
+
+test("sans aucune empreinte, la résolution rend null plutôt que d'échouer", () => {
+  assert.strictEqual(E.resoudre([], LIEN), null);
+  assert.strictEqual(E.resoudre(null, LIEN), null);
+  assert.strictEqual(E.resoudre([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
+});
+
+/* ─── Garde-fou : l'état doit être celui de la bonne page ───
+   Un support de diagnostic porte des compléments où l'état d'une page a
+   été posé sur le visuel d'une autre. Relevés tels quels, ils
+   prétendraient couvrir une page dont ils n'ont pas l'état, et
+   empêcheraient d'en relever la vraie empreinte. */
+
+test("un complément dont l'état vient d'une autre page est écarté", () => {
+  const piege = Object.assign({}, RELEVE, {
+    reportUrl: RELEVE.reportUrl.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a")
+    // pageName reste celui de faec2927 : l'état appartient à l'autre page
+  });
+  assert.strictEqual(E.creerEmpreinte(piege, {}), null);
+});
+
+test("un complément cohérent avec sa page est bien relevé", () => {
+  const bon = Object.assign({}, RELEVE, {
+    reportUrl: RELEVE.reportUrl.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a"),
+    pageName: "&quot;62748b2b1a0c66bd4a3a&quot;"
+  });
+  assert.ok(E.creerEmpreinte(bon, {}));
+});
+
+test("sans pageName mémorisé, on ne peut rien vérifier : le relevé passe", () => {
+  const sansPage = Object.assign({}, RELEVE);
+  delete sansPage.pageName;
+  assert.ok(E.creerEmpreinte(sansPage, {}));
 });

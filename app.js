@@ -316,6 +316,8 @@ function login(user) {
   loadActivity();
   loadPresets();
   loadEmpreintes();
+  // Sans await : l'annuaire doit s'afficher même si le fichier manque.
+  chargerEmpreintesLivrees();
   loadSavedFile();
 
   try { connectSync(false); } catch (err) { console.error("connectSync (login) error:", err); }
@@ -4008,14 +4010,62 @@ function loadEmpreintes() {
   empreintes = (Array.isArray(brut) ? brut : []).map(e => Empreintes.normaliserEmpreinte(e));
 }
 
+/**
+ * Empreintes livrées avec l'annuaire (`empreintes-livrees.json`).
+ *
+ * Relever une empreinte suppose une insertion manuelle dans PowerPoint :
+ * autant ne la demander à personne quand elle a déjà été faite. Le
+ * fichier est donc déposé à côté d'index.html, et chargé au démarrage.
+ *
+ * Il ne fait que COMBLER : ce qui est déjà connu localement ou partagé
+ * par l'équipe l'emporte, et le fichier ne peut donc jamais écraser un
+ * relevé plus récent. Son absence n'est pas une erreur.
+ *
+ * @returns {Promise<number>} nombre d'empreintes ajoutées
+ */
+async function chargerEmpreintesLivrees() {
+  let liste;
+  try {
+    const rep = await fetch("./empreintes-livrees.json", { cache: "no-cache" });
+    if (!rep.ok) return 0;
+    const brut = await rep.json();
+    liste = Array.isArray(brut) ? brut
+          : (brut && Array.isArray(brut.kpiEmpreintes)) ? brut.kpiEmpreintes : null;
+  } catch (err) {
+    return 0;   // pas de fichier, hors ligne, JSON illisible : sans conséquence
+  }
+  if (!liste || !liste.length) return 0;
+
+  const valides = liste
+    .filter(e => e && e.id && e.proprietes)
+    .map(e => Empreintes.normaliserEmpreinte(e))
+    .filter(e => Empreintes.empreinteComplete(e));
+  if (!valides.length) return 0;
+
+  const avant = new Set(empreintes.map(e => e.id));
+  // L'ordre compte : ce qui est déjà là passe en premier et l'emporte.
+  empreintes = Empreintes.fusionnerEmpreintes(empreintes, valides);
+  const ajoutees = empreintes.filter(e => !avant.has(e.id)).length;
+  if (ajoutees) {
+    ecrireDonnees(LS_EMPREINTES, empreintes);
+    renderDeckLignes();
+  }
+  return ajoutees;
+}
+
 function saveEmpreintes(sync = true) {
   ecrireDonnees(LS_EMPREINTES, empreintes);
   if (sync) pousserEmpreintes();
 }
 
-/** Empreinte connue pour ce lien, ou null. */
+/**
+ * Ce qui sera posé pour ce lien : son empreinte, ou celle d'un voisin de
+ * la même page. L'état sérialisé étant un état de PAGE, une insertion
+ * manuelle par page suffit à couvrir tous ses KPI.
+ * @returns {{proprietes:Object, empreinte:Object, emprunt:boolean}|null}
+ */
 function empreintePour(lien) {
-  return Empreintes.trouver(empreintes, lien);
+  return Empreintes.resoudre(empreintes, lien);
 }
 
 function loadPresets() {
@@ -4286,15 +4336,50 @@ async function releverEmpreintesDepuis(octets) {
   return { ajoutees, total: trouvees.length, ignores };
 }
 
-/** Le fichier choisi dans la fenêtre de génération. */
+/**
+ * Empreintes déjà relevées ailleurs, livrées sous forme de fichier .json.
+ * Sert à transmettre un relevé sans refaire l'insertion : entre deux
+ * annuaires, ou quand quelqu'un a déjà fait le travail.
+ * @returns {{ajoutees:number, total:number, ignores:number}}
+ */
+function importerEmpreintesJson(texte) {
+  let brut;
+  try { brut = JSON.parse(texte); }
+  catch (err) { throw new Error("ce fichier n'est pas un relevé d'empreintes lisible"); }
+
+  const liste = Array.isArray(brut) ? brut
+              : (brut && Array.isArray(brut.kpiEmpreintes)) ? brut.kpiEmpreintes : null;
+  if (!liste) throw new Error("ce fichier ne contient pas de liste d'empreintes");
+
+  const valides = liste
+    .filter(e => e && e.id && e.proprietes)
+    .map(e => Empreintes.normaliserEmpreinte(e, { horodatage: now(), auteur: currentUser || "?" }))
+    .filter(e => Empreintes.empreinteComplete(e));
+
+  const avant = new Set(empreintes.map(e => e.id));
+  empreintes = Empreintes.fusionnerEmpreintes(valides, empreintes);
+  const ajoutees = empreintes.filter(e => !avant.has(e.id)).length;
+  if (valides.length) saveEmpreintes();
+  return { ajoutees, total: valides.length, ignores: liste.length - valides.length };
+}
+
+/**
+ * Le fichier choisi dans la fenêtre de génération : un PowerPoint où
+ * l'insertion a été faite à la main, ou un relevé .json déjà constitué.
+ */
 async function importerEmpreintes(fichier) {
   if (!fichier) return null;
+  const estJson = /\.json$/i.test(fichier.name || "");
   try {
-    const octets = new Uint8Array(await fichier.arrayBuffer());
-    const bilan = await releverEmpreintesDepuis(octets);
+    const bilan = estJson
+      ? importerEmpreintesJson(await fichier.text())
+      : await releverEmpreintesDepuis(new Uint8Array(await fichier.arrayBuffer()));
+
     if (!bilan.total) {
-      showToast("Aucun visuel inséré à la main dans ce fichier — "
-        + "il faut un PowerPoint où le visuel a été ajouté depuis Power BI", 5000);
+      showToast(estJson
+        ? "Ce relevé ne contient aucune empreinte exploitable"
+        : "Aucun visuel inséré à la main dans ce fichier — "
+          + "il faut un PowerPoint où le visuel a été ajouté depuis Power BI", 5000);
     } else {
       showToast("🔎 " + bilan.total + " empreinte(s) relevée(s)"
         + (bilan.ajoutees ? ", dont " + bilan.ajoutees + " nouvelle(s)" : ""), 3400);
@@ -4316,12 +4401,14 @@ function etatVisuel(d) {
   const diag = diagnosticLien(d);
   if (mode === "lien")   return { texte: d.lien ? "lien seul" : "sans lien", cls: "" };
   if (!diag.ok)          return { texte: diag.court, cls: " alerte" };
-  /* Le lien peut être parfait : sans empreinte, le complément affichera
-     quand même « l'objet visuel n'existe plus ». C'est le seul état qui
-     décide vraiment si la diapositive montrera le graphique. */
-  return Empreintes.empreinteComplete(empreintePour(d.lien))
-    ? { texte: "⚡ visuel", cls: " on" }
-    : { texte: "à relever", cls: " alerte" };
+  /* Sans empreinte, le visuel s'affiche parfois, mais dans son état par
+     défaut : filtres et segments perdus. L'état relevé est ce qui garantit
+     les BONNES données — c'est lui qu'on suit ici. */
+  const emp = empreintePour(d.lien);
+  if (!emp) return { texte: "à relever", cls: " alerte" };
+  return emp.emprunt
+    ? { texte: "⚡ visuel (page)", cls: " on" }
+    : { texte: "⚡ visuel", cls: " on" };
 }
 
 function renderDeckLignes() {
@@ -4357,11 +4444,13 @@ function renderDeckLignes() {
     if (plats) parties.push(`${plats} visuel(s) au format très allongé : à confirmer en les ouvrant`);
     if (vides) parties.push(`${vides} KPI sans lien`);
     if (modeDeck() === "vivant") {
-      const aRelever = diapos.filter(d => diagnosticLien(d).ok
-        && !Empreintes.empreinteComplete(empreintePour(d.lien))).length;
-      if (aRelever) {
-        parties.push(`${aRelever} visuel(s) sans empreinte : ils afficheront « l'objet visuel n'existe plus ». `
-          + `Insérez-les une fois à la main dans un PowerPoint, puis relevez-le ci-dessous.`);
+      const sansEmpreinte = diapos.filter(d => diagnosticLien(d).ok && !empreintePour(d.lien));
+      if (sansEmpreinte.length) {
+        // Une insertion par PAGE suffit : on annonce donc des pages, pas des KPI.
+        const pages = new Set(sansEmpreinte.map(d => Empreintes.clePage(d.lien)).filter(Boolean));
+        parties.push(`${sansEmpreinte.length} visuel(s) sans empreinte : leurs filtres et segments `
+          + `ne seront pas restitués. Il suffit d'insérer ${pages.size || 1} visuel(s) à la main `
+          + `— un par page de rapport — puis de relever le fichier ci-dessous.`);
       }
     }
     avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";

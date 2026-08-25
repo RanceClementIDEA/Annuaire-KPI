@@ -239,6 +239,7 @@ const assert = {
   equal(a,b,m){ if(a!=b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
   strictEqual(a,b,m){ if(a!==b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
   notEqual(a,b,m){ if(a==b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
+  notStrictEqual(a,b,m){ if(a===b) throw new Error(m || "les deux valeurs ne devraient pas être identiques"); },
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
   deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },

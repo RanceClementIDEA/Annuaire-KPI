@@ -88,23 +88,83 @@ Vérifié en conditions réelles, une diapositive à la fois, dans PowerPoint :
 | + page et jeu de données | ❌ |
 | **+ l'état sérialisé** | ✅ **le graphique s'affiche** |
 | tout, y compris les champs de session | ✅ |
+| l'état réel **sans** `artifactName` | ✅ |
+| un état **fabriqué**, vide ou portant le visuel visé | ❌ |
 
-Deux conclusions pratiques :
+Quatre conclusions pratiques :
 
 - **l'état sérialisé n'est pas facultatif.** On ne peut pas alléger une empreinte pour
   gagner de la place : elle deviendrait muette ;
+- **il ne peut pas non plus être fabriqué.** Un état construit de toutes pièces, même
+  contenant la description du visuel visé, est rejeté : le complément le valide auprès
+  du service. Générer une empreinte à partir du seul lien est donc impossible ;
+- **`artifactName` n'est qu'une étiquette.** L'état réel privé de ce nom affiche le
+  graphique. Il sert au relevé — c'est la marque d'une insertion faite à la main — pas
+  à l'affichage ;
 - **les champs de session ne servent à rien** (`creatorSessionId`, `creatorUserId`,
   `creatorTenantId`, `reportEmbeddedTime`, annotations). Ils ne sont donc pas relevés :
   un fichier neuf n'a pas à porter les traces de la session de quelqu'un d'autre.
+
+#### Une insertion par PAGE, pas par KPI
+
+Cet état n'est pas un état de visuel : c'est l'état de la **page** — filtres, segments,
+et les 54 objets qu'elle porte, où le visuel visé n'apparaît qu'une fois. Il vaut donc
+pour tous les visuels de cette page.
+
+Vérifié : l'état relevé sur un visuel restitue correctement **un autre visuel de la même
+page**, et n'a aucun effet sur un visuel d'une autre page.
+
+C'est ce qui décide de la charge de travail réelle. Sur cet annuaire, 22 liens tiennent
+sur **2 pages** d'un seul rapport : il faut donc **2 insertions manuelles**, pas 22.
+
+L'annuaire applique cette règle tout seul : à défaut d'empreinte pour un visuel, il
+emprunte celle d'un voisin de la même page — en laissant de côté son `artifactName`, qui
+désignerait le mauvais visuel. Une empreinte exacte prime toujours sur un emprunt, et la
+fenêtre de génération distingue les deux cas :
+
+| | |
+|---|---|
+| `⚡ visuel` | empreinte relevée sur ce visuel précis |
+| `⚡ visuel (page)` | état emprunté à un voisin de la même page |
+| `à relever` | aucune empreinte : filtres et segments ne seront pas restitués |
+
+Le bilan de la fenêtre annonce d'ailleurs le nombre de **pages** à insérer, pas de KPI.
+
+#### Les empreintes livrées avec l'annuaire
+
+`empreintes-livrees.json`, déposé à côté d'`index.html`, est chargé au démarrage. Il
+contient les empreintes déjà relevées : **rien à importer, ça marche dès le
+déploiement**.
+
+Il ne fait que COMBLER — ce qui est déjà connu localement ou partagé par l'équipe
+l'emporte toujours, et une empreinte livrée ne peut donc jamais écraser un relevé plus
+récent. Son absence n'est pas une erreur : l'annuaire démarre normalement sans lui.
+
+Pour le mettre à jour après une nouvelle insertion :
+
+```bash
+node outils/relever-empreintes.js support.pptx --sortie empreintes-livrees.json
+```
+
+⚠️ Ce fichier contient l'état sérialisé des pages du rapport — noms de tables, de
+colonnes et de filtres. C'est de la métadonnée métier : à garder dans un dépôt privé.
 
 #### Relever une empreinte
 
 C'est l'unique geste manuel, et il n'est à faire **qu'une fois par KPI** :
 
-1. dans PowerPoint, *Insertion › Compléments › Power BI*, coller le lien du visuel ;
+1. dans PowerPoint, *Insertion › Compléments › Power BI*, coller le lien **d'un** visuel
+   par page de rapport ;
 2. vérifier que le graphique s'affiche, enregistrer le fichier ;
 3. dans l'annuaire : *Sélection & PowerPoint › Générer › **🔎 Relever les empreintes***,
    choisir ce fichier.
+
+Vous pouvez mettre toutes les pages dans un même fichier et le relever d'un seul coup.
+
+Le même bouton accepte aussi un **relevé `.json`** déjà constitué — celui que produit
+`outils/relever-empreintes.js --sortie`, ou le contenu du document partagé. C'est le
+moyen de transmettre un relevé sans refaire l'insertion : d'un annuaire à l'autre, ou
+quand quelqu'un a déjà fait le travail.
 
 L'empreinte part alors dans la synchronisation : **toute l'équipe en profite**, personne
 n'a à refaire l'insertion. La fenêtre de génération affiche, pour chaque diapositive,
@@ -233,6 +293,7 @@ rituel avant d'avoir les données.
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
+| `empreintes-livrees.json` | empreintes déjà relevées, chargées au démarrage — **doit être déployé** |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
 | `outils/capturer-visuels.js` | capture automatique des visuels Power BI |
 | `outils/generer-deck.js` | support PowerPoint depuis une sélection + des captures |
@@ -243,8 +304,9 @@ rituel avant d'avoir les données.
 | `js/inspecter-deck.js` | lecture d'un .pptx produit (partagée page web / ligne de commande) |
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
 | `outils/diagnostic-complement.js` | support à cinq variantes pour isoler ce que lit le complément |
+| `outils/diagnostic-etat.js` | l'état peut-il être fabriqué ? partagé entre visuels d'une page ? |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 281 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 322 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -309,7 +371,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 735 tests (dont 281 pour cette fonctionnalité)
+node --test              # 773 tests (dont 322 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)
@@ -320,9 +382,10 @@ npm run lint
 
 ## Points restés ouverts
 
-- **Une empreinte est à relever pour chaque KPI.** C'est un geste unique par visuel, mais
-  il reste manuel : le complément n'expose aucun moyen de produire cette mémoire sans
-  passer par une insertion réelle dans PowerPoint.
+- **Une empreinte est à relever pour chaque PAGE de rapport.** C'est un geste unique par
+  page, mais il reste manuel : le complément valide l'état auprès du service, et n'expose
+  aucun moyen de produire cette mémoire sans une insertion réelle dans PowerPoint. Ni
+  l'API REST de Power BI ni le SDK JavaScript ne donnent l'état d'un lien de partage.
 - **Une empreinte survit-elle à une refonte du rapport ?** Si un visuel est recréé, son
   identifiant change et l'empreinte devient orpheline : la ligne repassera à
   « à relever », ce qui est le bon signal, mais l'ancienne empreinte reste stockée.

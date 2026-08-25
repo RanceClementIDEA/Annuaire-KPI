@@ -60,6 +60,21 @@ const serveur = http.createServer((req, res) => {
     catch (e) { console.log("  ✗ " + nom + " → " + e.message); process.exitCode = 1; }
   };
 
+  await etape("les empreintes livrées avec l'annuaire sont chargées au démarrage", async () => {
+    // empreintes-livrees.json est déposé à côté d'index.html : aucune
+    // importation à faire, les visuels marchent dès le déploiement.
+    const etat = await page.evaluate(() => ({
+      nb: empreintes.length,
+      pages: [...new Set(empreintes.map(e => Empreintes.clePage(
+        "https://app.powerbi.com/groups/me/reports/" + e.id.split("/").slice(0, 2).join("/")
+        + "?pbi_source=shareVisual&visual=" + e.id.split("/")[2])))],
+      avecEtat: empreintes.every(e => !!e.proprietes.bookmark)
+    }));
+    if (!etat.nb) throw new Error("aucune empreinte livrée n'a été chargée");
+    if (!etat.avecEtat) throw new Error("une empreinte livrée n'a pas d'état sérialisé");
+    if (etat.pages.length < 2) throw new Error("pages couvertes : " + JSON.stringify(etat.pages));
+  });
+
   await etape("l'annuaire affiche les 3 KPI", async () => {
     const n = await page.locator("#kpiContainer .card").count();
     if (n !== 3) throw new Error("cartes affichées : " + n);
@@ -137,6 +152,8 @@ const serveur = http.createServer((req, res) => {
         ].join("");
         return `<we:webextension><we:properties>${props}</we:properties></we:webextension>`;
       };
+      // UN SEUL complément : les deux KPI vivent sur des pages différentes,
+      // celui-ci ne couvre donc que le premier. La suite le vérifie.
       const octets = ZipMini.ecrireZip([
         { nom: "[Content_Types].xml", donnees: '<?xml version="1.0"?><Types></Types>' },
         { nom: "ppt/webextensions/webextension1.xml", donnees: comp("r1", "p1", "v1", "Histo empilé") },
@@ -147,6 +164,25 @@ const serveur = http.createServer((req, res) => {
     });
     const lignes = await page.locator(".deck-shot").allTextContents();
     if (!lignes.every(t => /⚡ visuel/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
+  });
+
+  await etape("un seul relevé couvre les autres visuels de la même page", async () => {
+    // L'état sérialisé est un état de PAGE : relever un visuel suffit
+    // pour tous ceux qui vivent sur la même page du rapport.
+    const etats = await page.evaluate(() => {
+      const memePage = "https://app.powerbi.com/groups/me/reports/r1/p1"
+        + "?pbi_source=shareVisual&visual=vAutre";
+      const r = Empreintes.resoudre(empreintes, memePage);
+      const autrePage = "https://app.powerbi.com/groups/me/reports/r1/p9"
+        + "?pbi_source=shareVisual&visual=vAilleurs";
+      return { emprunt: r && r.emprunt, etat: !!(r && r.proprietes.bookmark),
+               nom: !!(r && r.proprietes.artifactName),
+               ailleurs: Empreintes.resoudre(empreintes, autrePage) };
+    });
+    if (!etats.emprunt) throw new Error("l'emprunt n'a pas eu lieu");
+    if (!etats.etat) throw new Error("l'état de page n'a pas été repris");
+    if (etats.nom) throw new Error("le nom de l'autre visuel a été recopié à tort");
+    if (etats.ailleurs) throw new Error("une autre page a emprunté à tort");
   });
 
   await etape("le support produit embarque la mémoire du complément", async () => {

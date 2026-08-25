@@ -1,4 +1,4 @@
-const CACHE_NAME = "kpi-idea-cache-v2";
+const CACHE_NAME = "kpi-idea-cache-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -9,10 +9,12 @@ const ASSETS = [
   "./js/merge.js",
   "./js/carousel.js",
   "./js/zip.js",
+  "./js/empreintes.js",
   "./js/pptx.js",
   "./js/inspecter-deck.js",
   "./js/selection.js",
   "./modele-deck.pptx",
+  "./empreintes-livrees.json",
   "./logo-idea.png",
   "./footer-idea.png",
   "./manifest.json"

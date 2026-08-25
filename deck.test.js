@@ -782,6 +782,47 @@ test("empreintes : un fichier sans insertion manuelle le dit clairement", async 
   assert.match(A.dernierMessage(), /inséré à la main/);
 });
 
+test("empreintes : relever UN visuel couvre les autres visuels de la même page", async () => {
+  preparerDeck();
+  // Les deux KPI pointent vers deux visuels de la MÊME page de rapport.
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 2);
+
+  // Une seule insertion manuelle, sur le premier visuel.
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.run("renderDeckLignes()");
+  const html = A.html("deckList");
+  assert.ok(!/à relever/.test(html), "les deux lignes sont couvertes : " + html);
+  assert.ok(html.includes("⚡ visuel (page)"), "l'emprunt est annoncé comme tel");
+});
+
+test("empreintes : un visuel d'une autre page reste à relever", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("/p1?", "/p2?"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.run("renderDeckLignes()");
+  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 1);
+});
+
+test("empreintes : le bilan compte les PAGES à insérer, pas les KPI", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run("renderDeckLignes()");
+  const bilan = A.texte("deckWarning");
+  assert.match(bilan, /2 visuel\(s\) sans empreinte/);
+  assert.match(bilan, /insérer 1 visuel\(s\) à la main/);
+});
+
 test("empreintes : le support produit porte bien la mémoire relevée", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
@@ -796,4 +837,139 @@ test("empreintes : le support produit porte bien la mémoire relevée", async ()
   assert.ok(diapo.proprietesComplement, "l'empreinte est appliquée à la diapositive");
   assert.equal(diapo.proprietesComplement.artifactName, "&quot;Histo empilé&quot;");
   assert.ok(diapo.proprietesComplement.initialStateBookmark, "la copie de l'état est reconstituée");
+});
+
+/* ─── Relevé livré sous forme de fichier .json ──────────────
+   Sert à transmettre un relevé sans refaire l'insertion : entre deux
+   annuaires, ou quand quelqu'un a déjà fait le travail. */
+
+function jsonEmpreinte(lien, nom) {
+  return JSON.stringify([{
+    id: A.run(`Empreintes.cleVisuel(${JSON.stringify(lien)})`),
+    libelle: nom || "Histo empilé",
+    proprietes: { artifactName: "&quot;" + (nom || "Histo empilé") + "&quot;",
+                  bookmark: "&quot;H4sIEtatSerialise&quot;" },
+    _mtime: 1, _by: "clement"
+  }]);
+}
+
+const fichierJson = (texte, nom) => ({ name: nom || "empreintes.json", text: async () => texte });
+
+test("empreintes : un relevé .json s'importe comme un PowerPoint", async () => {
+  preparerDeck();
+  await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
+  assert.equal(A.run("empreintes.length"), 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("empreintes : un relevé .json couvre aussitôt les visuels de la page", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"));
+  await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
+  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+});
+
+test("empreintes : un relevé sans état est écarté plutôt qu'accepté à moitié", () => {
+  preparerDeck();
+  const sansEtat = JSON.stringify([{ id: "r1/p1/v1", proprietes: { artifactName: "&quot;X&quot;" } }]);
+  const bilan = A.run("importerEmpreintesJson")(sansEtat);
+  assert.equal(bilan.total, 0);
+  assert.equal(bilan.ignores, 1);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : le format du document partagé est accepté lui aussi", () => {
+  preparerDeck();
+  const doc = JSON.stringify({ kpiEmpreintes: JSON.parse(jsonEmpreinte(LIEN_VISUEL)), updatedAt: 5 });
+  assert.equal(A.run("importerEmpreintesJson")(doc).total, 1);
+});
+
+test("empreintes : un fichier illisible le dit, sans rien casser", async () => {
+  preparerDeck();
+  await A.run("importerEmpreintes")(fichierJson("{pas du json", "casse.json"));
+  assert.match(A.dernierMessage(), /Lecture impossible/);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : réimporter le même relevé ne crée pas de doublon", async () => {
+  preparerDeck();
+  const texte = jsonEmpreinte(LIEN_VISUEL);
+  await A.run("importerEmpreintes")(fichierJson(texte));
+  const second = await A.run("importerEmpreintes")(fichierJson(texte));
+  assert.equal(second.ajoutees, 0);
+  assert.equal(A.run("empreintes.length"), 1);
+});
+
+/* ─── Empreintes livrées avec l'annuaire ────────────────────
+   Relever une empreinte suppose une insertion manuelle dans PowerPoint.
+   Quand elle a déjà été faite, autant la livrer : `empreintes-livrees.json`
+   est déposé à côté d'index.html et chargé au démarrage. Il COMBLE, il
+   n'écrase jamais — ni un relevé local, ni celui de l'équipe. */
+
+function livraison(lien, nom, quand) {
+  return JSON.stringify([{
+    id: A.run(`Empreintes.cleVisuel(${JSON.stringify(lien)})`),
+    libelle: nom || "Livré",
+    proprietes: { artifactName: "&quot;" + (nom || "Livré") + "&quot;",
+                  bookmark: "&quot;H4sIEtat" + (nom || "L") + "&quot;" },
+    _mtime: quand || 500, _by: "livraison"
+  }]);
+}
+
+test("livraison : les empreintes livrées sont chargées au démarrage", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  const n = await A.run("chargerEmpreintesLivrees")();
+  assert.equal(n, 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("livraison : elles couvrent aussitôt toute la page", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  await A.run("chargerEmpreintesLivrees")();
+  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+});
+
+test("livraison : un relevé local plus récent n'est jamais écrasé", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL, "Relevé ici"));
+  A.run("empreintes[0]._mtime = 9000");
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Livré", 500));
+  const n = await A.run("chargerEmpreintesLivrees")();
+  assert.equal(n, 0, "rien n'est ajouté");
+  assert.equal(A.run("empreintes[0].libelle"), "Relevé ici", "le relevé local reste en place");
+});
+
+test("livraison : le fichier absent est sans conséquence", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", null);   // 404
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("livraison : un fichier illisible ne fait pas tomber le démarrage", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", "{ceci n'est pas du json");
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+});
+
+test("livraison : une empreinte livrée sans état est écartée", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", JSON.stringify([
+    { id: "r1/p1/v1", libelle: "Creuse", proprietes: { artifactName: "&quot;X&quot;" }, _mtime: 1 }]));
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+});
+
+test("livraison : recharger deux fois n'ajoute rien la seconde", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 1);
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+  assert.equal(A.run("empreintes.length"), 1);
 });

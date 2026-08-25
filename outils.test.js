@@ -508,3 +508,70 @@ test("relevé : les options en ligne de commande sont comprises", () => {
 test("relevé : une option inconnue est refusée plutôt que devinée", () => {
   assert.throws(() => R.options(["--nimporte"]), /Option inconnue/);
 });
+
+/* ═══ L'état sérialisé peut-il être fabriqué ? ══════════════
+   Si oui, le relevé manuel disparaît : tout se déduit du lien et de
+   l'API REST de Power BI. outils/diagnostic-etat.js fabrique le
+   support qui tranche ; ces tests garantissent qu'il pose bien ce
+   qu'il prétend poser. */
+
+const DE = require("./outils/diagnostic-etat.js");
+
+test("état : compresser puis relire redonne exactement l'objet de départ", () => {
+  const objet = { a: 1, b: ["x", "y"], c: { d: "é€" } };
+  assert.deepEqual(DE.lireEtat(DE.ecrireEtat(objet)), objet);
+});
+
+test("état : la valeur produite est lisible comme celle de Power BI", () => {
+  // Power BI entoure ses valeurs de guillemets échappés ; le lecteur
+  // doit accepter les deux formes, sinon le relevé serait illisible.
+  const brut = DE.ecrireEtat({ ok: true });
+  assert.ok(brut.startsWith("&quot;") && brut.endsWith("&quot;"));
+  assert.deepEqual(DE.lireEtat(brut.replace(/&quot;/g, "")), { ok: true });
+});
+
+test("état fabriqué : la page active est celle du lien, et rien d'autre n'est inventé", () => {
+  const e = DE.etatMinimal("p42");
+  assert.equal(e.explorationState.activeSection, "p42");
+  assert.deepEqual(Object.keys(e.explorationState.sections), ["p42"]);
+  assert.deepEqual(e.explorationState.sections.p42.visualContainers, {});
+});
+
+test("état fabriqué : le conteneur du visuel visé est recopié quand on l'a", () => {
+  const reel = { explorationState: { sections: { p42: { visualContainers: {
+    v1: { singleVisual: { visualType: "barChart" } },
+    v2: { singleVisual: { visualType: "slicer" } }
+  } } } } };
+  const e = DE.etatUnVisuel("p42", "v1", reel);
+  assert.deepEqual(Object.keys(e.explorationState.sections.p42.visualContainers), ["v1"]);
+});
+
+test("état fabriqué : sans état réel sous la main, la variante reste valide", () => {
+  const e = DE.etatUnVisuel("p42", "v1", null);
+  assert.deepEqual(e.explorationState.sections.p42.visualContainers, {});
+});
+
+test("diagnostic : cinq variantes, dont deux témoins explicites", () => {
+  const lien = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1";
+  const empreinte = { id: "r1/p1/v1", proprietes: {
+    artifactName: "&quot;Histo&quot;", bookmark: DE.ecrireEtat(DE.etatMinimal("p1")) } };
+  const v = DE.variantes(lien, empreinte);
+  assert.deepEqual(v.map(x => x.code), ["U", "V", "W", "X", "Y"]);
+  assert.ok(v[0].proprietesComplement.bookmark, "U doit porter un état fabriqué");
+  assert.equal(v[2].proprietesComplement.artifactName, null, "W doit retirer le nom du visuel");
+  assert.ok(!v[4].proprietesComplement, "Y ne doit rien porter");
+});
+
+test("diagnostic : l'état fabriqué de U ne contient aucun visuel", () => {
+  const lien = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1";
+  const v = DE.variantes(lien, { id: "r1/p1/v1", proprietes: { artifactName: "&quot;H&quot;" } });
+  const etat = DE.lireEtat(v[0].proprietesComplement.bookmark);
+  assert.deepEqual(etat.explorationState.sections.p1.visualContainers, {});
+  assert.equal(etat.explorationState.activeSection, "p1");
+});
+
+test("diagnostic : les deux copies de l'état sont posées ensemble", () => {
+  const lien = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1";
+  const v = DE.variantes(lien, { id: "r1/p1/v1", proprietes: { artifactName: "&quot;H&quot;" } });
+  assert.equal(v[0].proprietesComplement.initialStateBookmark, v[0].proprietesComplement.bookmark);
+});

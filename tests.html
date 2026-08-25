@@ -239,6 +239,7 @@ const assert = {
   equal(a,b,m){ if(a!=b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
   strictEqual(a,b,m){ if(a!==b) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
   notEqual(a,b,m){ if(a==b) throw new Error(m || "les deux valeurs ne devraient pas être égales"); },
+  notStrictEqual(a,b,m){ if(a===b) throw new Error(m || "les deux valeurs ne devraient pas être identiques"); },
   ok(v,m){ if(!v) throw new Error(m || "valeur fausse alors qu'elle devrait être vraie"); },
   match(s,re,m){ if(!re.test(s)) throw new Error(m || `"${String(s).slice(0,120)}" ne correspond pas à ${re}`); },
   deepEqual(a,b,m){ if(JSON.stringify(a)!==JSON.stringify(b)) throw new Error(m || `attendu ${JSON.stringify(b)}, obtenu ${JSON.stringify(a)}`); },
@@ -337,6 +338,9 @@ function __module(nom){
     const memoire = {};                  // localStorage simulé
     const captures = { ouvertures: [], alertes: [], fichiers: [] };
     let reponseConfirm = false;
+    /* Fichiers servis par fetch() : un test peut déposer le contenu que
+       l'application ira chercher (empreintes-livrees.json, par exemple). */
+    let fichiersServis = {};
 
     const elementPourId = id => {
       if (!registre.has(id)) registre.set(id, creerElement(id));
@@ -406,7 +410,15 @@ function __module(nom){
       function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
       function () {},
       { createObjectURL: () => "blob:x", revokeObjectURL() {} },
-      () => Promise.resolve({ ok: true, json: () => ({}), text: () => "" }),
+      url => {
+        const chemin = String(url).replace(/^\.\//, "");
+        if (Object.prototype.hasOwnProperty.call(fichiersServis, chemin)) {
+          const contenu = fichiersServis[chemin];
+          if (contenu === null) return Promise.resolve({ ok: false, status: 404 });
+          return Promise.resolve({ ok: true, json: () => JSON.parse(contenu), text: () => contenu });
+        }
+        return Promise.resolve({ ok: true, json: () => ({}), text: () => "" });
+      },
       () => {}, () => {}, () => ({ matches: false, addListener() {}, addEventListener() {} }),
       () => 0, () => 0, () => {},
       { log() {}, warn() {}, error() {}, info() {} }
@@ -420,7 +432,8 @@ function __module(nom){
     // Un test peut remplacer confirm/alert/XLSX/FileReader : on garde l'original
     // pour les rétablir à chaque reset et éviter toute contamination entre tests.
     run(`globalThis.__origine = { confirm: confirm, alert: alert, XLSX: XLSX,
-                                  FileReader: FileReader, navigator: navigator };`);
+                                  FileReader: FileReader, navigator: navigator,
+                                  fetch: fetch };`);
 
     const outils = {
       run,
@@ -461,7 +474,8 @@ function __module(nom){
           ? {} : {});
         run(`confirm = globalThis.__origine.confirm; alert = globalThis.__origine.alert;
              XLSX = globalThis.__origine.XLSX; FileReader = globalThis.__origine.FileReader;
-             navigator = globalThis.__origine.navigator;`);
+             navigator = globalThis.__origine.navigator;
+             fetch = globalThis.__origine.fetch;`);
         stockageSim.setItem = stockageOrigine.setItem;
         stockageSim.getItem = stockageOrigine.getItem;
         stockageSim.removeItem = stockageOrigine.removeItem;
@@ -543,6 +557,10 @@ function __module(nom){
 
       /* --- interactions simulées --- */
       confirmer(v) { reponseConfirm = !!v; return this; },
+      /* Dépose un fichier que fetch() servira. Une valeur null simule une
+         absence (404), ce qui doit rester sans conséquence. */
+      servir(chemin, contenu) { fichiersServis[String(chemin).replace(/^\.\//, "")] = contenu; return this; },
+      oublierFichiers() { fichiersServis = {}; return this; },
       messages: () => run("globalThis.__msg.slice()"),
       dernierMessage: () => { const m = run("globalThis.__msg.slice()"); return m[m.length - 1] || ""; },
       alertes: () => captures.alertes.slice(),
@@ -5344,6 +5362,13 @@ test("une empreinte sans état sérialisé est incomplète — vérifié : elle 
     "la carte d'identité seule laisse le complément afficher « l'objet visuel n'existe plus »");
 });
 
+test("le nom du visuel n'entre pas dans le compte : seul l'état fait s'afficher le graphique", () => {
+  // Vérifié dans PowerPoint : l'état réel privé d'artifactName s'affiche.
+  const emp = E.creerEmpreinte(RELEVE, {});
+  delete emp.proprietes.artifactName;
+  assert.ok(E.empreinteComplete(emp));
+});
+
 /* ─── trouver ──────────────────────────────────────────────── */
 
 test("on retrouve l'empreinte d'un lien, quelle que soit sa taille demandée", () => {
@@ -5414,6 +5439,107 @@ test("la normalisation écarte tout champ hors de la liste relevée", () => {
   const emp = E.normaliserEmpreinte({ id: CLE_VISUEL,
     proprietes: { artifactName: "A", creatorUserId: "X", nimporteQuoi: "Y" } });
   assert.deepStrictEqual(Object.keys(emp.proprietes), ["artifactName"]);
+});
+
+/* ─── Empreintes de page ───────────────────────────────────
+   L'état sérialisé est un état de PAGE : filtres et segments de toute
+   la page, où le visuel visé n'est qu'un objet parmi les autres.
+   Vérifié dans PowerPoint : l'état relevé sur un visuel restitue
+   correctement un AUTRE visuel de la même page. C'est ce qui ramène
+   le travail manuel à une insertion par page au lieu d'une par KPI. */
+
+const VOISIN = LIEN.replace("visual=14bddbd2925c24715a84", "visual=aaaabbbbccccddddeeee");
+const AUTRE_PAGE = LIEN.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a");
+
+test("la clé de page réunit le rapport et la page, sans le visuel", () => {
+  assert.strictEqual(E.clePage(LIEN),
+    "6a4cf353-aac8-48de-a793-9a8066069ffc/faec2927b8728b9fd32f");
+  assert.strictEqual(E.clePage(LIEN), E.clePage(VOISIN));
+  assert.notStrictEqual(E.clePage(LIEN), E.clePage(AUTRE_PAGE));
+});
+
+test("un voisin de la même page est trouvé quand le visuel n'a pas la sienne", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.trouver([emp], VOISIN), null, "aucune empreinte exacte");
+  assert.strictEqual(E.trouverParPage([emp], VOISIN).id, CLE_VISUEL);
+});
+
+test("un visuel d'une autre page n'emprunte rien", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  assert.strictEqual(E.trouverParPage([emp], AUTRE_PAGE), null);
+  assert.strictEqual(E.resoudre([emp], AUTRE_PAGE), null);
+});
+
+test("l'empreinte exacte prime sur celle d'un voisin", () => {
+  const exacte = E.creerEmpreinte(RELEVE, { horodatage: 10 });
+  const voisin = E.creerEmpreinte(
+    Object.assign({}, RELEVE, { reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", "aaaabbbbccccddddeeee"),
+                                artifactName: "&quot;Voisin&quot;" }), { horodatage: 99 });
+  const r = E.resoudre([voisin, exacte], LIEN);
+  assert.strictEqual(r.emprunt, false);
+  assert.strictEqual(r.proprietes.artifactName, RELEVE.artifactName);
+});
+
+test("un emprunt garde l'état mais laisse le nom de l'autre visuel", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  const r = E.resoudre([emp], VOISIN);
+  assert.strictEqual(r.emprunt, true);
+  assert.ok(r.proprietes.bookmark, "l'état de page est repris");
+  assert.ok(!r.proprietes.artifactName, "l'étiquette de l'autre visuel serait fausse");
+  assert.strictEqual(r.proprietes.pageDisplayName, RELEVE.pageDisplayName,
+    "le contexte de page, lui, est bien commun");
+});
+
+test("un emprunt ne se fait jamais sur une empreinte sans état", () => {
+  const emp = E.creerEmpreinte(RELEVE, {});
+  delete emp.proprietes.bookmark;
+  assert.strictEqual(E.trouverParPage([emp], VOISIN), null);
+});
+
+test("entre plusieurs voisins, c'est le relevé le plus récent qui sert", () => {
+  const faire = (visuel, nom, quand) => E.creerEmpreinte(
+    Object.assign({}, RELEVE, {
+      reportUrl: RELEVE.reportUrl.replace("14bddbd2925c24715a84", visuel),
+      pageDisplayName: "&quot;" + nom + "&quot;"
+    }), { horodatage: quand });
+  const vieux = faire("1111111111111111aaaa", "vieux", 100);
+  const neuf  = faire("2222222222222222bbbb", "neuf", 900);
+  assert.strictEqual(E.trouverParPage([vieux, neuf], VOISIN).proprietes.pageDisplayName,
+    "&quot;neuf&quot;");
+});
+
+test("sans aucune empreinte, la résolution rend null plutôt que d'échouer", () => {
+  assert.strictEqual(E.resoudre([], LIEN), null);
+  assert.strictEqual(E.resoudre(null, LIEN), null);
+  assert.strictEqual(E.resoudre([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
+});
+
+/* ─── Garde-fou : l'état doit être celui de la bonne page ───
+   Un support de diagnostic porte des compléments où l'état d'une page a
+   été posé sur le visuel d'une autre. Relevés tels quels, ils
+   prétendraient couvrir une page dont ils n'ont pas l'état, et
+   empêcheraient d'en relever la vraie empreinte. */
+
+test("un complément dont l'état vient d'une autre page est écarté", () => {
+  const piege = Object.assign({}, RELEVE, {
+    reportUrl: RELEVE.reportUrl.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a")
+    // pageName reste celui de faec2927 : l'état appartient à l'autre page
+  });
+  assert.strictEqual(E.creerEmpreinte(piege, {}), null);
+});
+
+test("un complément cohérent avec sa page est bien relevé", () => {
+  const bon = Object.assign({}, RELEVE, {
+    reportUrl: RELEVE.reportUrl.replace("faec2927b8728b9fd32f", "62748b2b1a0c66bd4a3a"),
+    pageName: "&quot;62748b2b1a0c66bd4a3a&quot;"
+  });
+  assert.ok(E.creerEmpreinte(bon, {}));
+});
+
+test("sans pageName mémorisé, on ne peut rien vérifier : le relevé passe", () => {
+  const sansPage = Object.assign({}, RELEVE);
+  delete sansPage.pageName;
+  assert.ok(E.creerEmpreinte(sansPage, {}));
 });
 
 __ouvrirGroupe("Fabrique PowerPoint");
@@ -6073,13 +6199,41 @@ test("l'adresse du rapport n'est JAMAIS modifiée par l'empreinte", async () => 
   assert.strictEqual(url(avec.txt), url(sans.txt));
 });
 
-test("une empreinte qui ne correspond à aucun lien n'est pas appliquée", async () => {
-  const autre = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
+/* L'état sérialisé est un état de PAGE : filtres et segments de toute la
+   page, où le visuel visé n'est qu'un objet parmi les autres. Vérifié dans
+   PowerPoint : l'état relevé sur un visuel restitue correctement un autre
+   visuel de la même page — d'où une insertion manuelle par PAGE, et non
+   par KPI. */
+
+test("l'empreinte d'un AUTRE visuel de la même page est empruntée", async () => {
+  const voisin = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [voisin] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.ok(noms.includes("bookmark"), "l'état du voisin est repris");
+  assert.ok(noms.includes("initialStateBookmark"), "sa copie aussi");
+  assert.ok(!noms.includes("artifactName"),
+    "mais pas son nom : il désigne un autre visuel, l'étiquette serait fausse");
+});
+
+test("l'empreinte d'une AUTRE page n'est pas appliquée", async () => {
+  const autre = empreintePour(LIEN_PBI.replace("/faec2927?", "/pageDifferente?"));
   const { txt } = await lireP(await deckP(
     [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [autre] }
   ));
   assert.deepStrictEqual(nomsProprietes(txt("ppt/webextensions/webextension1.xml")),
     P.PROPRIETES_PAR_DEFAUT);
+});
+
+test("l'empreinte exacte prime toujours sur celle d'un voisin", async () => {
+  const voisin = empreintePour(LIEN_PBI.replace(/visual=[^&]*/, "visual=ffffffffffffffffffff"));
+  const exacte = empreintePour(LIEN_PBI);
+  const { txt } = await lireP(await deckP(
+    [{ titre: "A", lien: LIEN_PBI, vivant: true }], { empreintes: [voisin, exacte] }
+  ));
+  const noms = nomsProprietes(txt("ppt/webextensions/webextension1.xml"));
+  assert.ok(noms.includes("artifactName"), "le nom du bon visuel est conservé");
 });
 
 test("une diapositive en image ignore les empreintes", () => {
@@ -6887,6 +7041,47 @@ test("empreintes : un fichier sans insertion manuelle le dit clairement", async 
   assert.match(A.dernierMessage(), /inséré à la main/);
 });
 
+test("empreintes : relever UN visuel couvre les autres visuels de la même page", async () => {
+  preparerDeck();
+  // Les deux KPI pointent vers deux visuels de la MÊME page de rapport.
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 2);
+
+  // Une seule insertion manuelle, sur le premier visuel.
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.run("renderDeckLignes()");
+  const html = A.html("deckList");
+  assert.ok(!/à relever/.test(html), "les deux lignes sont couvertes : " + html);
+  assert.ok(html.includes("⚡ visuel (page)"), "l'emprunt est annoncé comme tel");
+});
+
+test("empreintes : un visuel d'une autre page reste à relever", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("/p1?", "/p2?"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL));
+  A.run("renderDeckLignes()");
+  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 1);
+});
+
+test("empreintes : le bilan compte les PAGES à insérer, pas les KPI", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
+  relier("kpi_taux_service_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=v2"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run("renderDeckLignes()");
+  const bilan = A.texte("deckWarning");
+  assert.match(bilan, /2 visuel\(s\) sans empreinte/);
+  assert.match(bilan, /insérer 1 visuel\(s\) à la main/);
+});
+
 test("empreintes : le support produit porte bien la mémoire relevée", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
@@ -6901,6 +7096,141 @@ test("empreintes : le support produit porte bien la mémoire relevée", async ()
   assert.ok(diapo.proprietesComplement, "l'empreinte est appliquée à la diapositive");
   assert.equal(diapo.proprietesComplement.artifactName, "&quot;Histo empilé&quot;");
   assert.ok(diapo.proprietesComplement.initialStateBookmark, "la copie de l'état est reconstituée");
+});
+
+/* ─── Relevé livré sous forme de fichier .json ──────────────
+   Sert à transmettre un relevé sans refaire l'insertion : entre deux
+   annuaires, ou quand quelqu'un a déjà fait le travail. */
+
+function jsonEmpreinte(lien, nom) {
+  return JSON.stringify([{
+    id: A.run(`Empreintes.cleVisuel(${JSON.stringify(lien)})`),
+    libelle: nom || "Histo empilé",
+    proprietes: { artifactName: "&quot;" + (nom || "Histo empilé") + "&quot;",
+                  bookmark: "&quot;H4sIEtatSerialise&quot;" },
+    _mtime: 1, _by: "clement"
+  }]);
+}
+
+const fichierJson = (texte, nom) => ({ name: nom || "empreintes.json", text: async () => texte });
+
+test("empreintes : un relevé .json s'importe comme un PowerPoint", async () => {
+  preparerDeck();
+  await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
+  assert.equal(A.run("empreintes.length"), 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("empreintes : un relevé .json couvre aussitôt les visuels de la page", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run("renderDeckLignes()");
+  assert.ok(A.html("deckList").includes("à relever"));
+  await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
+  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+});
+
+test("empreintes : un relevé sans état est écarté plutôt qu'accepté à moitié", () => {
+  preparerDeck();
+  const sansEtat = JSON.stringify([{ id: "r1/p1/v1", proprietes: { artifactName: "&quot;X&quot;" } }]);
+  const bilan = A.run("importerEmpreintesJson")(sansEtat);
+  assert.equal(bilan.total, 0);
+  assert.equal(bilan.ignores, 1);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : le format du document partagé est accepté lui aussi", () => {
+  preparerDeck();
+  const doc = JSON.stringify({ kpiEmpreintes: JSON.parse(jsonEmpreinte(LIEN_VISUEL)), updatedAt: 5 });
+  assert.equal(A.run("importerEmpreintesJson")(doc).total, 1);
+});
+
+test("empreintes : un fichier illisible le dit, sans rien casser", async () => {
+  preparerDeck();
+  await A.run("importerEmpreintes")(fichierJson("{pas du json", "casse.json"));
+  assert.match(A.dernierMessage(), /Lecture impossible/);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("empreintes : réimporter le même relevé ne crée pas de doublon", async () => {
+  preparerDeck();
+  const texte = jsonEmpreinte(LIEN_VISUEL);
+  await A.run("importerEmpreintes")(fichierJson(texte));
+  const second = await A.run("importerEmpreintes")(fichierJson(texte));
+  assert.equal(second.ajoutees, 0);
+  assert.equal(A.run("empreintes.length"), 1);
+});
+
+/* ─── Empreintes livrées avec l'annuaire ────────────────────
+   Relever une empreinte suppose une insertion manuelle dans PowerPoint.
+   Quand elle a déjà été faite, autant la livrer : `empreintes-livrees.json`
+   est déposé à côté d'index.html et chargé au démarrage. Il COMBLE, il
+   n'écrase jamais — ni un relevé local, ni celui de l'équipe. */
+
+function livraison(lien, nom, quand) {
+  return JSON.stringify([{
+    id: A.run(`Empreintes.cleVisuel(${JSON.stringify(lien)})`),
+    libelle: nom || "Livré",
+    proprietes: { artifactName: "&quot;" + (nom || "Livré") + "&quot;",
+                  bookmark: "&quot;H4sIEtat" + (nom || "L") + "&quot;" },
+    _mtime: quand || 500, _by: "livraison"
+  }]);
+}
+
+test("livraison : les empreintes livrées sont chargées au démarrage", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  const n = await A.run("chargerEmpreintesLivrees")();
+  assert.equal(n, 1);
+  assert.equal(A.run("empreintes[0].libelle"), "Histo empilé");
+});
+
+test("livraison : elles couvrent aussitôt toute la page", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL.replace("visual=v1", "visual=vAutre"));
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  await A.run("chargerEmpreintesLivrees")();
+  assert.ok(A.html("deckList").includes("⚡ visuel (page)"));
+});
+
+test("livraison : un relevé local plus récent n'est jamais écrasé", async () => {
+  preparerDeck();
+  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(LIEN_VISUEL, "Relevé ici"));
+  A.run("empreintes[0]._mtime = 9000");
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Livré", 500));
+  const n = await A.run("chargerEmpreintesLivrees")();
+  assert.equal(n, 0, "rien n'est ajouté");
+  assert.equal(A.run("empreintes[0].libelle"), "Relevé ici", "le relevé local reste en place");
+});
+
+test("livraison : le fichier absent est sans conséquence", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", null);   // 404
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+  assert.equal(A.run("empreintes.length"), 0);
+});
+
+test("livraison : un fichier illisible ne fait pas tomber le démarrage", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", "{ceci n'est pas du json");
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+});
+
+test("livraison : une empreinte livrée sans état est écartée", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", JSON.stringify([
+    { id: "r1/p1/v1", libelle: "Creuse", proprietes: { artifactName: "&quot;X&quot;" }, _mtime: 1 }]));
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+});
+
+test("livraison : recharger deux fois n'ajoute rien la seconde", async () => {
+  preparerDeck();
+  A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 1);
+  assert.equal(await A.run("chargerEmpreintesLivrees")(), 0);
+  assert.equal(A.run("empreintes.length"), 1);
 });
 
 
