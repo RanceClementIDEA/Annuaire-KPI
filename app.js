@@ -19,7 +19,6 @@ let empreintes = [];       // mémoire du complément Power BI, par visuel (js/e
 let selectionMode = false; // le mode « cocher des KPI » est-il actif ?
 let selectionIds = [];     // variantes cochées, DANS L'ORDRE de l'ordre du jour
 let presetCourant = "";    // identifiant de la sélection chargée, s'il y en a une
-let capturesDeck = {};     // kpiId → { donnees, ext } — captures de la session
 let dernierRendu = [];     // groupes affichés au dernier rendu (pour « tout cocher »)
 let commentairesVolatils = {}; // commentaires saisis pour une sélection non enregistrée
 
@@ -4258,7 +4257,6 @@ function ouvrirDeckModal() {
     const p = presets.find(x => x.id === presetCourant);
     titre.value = p ? "Indicateurs — " + p.name : "Indicateurs KPI";
   }
-  choisirModeParDefaut();
   renderDeckLignes();
   document.getElementById("deckModal")?.classList.remove("hidden");
 }
@@ -4276,28 +4274,10 @@ function diaposCourantes() {
   );
 }
 
-/**
- * Propose le mode qui a une chance de produire quelque chose.
- *
- * Le visuel vivant exige une empreinte par KPI, relevée à la main. Sans
- * empreinte, chaque diapositive affiche « l'objet visuel ajouté ici
- * n'existe plus » : autant ne pas le proposer par défaut. L'utilisateur
- * reste libre de le choisir.
- */
-function choisirModeParDefaut() {
-  const sel = document.getElementById("deckModeSelect");
-  if (!sel || sel.dataset.choisi === "1") return sel && sel.value;
-  const { diapos } = diaposCourantes();
-  const vivantPossible = diapos.some(d => d.lien && empreintePour(d.lien));
-  sel.value = vivantPossible ? "vivant" : "image";
-  return sel.value;
-}
-
-/** Mode de génération choisi dans la fenêtre. */
-function modeDeck() {
-  const sel = document.getElementById("deckModeSelect");
-  return (sel && sel.value) || "vivant";
-}
+/* Il n'y a plus qu'un mode : le visuel vivant, avec son empreinte. La
+   fonction demeure parce que la fabrique la nomme, et parce qu'elle dit
+   ce que le support contiendra. */
+function modeDeck() { return "vivant"; }
 
 /**
  * Ce que le lien d'une diapositive désigne réellement.
@@ -4469,11 +4449,8 @@ async function preparerReleve() {
 
 /** Ce qui sera posé dans le cadre du visuel, selon le mode choisi. */
 function etatVisuel(d) {
-  const mode = modeDeck();
-  if (mode === "image")  return capturesDeck[d.kpiId] ? { texte: "🖼 capture", cls: " on" } : { texte: "à capturer", cls: "" };
   const diag = diagnosticLien(d);
-  if (mode === "lien")   return { texte: d.lien ? "lien seul" : "sans lien", cls: "" };
-  if (!diag.ok)          return { texte: diag.court, cls: " alerte" };
+  if (!diag.ok) return { texte: diag.court, cls: " alerte" };
   /* Sans empreinte, le visuel s'affiche parfois, mais dans son état par
      défaut : filtres et segments perdus. L'état relevé est ce qui garantit
      les BONNES données — c'est lui qu'on suit ici. */
@@ -4504,16 +4481,18 @@ function renderDeckLignes() {
       </div>
       <div class="deck-tools">
         <span class="deck-shot${etatVisuel(d).cls}">${etatVisuel(d).texte}</span>
-        ${modeDeck() === "image" ? (capturesDeck[d.kpiId]
-          ? `<button type="button" class="btn-tool" title="Retirer cette capture"
-               onclick="retirerCapture('${esc(d.kpiId).replace(/'/g, "\\'")}')">✕</button>`
-          : `<button type="button" class="btn-tool${kpiCollage === d.kpiId ? " actif" : ""}"
-               title="Cliquez ici puis Ctrl+V pour coller une capture d'écran"
-               onclick="viserCollage('${esc(d.kpiId).replace(/'/g, "\\'")}')">📋</button>`) : ""}
         <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', -1)" title="Monter">▲</button>
         <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', 1)" title="Descendre">▼</button>
       </div>
     </div>`).join("");
+
+  /* Le guidage ne s'affiche que tant qu'il reste des empreintes à
+     relever : une fois le travail fait, il n'a plus rien à dire. */
+  const guide = document.getElementById("deckGuide");
+  if (guide) {
+    const reste = diapos.some(d => d.lien && !empreintePour(d.lien));
+    guide.classList.toggle("termine", !reste);
+  }
 
   // Bilan : ce qui empêcherait le support d'afficher le bon graphique.
   const soucis = diapos.filter(d => !diagnosticLien(d).ok);
@@ -4526,19 +4505,6 @@ function renderDeckLignes() {
     if (pages) parties.push(`${pages} lien(s) de PAGE : tout le rapport s'affichera, pas le seul graphique`);
     if (plats) parties.push(`${plats} visuel(s) au format très allongé : à confirmer en les ouvrant`);
     if (vides) parties.push(`${vides} KPI sans lien`);
-    if (modeDeck() === "image") {
-      /* L'annuaire est une page web : il ne peut pas capturer Power BI
-         lui-même (autre origine). Sans images fournies, chaque
-         diapositive reçoit un cadre cliquable — ce qui ressemble à une
-         panne alors que c'est le repli prévu. Autant l'annoncer. */
-      const sansImage = diapos.filter(d => !capturesDeck[d.kpiId]).length;
-      if (sansImage) {
-        parties.push(`${sansImage} KPI sans image. Trois façons de les fournir, toutes gratuites : `
-          + `capturez la page (Win+Maj+S), cliquez sur 📋 dans la ligne du KPI et collez (Ctrl+V) — `
-          + `ou déposez les images sur cette fenêtre — ou lancez la capture automatique `
-          + `(« ⬇ Exporter la sélection », puis powerpoint.bat).`);
-      }
-    }
     if (modeDeck() === "vivant") {
       const sansEmpreinte = diapos.filter(d => diagnosticLien(d).ok && !empreintePour(d.lien));
       if (sansEmpreinte.length) {
@@ -4574,287 +4540,6 @@ function noterCommentaire(kpiId, texte) {
   return texte;
 }
 
-/** Range une capture d'écran (collée ou déposée) pour un KPI. */
-function ajouterCapture(kpiId, octets) {
-  if (!kpiId || !octets || !octets.length) return false;
-  capturesDeck[kpiId] = { donnees: octets instanceof Uint8Array ? octets : new Uint8Array(octets) };
-  renderDeckLignes();
-  return true;
-}
-
-/* ─── Passerelle vers la capture automatique ─────────────── */
-
-/**
- * Nom de fichier de capture attendu pour une diapositive.
- * Numéroté : l'ordre du support se lit dans le dossier de captures.
- */
-function nomCapture(index, kpiId) {
-  return String(index + 1).padStart(2, "0") + "-" + Selection.slug(kpiId) + ".png";
-}
-
-/**
- * Décrit la sélection courante dans un fichier JSON autonome.
- * C'est le contrat entre l'annuaire et l'outil de capture
- * (outils/capturer-visuels.js) : les liens à ouvrir, l'ordre, les
- * titres et le nom d'image attendu pour chacun.
- */
-function selectionJson() {
-  const preset = selectionCourante();
-  const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
-  const lire = id => { const e = document.getElementById(id); return (e && e.value) || ""; };
-  return {
-    _format: "annuaire-kpi-selection",
-    _version: 1,
-    nom: preset.name,
-    exportePar: currentUser || "?",
-    couverture: {
-      titre:     lire("deckTitleInput") || "Indicateurs KPI",
-      sousTitre: lire("deckSubtitleInput"),
-      periode:   lire("deckPeriodInput")
-    },
-    diapos: diapos.map((d, i) => ({
-      kpiId: d.kpiId,
-      titre: d.titre,
-      site: d.site,
-      lien: d.lien,
-      commentaire: d.commentaire || commentairesVolatils[d.kpiId] || "",
-      fichier: nomCapture(i, d.kpiId)
-    }))
-  };
-}
-
-/**
- * Range un lot de captures dans les diapositives.
- * L'appariement se fait d'abord sur le nom de fichier produit par
- * `nomCapture` (l'outil de capture les nomme ainsi), sinon sur le rang
- * dans l'ordre alphabétique — ce qui marche aussi pour un dossier
- * d'images numérotées à la main.
- * @returns {number} nombre de captures placées
- */
-function rangerCaptures(fichiers, octetsParNom) {
-  const { diapos } = diaposCourantes();
-  const attendus = new Map(diapos.map((d, i) => [nomCapture(i, d.kpiId), d.kpiId]));
-  const noms = (fichiers || []).slice().sort();
-  let places = 0, rang = 0;
-
-  noms.forEach(nom => {
-    const octets = octetsParNom[nom];
-    if (!octets || !octets.length) return;
-    let cible = attendus.get(nom);
-    if (!cible) {                       // nom libre : on suit l'ordre du support
-      while (rang < diapos.length && capturesDeck[diapos[rang].kpiId]) rang++;
-      cible = rang < diapos.length ? diapos[rang].kpiId : null;
-      rang++;
-    }
-    if (!cible) return;
-    capturesDeck[cible] = { donnees: octets instanceof Uint8Array ? octets : new Uint8Array(octets) };
-    places++;
-  });
-
-  renderDeckLignes();
-  return places;
-}
-
-/* ─── Coller une capture d'écran ──────────────────────────
-   La voie gratuite qui ne demande RIEN à installer : Win+Maj+S pour
-   photographier la page Power BI, un clic sur la ligne du KPI, Ctrl+V.
-   Ni complément, ni capacité, ni Node.js. */
-
-let kpiCollage = "";   // KPI en attente d'une image
-
-/** Arme une ligne : le prochain collage ira sur ce KPI. */
-function viserCollage(kpiId) {
-  kpiCollage = kpiCollage === kpiId ? "" : String(kpiId || "");
-  renderDeckLignes();
-  if (kpiCollage) showToast("Collez la capture — Ctrl+V (Win+Maj+S pour la prendre)", 4000);
-  return kpiCollage;
-}
-
-/**
- * Range une image dans le KPI visé, ou dans le premier qui en manque.
- * @returns {string} le KPI servi, "" si aucun ne l'était
- */
-function poserCapture(octets, kpiId) {
-  if (!octets || !octets.length) return "";
-  let cible = kpiId || kpiCollage;
-  if (!cible) {
-    const { diapos } = diaposCourantes();
-    const libre = diapos.find(d => !capturesDeck[d.kpiId]);
-    cible = libre ? libre.kpiId : "";
-  }
-  if (!cible) return "";
-  capturesDeck[cible] = { donnees: octets instanceof Uint8Array ? octets : new Uint8Array(octets) };
-  if (kpiCollage === cible) kpiCollage = "";
-  renderDeckLignes();
-  return cible;
-}
-
-/** Retire la capture d'un KPI, pour la refaire. */
-function retirerCapture(kpiId) {
-  delete capturesDeck[kpiId];
-  renderDeckLignes();
-  return true;
-}
-
-/**
- * L'image d'un presse-papiers ou d'un glisser-déposer.
- * @returns {Promise<string>} le KPI servi, "" si rien d'exploitable
- */
-async function collerCapture(donnees, kpiId) {
-  const items = (donnees && (donnees.items || donnees.files)) || [];
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    const fichier = typeof it.getAsFile === "function" ? it.getAsFile() : it;
-    if (!fichier || !/^image\//.test(fichier.type || "")) continue;
-    const octets = new Uint8Array(await fichier.arrayBuffer());
-    const servi = poserCapture(octets, kpiId);
-    if (servi) {
-      showToast("🖼 Capture posée sur « " + (titreDeKpi(servi) || servi) + " »", 2600);
-      return servi;
-    }
-  }
-  showToast("Rien d'exploitable dans le presse-papiers — copiez une IMAGE", 3200);
-  return "";
-}
-
-/* ─── Capture guidée : automatique, et rien à installer ────
-   Une page web n'a pas le droit de photographier un autre site. Mais
-   le navigateur sait PARTAGER une fenêtre, si l'utilisateur y consent :
-   c'est `getDisplayMedia`, et rien n'est installé pour cela.
-
-   Le tour de main : l'annuaire ouvre une fenêtre, l'utilisateur la
-   désigne une fois, puis l'annuaire la promène de KPI en KPI en
-   saisissant une image à chaque étape. Il ne LIT jamais cette
-   fenêtre — il n'en a pas le droit et n'en a pas besoin : il la
-   navigue, et le navigateur lui rend l'image. */
-
-const DELAI_RENDU = 6000;   // le temps que Power BI finisse d'afficher
-
-/** Le navigateur sait-il partager une fenêtre ? */
-function partageDisponible() {
-  return Boolean(navigator.mediaDevices
-    && typeof navigator.mediaDevices.getDisplayMedia === "function");
-}
-
-/**
- * Promène une fenêtre de KPI en KPI et saisit une image à chaque étape.
- *
- * Tout ce qui touche au navigateur est injecté : la mécanique se
- * vérifie sans navigateur, et le jour où une API change, un seul
- * endroit bouge.
- *
- * @param {Object} s  { ouvrir, partager, naviguer, attendre, saisir, fermer }
- * @returns {Promise<{faites:number, echecs:string[]}>}
- */
-async function captureGuidee(s, options) {
-  const o = options || {};
-  const { diapos } = diaposCourantes();
-  const aFaire = diapos.filter(d => d.lien && !capturesDeck[d.kpiId]);
-  if (!aFaire.length) {
-    showToast("Toutes les captures sont déjà là 👍", 3000);
-    return { faites: 0, echecs: [] };
-  }
-
-  const delai = Number(o.delai) || DELAI_RENDU;
-  let fenetre = null, flux = null;
-  const echecs = [];
-  let faites = 0;
-
-  try {
-    // La fenêtre doit exister AVANT qu'on demande à l'utilisateur de la
-    // désigner : on ne peut pas partager ce qui n'est pas encore ouvert.
-    fenetre = await s.ouvrir(aFaire[0].lien);
-    if (!fenetre) throw new Error("le navigateur a bloqué la fenêtre — autorisez les fenêtres surgissantes");
-
-    flux = await s.partager();
-    if (!flux) throw new Error("partage refusé");
-
-    for (let i = 0; i < aFaire.length; i++) {
-      const d = aFaire[i];
-      showToast("🎥 " + (i + 1) + "/" + aFaire.length + " — " + d.titre, delai);
-      if (i > 0) await s.naviguer(fenetre, d.lien);
-      await s.attendre(delai);
-      try {
-        const octets = await s.saisir(flux);
-        if (octets && octets.length) { poserCapture(octets, d.kpiId); faites++; }
-        else echecs.push(d.titre);
-      } catch (err) {
-        echecs.push(d.titre);
-      }
-    }
-  } catch (err) {
-    showToast("❌ " + (err.message || "capture interrompue"), 5000);
-    return { faites, echecs: echecs.concat(aFaire.slice(faites).map(d => d.titre)) };
-  } finally {
-    if (flux) s.fermer(flux, fenetre);
-  }
-
-  showToast(faites + " capture(s) prise(s)"
-    + (echecs.length ? " — " + echecs.length + " à reprendre" : ""), 4000);
-  return { faites, echecs };
-}
-
-/** Les services réels du navigateur, branchés sur `captureGuidee`. */
-function servicesNavigateur() {
-  return {
-    ouvrir: lien => window.open(lien, "annuaireKpiCapture",
-      "width=1600,height=950,noopener=no"),
-    partager: () => navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 2 }, audio: false, preferCurrentTab: false
-    }),
-    naviguer: (fenetre, lien) => { fenetre.location.href = lien; },
-    attendre: ms => new Promise(ok => setTimeout(ok, ms)),
-    saisir: flux => saisirImage(flux),
-    fermer: (flux, fenetre) => {
-      flux.getTracks().forEach(t => t.stop());
-      try { if (fenetre && !fenetre.closed) fenetre.close(); } catch (e) { /* ignoré */ }
-    }
-  };
-}
-
-/** Une image du flux partagé, en PNG. */
-async function saisirImage(flux) {
-  const video = document.createElement("video");
-  video.srcObject = flux;
-  video.muted = true;
-  await video.play();
-  // Une image peut arriver vide si on la prend au tout premier instant.
-  await new Promise(ok => setTimeout(ok, 300));
-
-  const toile = document.createElement("canvas");
-  toile.width = video.videoWidth || 1600;
-  toile.height = video.videoHeight || 900;
-  toile.getContext("2d").drawImage(video, 0, 0, toile.width, toile.height);
-  video.pause();
-
-  const blob = await new Promise(ok => toile.toBlob(ok, "image/png"));
-  if (!blob) throw new Error("image vide");
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-/** Le bouton : explique d'abord, agit ensuite. */
-async function lancerCaptureGuidee() {
-  if (!partageDisponible()) {
-    showToast("Ce navigateur ne sait pas partager une fenêtre — utilisez Edge ou Chrome, "
-      + "ou collez vos captures avec 📋", 6000);
-    return null;
-  }
-  const { diapos } = diaposCourantes();
-  const aFaire = diapos.filter(d => d.lien && !capturesDeck[d.kpiId]).length;
-  if (!aFaire) { showToast("Toutes les captures sont déjà là 👍", 3000); return null; }
-
-  const suite = confirm(
-    "Capture guidée de " + aFaire + " KPI — rien à installer.\n\n"
-    + "1. Une fenêtre Power BI va s'ouvrir.\n"
-    + "2. Le navigateur vous demandera quoi partager : choisissez CETTE fenêtre.\n"
-    + "3. Laissez faire — chaque KPI est affiché puis saisi.\n\n"
-    + "Ne masquez pas la fenêtre partagée pendant l'opération.\n\n"
-    + "Commencer ?");
-  if (!suite) return null;
-
-  return captureGuidee(servicesNavigateur(), {});
-}
-
 /** Le titre affiché d'un KPI de la sélection. */
 function titreDeKpi(kpiId) {
   const { diapos } = diaposCourantes();
@@ -4862,17 +4547,6 @@ function titreDeKpi(kpiId) {
   return d ? d.titre : "";
 }
 
-/** Télécharge ce descriptif : point d'entrée de la capture automatique. */
-function exporterSelectionJson() {
-  const sel = selectionJson();
-  if (!sel.diapos.length) { showToast("Sélection vide : rien à exporter", 2800); return null; }
-  const nom = "selection-" + Selection.slug(sel.nom) + ".json";
-  telechargerOctets(JSON.stringify(sel, null, 2), nom, "application/json");
-  showToast(`⬇ ${nom} — à donner à l'outil de capture`, 3600);
-  return sel;
-}
-
-/* ─── Production du fichier ──────────────────────────────── */
 
 async function chargerModeleDeck() {
   if (modeleDeckCache) return modeleDeckCache;
@@ -4913,23 +4587,6 @@ async function genererDeck() {
   const lire = id => document.getElementById(id);
   const mode = (lire("deckModeSelect") && lire("deckModeSelect").value) || "vivant";
 
-  /* Même garde-fou en mode image : sans capture, la diapositive porte un
-     cadre cliquable. C'est le repli prévu, mais découvrir un support de
-     cadres vides juste avant un COPIL n'a rien d'agréable. */
-  if (mode === "image") {
-    const sansImage = diapos.filter(d => !capturesDeck[d.kpiId]);
-    if (sansImage.length) {
-      const suite = confirm(
-        sansImage.length + " KPI sur " + diapos.length + " n'ont pas d'image.\n\n"
-        + "Leur diapositive portera un cadre cliquable, pas un graphique.\n\n"
-        + "Pour les fournir, sans rien installer :\n"
-        + "  Win+Maj+S sur la page Power BI, puis 📋 sur la ligne du KPI, puis Ctrl+V.\n\n"
-        + "Ou, automatiquement : « ⬇ Exporter la sélection », puis powerpoint.bat.\n\n"
-        + "Produire quand même le support ?");
-      if (!suite) return null;
-    }
-  }
-
   /* Garde-fou : en visuel vivant, un KPI sans empreinte affichera
      « l'objet visuel ajouté ici n'existe plus ». Mieux vaut le dire
      avant de produire le support que de le découvrir en séance. */
@@ -4954,9 +4611,8 @@ async function genererDeck() {
       titre: d.titre,
       lien: d.lien,
       commentaire: d.commentaire || commentairesVolatils[d.kpiId] || "",
-      // Visuel vivant : le complément Power BI, donc aucune image à fournir.
-      vivant: mode === "vivant" && !!d.lien,
-      image: mode === "image" && capturesDeck[d.kpiId] ? capturesDeck[d.kpiId].donnees : null
+      // Le complément Power BI affiche le visuel connecté : aucune image à fournir.
+      vivant: !!d.lien
     })),
     /* La mémoire relevée sur une insertion manuelle. Sans elle, le
        complément affiche « l'objet visuel n'existe plus ». */
@@ -4976,39 +4632,33 @@ async function genererDeck() {
   logActivity("deck", preset.name, `${diapos.length} diapositive(s)`);
   saveActivity();
   fermerDeckModal();
-  const detail = mode === "vivant" ? "visuels vivants"
-               : mode === "image"  ? "captures"
-               : "cadres cliquables";
-  showToast(`📊 PowerPoint généré : ${diapos.length} diapositive(s), ${detail}`, 3400);
+  showToast(`📊 PowerPoint généré : ${diapos.length} diapositive(s), visuels vivants`, 3400);
   return { nom, diapos: diapos.length };
 }
 
 /* ─── Branchements ───────────────────────────────────────── */
 
-/* Coller une image quand la fenêtre de génération est ouverte. On ne
-   capte le presse-papiers que là : ailleurs, l'utilisateur colle dans
-   ses propres champs. */
-document.addEventListener("paste", e => {
-  const modale = document.getElementById("deckModal");
-  if (!modale || modale.classList.contains("hidden")) return;
-  if (modeDeck() !== "image") return;
-  const cible = e.target;
-  if (cible && (cible.tagName === "INPUT" || cible.tagName === "TEXTAREA")) return;
-  if (e.clipboardData && e.clipboardData.items && e.clipboardData.items.length) {
-    e.preventDefault();
-    collerCapture(e.clipboardData);
-  }
-});
-
-/* Glisser-déposer une image sur la fenêtre : même effet. */
-document.getElementById("deckModal")?.addEventListener("dragover", e => e.preventDefault());
-document.getElementById("deckModal")?.addEventListener("drop", e => {
-  if (modeDeck() !== "image") return;
+/* Déposer le PowerPoint du relevé sur la fenêtre : c'est le geste
+   naturel après l'avoir enregistré, et il évite de chercher un bouton. */
+document.getElementById("deckModal")?.addEventListener("dragover", e => {
   e.preventDefault();
-  if (e.dataTransfer) collerCapture(e.dataTransfer);
+  document.getElementById("deckGuide")?.classList.add("survol");
+});
+document.getElementById("deckModal")?.addEventListener("dragleave", () => {
+  document.getElementById("deckGuide")?.classList.remove("survol");
+});
+document.getElementById("deckModal")?.addEventListener("drop", async e => {
+  e.preventDefault();
+  document.getElementById("deckGuide")?.classList.remove("survol");
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (!f) return;
+  if (!/\.(pptx|json)$/i.test(f.name || "")) {
+    showToast("Déposez le PowerPoint du relevé, ou un fichier .json d'empreintes", 4000);
+    return;
+  }
+  await importerEmpreintes(f);
 });
 
-document.getElementById("deckCaptureBtn")?.addEventListener("click", () => lancerCaptureGuidee());
 document.getElementById("deckPreparerBtn")?.addEventListener("click", () => preparerReleve());
 document.getElementById("deckEmpreintesBtn")?.addEventListener("click",
   () => document.getElementById("deckEmpreintesInput")?.click());
@@ -5025,23 +4675,6 @@ document.getElementById("selectClearBtn")?.addEventListener("click", viderSelect
 document.getElementById("deckBtn")?.addEventListener("click", ouvrirDeckModal);
 document.getElementById("closeDeckBtn")?.addEventListener("click", fermerDeckModal);
 document.getElementById("deckGenerateBtn")?.addEventListener("click", () => { genererDeck(); });
-document.getElementById("deckExportBtn")?.addEventListener("click", exporterSelectionJson);
-document.getElementById("deckModeSelect")?.addEventListener("change", renderDeckLignes);
-document.getElementById("deckShotsBtn")?.addEventListener("click", () => {
-  document.getElementById("deckShotsInput")?.click();
-});
-document.getElementById("deckShotsInput")?.addEventListener("change", function () {
-  const fichiers = Array.from(this.files || []);
-  this.value = "";
-  if (!fichiers.length) return;
-  const noms = fichiers.map(f => f.name);
-  Promise.all(fichiers.map(f => f.arrayBuffer())).then(buffers => {
-    const parNom = {};
-    fichiers.forEach((f, i) => { parNom[f.name] = new Uint8Array(buffers[i]); });
-    const n = rangerCaptures(noms, parNom);
-    showToast(n ? `🖼 ${n} capture(s) placée(s)` : "Aucune capture reconnue", 3000);
-  });
-});
 document.getElementById("presetSaveBtn")?.addEventListener("click", () => {
   const p = presets.find(x => x.id === presetCourant);
   const nom = prompt("Nom de la sélection (ex : COPIL hebdomadaire)", p ? p.name : "");
@@ -5055,34 +4688,7 @@ document.getElementById("presetDeleteBtn")?.addEventListener("click", () => {
   if (sel && sel.value) supprimerSelection(sel.value);
 });
 
-// Coller une capture d'écran : le KPI visé est celui de la ligne survolée,
-// à défaut la première diapositive sans capture. Le geste attendu est
-// « Impr. écran sur le visuel Power BI, puis Ctrl+V ici ».
-document.addEventListener("paste", function (e) {
-  const modale = document.getElementById("deckModal");
-  if (!modale || modale.classList.contains("hidden")) return;
-  const items = (e.clipboardData && e.clipboardData.items) || [];
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].type && items[i].type.indexOf("image") === 0) {
-      const fichier = items[i].getAsFile();
-      const cible = cibleCapture();
-      if (!cible) { showToast("Toutes les diapositives ont déjà une capture", 2600); return; }
-      fichier.arrayBuffer().then(buf => {
-        ajouterCapture(cible, new Uint8Array(buf));
-        showToast("🖼 Capture ajoutée", 2000);
-      });
-      e.preventDefault();
-      return;
-    }
-  }
-});
 
-/** Prochaine diapositive sans capture : cible par défaut d'un collage. */
-function cibleCapture() {
-  const { diapos } = diaposCourantes();
-  const libre = diapos.find(d => !capturesDeck[d.kpiId]);
-  return libre ? libre.kpiId : null;
-}
 
 /* ============================================
    TUTORIEL ANIMÉ + AIDE POWER BI

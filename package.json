@@ -16,19 +16,11 @@
     "lint": "npx --yes eslint js/ app.js outils/",
     "test:deck": "node --test zip.test.js selection.test.js pptx.test.js deck.test.js",
     "smoke": "node smoke-ui.js",
-    "capture": "node outils/capturer-visuels.js",
-    "deck": "node outils/generer-deck.js",
     "test:outils": "node --test outils.test.js",
-    "verifier:liens": "node outils/verifier-liens.js",
     "verifier:deck": "node outils/verifier-deck.js",
     "build:essai": "node outils/construire-annuaire-test.js",
     "smoke:essai": "node smoke-essai.js",
-    "diagnostic": "node outils/diagnostic-complement.js",
-    "powerpoint": "node outils/capturer-visuels.js --page --deck",
-    "connexion": "node outils/capturer-visuels.js --connexion",
-    "installer:navigateur": "npm i -D playwright && npx playwright install chromium",
-    "jeton": "node outils/jeton-powerbi.js",
-    "exporter": "node outils/exporter-powerbi.js --deck"
+    "relever": "node outils/relever-empreintes.js"
   },
   "license": "UNLICENSED"
 }

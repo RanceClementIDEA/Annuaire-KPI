@@ -595,11 +595,11 @@
       <button id="closeDeckBtn" class="modal-close">✕</button>
     </div>
     <p class="modal-sub">
-      Une diapositive de couverture, puis une diapositive par KPI sélectionné, à la charte IDEA.
-      En mode <b>visuel vivant</b>, le complément Power BI affiche le visuel connecté :
-      rien à capturer, et le support se met à jour tout seul chez chaque lecteur qui a les droits.
-      En mode <b>image</b>, collez la capture ici (Ctrl+V) ou chargez le dossier produit par l'outil de capture.
-      Chaque ligne indique ce que son lien désigne réellement : <b>un visuel</b> ou <b>toute une page</b> de rapport.
+      Une diapositive de couverture, puis une diapositive par KPI, à la charte IDEA.
+      Le complément Power BI y affiche le <b>visuel connecté</b> : le support se met à jour
+      tout seul chez chaque lecteur qui a les droits.
+      Pour qu'un visuel s'affiche, l'annuaire a besoin de son <b>empreinte</b> — ce que le
+      complément mémorise lors d'une insertion. Un relevé par KPI, une seule fois.
     </p>
 
     <div class="form-grid">
@@ -617,12 +617,21 @@
       </div>
     </div>
 
-    <label class="modal-label" for="deckModeSelect">Contenu des visuels</label>
-    <select id="deckModeSelect" class="modal-input" onchange="this.dataset.choisi='1'">
-      <option value="vivant">Visuel vivant — complément Power BI (se rafraîchit tout seul)</option>
-      <option value="image">Image — capture de la page entière (aucune empreinte nécessaire)</option>
-      <option value="lien">Cadre cliquable seul</option>
-    </select>
+    <div id="deckGuide" class="deck-guide">
+      <div class="deck-guide-titre">Relever les empreintes manquantes — une seule fois par KPI</div>
+      <ol>
+        <li><b>📋 Préparer le relevé</b> télécharge un PowerPoint : une diapositive par KPI,
+            avec son lien écrit en clair.</li>
+        <li>Dans PowerPoint, pour chaque diapositive : sélectionnez le lien affiché,
+            <i>Insertion › Compléments › Power BI</i>, collez-le, vérifiez que le graphique
+            apparaît. Enregistrez.</li>
+        <li>Revenez ici et <b>déposez ce fichier</b> sur cette fenêtre — ou
+            <b>🔎 Relever les empreintes</b>.</li>
+      </ol>
+      <p class="deck-guide-note">⚠ Collez toujours le lien affiché sur la diapositive.
+        Repartager le visuel depuis Power BI crée un nouveau signet, et l'empreinte
+        obtenue ne correspondrait à aucun KPI.</p>
+    </div>
 
     <div class="modal-links-title">Diapositives</div>
     <p class="sync-warning" id="deckWarning" style="display:none"></p>
@@ -630,14 +639,10 @@
 
     <div class="modal-actions">
       <button id="deckGenerateBtn" class="btn-primary">📊 Générer et télécharger</button>
-      <button id="deckCaptureBtn" class="btn-secondary" title="Ouvre Power BI, vous désignez la fenêtre une fois, et l'annuaire saisit chaque KPI tout seul. Rien à installer.">🎥 Capture guidée</button>
-      <button id="deckShotsBtn" class="btn-secondary" title="Charger un dossier de captures produites par l'outil de capture">🖼 Charger les captures</button>
-      <button id="deckPreparerBtn" class="btn-secondary" title="Fabrique un PowerPoint avec une diapositive par KPI encore sans empreinte, son lien affiché en clair, prêt à coller dans le complément Power BI.">📋 Préparer le relevé</button>
-      <button id="deckEmpreintesBtn" class="btn-secondary" title="Relever, dans un PowerPoint où les visuels ont été insérés à la main, ce que le complément Power BI avait mémorisé. Une seule insertion par page de rapport suffit. Accepte aussi un relevé .json déjà constitué.">🔎 Relever les empreintes</button>
-      <button id="deckExportBtn" class="btn-secondary" title="Décrit la sélection dans un fichier .json pour la capture automatique">⬇ Exporter la sélection</button>
+      <button id="deckPreparerBtn" class="btn-secondary" title="Télécharge un PowerPoint avec une diapositive par KPI encore sans empreinte, son lien affiché en clair.">📋 Préparer le relevé</button>
+      <button id="deckEmpreintesBtn" class="btn-secondary" title="Relever, dans un PowerPoint où les visuels ont été insérés à la main, ce que le complément Power BI avait mémorisé. Accepte aussi un relevé .json.">🔎 Relever les empreintes</button>
       <button id="closeDeckBtn2" class="btn-secondary" onclick="fermerDeckModal()">Fermer</button>
     </div>
-    <input type="file" id="deckShotsInput" accept="image/png,image/jpeg" multiple style="display:none">
     <input type="file" id="deckEmpreintesInput" accept=".pptx,.json" style="display:none">
   </div>
 </div>

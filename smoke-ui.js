@@ -39,10 +39,7 @@ const serveur = http.createServer((req, res) => {
 
 (async () => {
   await new Promise(ok => serveur.listen(8899, "127.0.0.1", ok));
-  const nav = await chromium.launch({
-    args: ["--auto-accept-this-tab-capture", "--use-fake-ui-for-media-stream",
-           "--use-fake-device-for-media-stream", "--auto-select-desktop-capture-source=Entire screen"]
-  });
+  const nav = await chromium.launch();
   const ctx = await nav.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   const erreurs = [];
@@ -62,17 +59,6 @@ const serveur = http.createServer((req, res) => {
     try { await fn(); console.log("  ✓ " + nom); }
     catch (e) { console.log("  ✗ " + nom + " → " + e.message); process.exitCode = 1; }
   };
-
-  await etape("l'absence d'empreintes livrées ne gêne pas le démarrage", async () => {
-    // empreintes-livrees.json est facultatif : le mécanisme de chargement
-    // existe (éprouvé sous Node), mais aucun fichier n'est livré par défaut.
-    const etat = await page.evaluate(async () => ({
-      ajoutees: await chargerEmpreintesLivrees(),
-      empreintes: empreintes.length
-    }));
-    if (etat.ajoutees !== 0) throw new Error("empreintes ajoutées : " + etat.ajoutees);
-    if (etat.empreintes !== 0) throw new Error("empreintes présentes : " + etat.empreintes);
-  });
 
   await etape("l'annuaire affiche les 3 KPI", async () => {
     const n = await page.locator("#kpiContainer .card").count();
@@ -124,15 +110,7 @@ const serveur = http.createServer((req, res) => {
     if (lignes !== 2) throw new Error("lignes : " + lignes);
   });
 
-  await etape("sans empreinte, c'est le mode Image qui est proposé", async () => {
-    // Le visuel vivant afficherait « l'objet visuel n'existe plus » :
-    // l'annuaire ne le propose pas tant qu'aucune empreinte ne le permet.
-    const v = await page.inputValue("#deckModeSelect");
-    if (v !== "image") throw new Error("mode par défaut : " + v);
-  });
-
   await etape("sans empreinte, chaque ligne réclame un relevé", async () => {
-    await page.selectOption("#deckModeSelect", "vivant");
     // Le lien peut être parfait : sans la mémoire du complément, PowerPoint
     // afficherait « l'objet visuel n'existe plus ». La liste doit le dire.
     const lignes = await page.locator(".deck-shot").allTextContents();
@@ -196,80 +174,7 @@ const serveur = http.createServer((req, res) => {
     });
   });
 
-  await etape("en mode Image sans capture, l'annuaire prévient au lieu de produire des cadres vides", async () => {
-    await page.selectOption("#deckModeSelect", "image");
-    await page.waitForTimeout(200);
-    const bilan = await page.locator("#deckWarning").textContent();
-    if (!/sans image/.test(bilan || "")) throw new Error("bilan : " + bilan);
-    if (!/Ctrl\+V/.test(bilan || "")) throw new Error("le collage n'est pas proposé");
-    if (!/powerpoint\.bat/.test(bilan || "")) throw new Error("la capture automatique n'est pas proposée");
-    // Refuser la question doit annuler la génération, sans rien télécharger.
-    page.once("dialog", d => d.dismiss());
-    await page.click("#deckGenerateBtn");
-    await page.waitForTimeout(600);
-    const ouverte = await page.locator("#deckModal:not(.hidden)").count();
-    if (!ouverte) throw new Error("la fenêtre s'est fermée alors que rien n'a été produit");
-    await page.selectOption("#deckModeSelect", "vivant");
-  });
-
-  await etape("coller une capture d'écran la pose sur le KPI visé", async () => {
-    // La voie gratuite sans rien installer : Win+Maj+S, 📋, Ctrl+V.
-    await page.selectOption("#deckModeSelect", "image");
-    await page.waitForTimeout(200);
-    await page.locator("#deckList .deck-row").first().locator(".btn-tool").first().click();
-    await page.waitForTimeout(150);
-
-    // Un vrai événement paste, avec une vraie image dans le presse-papiers.
-    await page.evaluate(async () => {
-      const png = Uint8Array.from(atob(
-        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAAE0lEQVR4nGP8//8/AzbAxIAD"
-        + "jEoQlgAAmwgDwYqGXVQAAAAASUVORK5CYII="), c => c.charCodeAt(0));
-      const dt = new DataTransfer();
-      dt.items.add(new File([png], "capture.png", { type: "image/png" }));
-      document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true }));
-      await new Promise(r => setTimeout(r, 400));
-    });
-    await page.waitForTimeout(400);
-
-    const lignes = await page.locator(".deck-shot").allTextContents();
-    if (!lignes.some(t => /🖼 capture/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
-  });
-
-  await etape("la capture guidée saisit un vrai flux partagé", async () => {
-    // Chromium accorde le partage sans boîte de dialogue avec ces drapeaux,
-    // et fabrique une image de test : le VRAI chemin getDisplayMedia →
-    // <video> → <canvas> → PNG est donc exécuté, pas simulé.
-    const r = await page.evaluate(async () => {
-      const services = {
-        ouvrir: async () => ({ closed: false }),
-        partager: () => navigator.mediaDevices.getDisplayMedia({ video: true }),
-        naviguer: () => {},
-        attendre: ms => new Promise(k => setTimeout(k, Math.min(ms, 200))),
-        saisir: flux => saisirImage(flux),
-        fermer: flux => flux.getTracks().forEach(t => t.stop())
-      };
-      const bilan = await captureGuidee(services, { delai: 200 });
-      const png = capturesDeck["kpi_taux_service_hebdomadaire"];
-      return {
-        faites: bilan.faites,
-        octets: png ? png.donnees.length : 0,
-        entete: png ? Array.from(png.donnees.slice(0, 4)) : []
-      };
-    });
-    if (!r.faites) throw new Error("aucune capture");
-    if (r.octets < 100) throw new Error("image suspecte : " + r.octets + " octets");
-    if (String(r.entete) !== "137,80,78,71") throw new Error("ce n'est pas un PNG : " + r.entete);
-  });
-
-  await etape("une fois tout capturé, le bilan se tait", async () => {
-    const bilan = await page.locator("#deckWarning").textContent();
-    if (/sans image/.test(bilan || "")) throw new Error("bilan encore alarmant : " + bilan);
-    const lignes = await page.locator(".deck-shot").allTextContents();
-    if (!lignes.every(t => /🖼 capture/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
-  });
-
   await etape("le PowerPoint est réellement téléchargé", async () => {
-    await page.selectOption("#deckModeSelect", "vivant");
     await page.waitForTimeout(200);
     await page.fill("#deckTitleInput", "Indicateurs MAGASINS ARMEMENT");
     await page.fill("#deckSubtitleInput", "IDEA / CHANTIERS DE L'ATLANTIQUE");

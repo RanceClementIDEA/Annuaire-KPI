@@ -4,6 +4,17 @@ Produit, depuis l'annuaire, un support à la charte IDEA : une diapositive de
 couverture puis **une diapositive par KPI sélectionné**, calquée sur les pages 3 à 10
 du support « Indicateurs Magasins Armement ».
 
+## En trois gestes
+
+1. dans l'annuaire, cochez vos KPI, puis **📊 Générer le PowerPoint** ;
+2. si des lignes affichent `à relever`, suivez le guidage de la fenêtre :
+   **📋 Préparer le relevé**, une insertion par KPI dans PowerPoint, puis vous
+   **déposez le fichier** sur la fenêtre ;
+3. **📊 Générer et télécharger**.
+
+Le relevé ne se fait **qu'une fois par KPI**, et part dans la synchronisation :
+personne d'autre n'a à le refaire.
+
 ## Utilisation
 
 1. **Barre latérale → « Sélection & PowerPoint »**. Une barre d'action apparaît et
@@ -15,11 +26,11 @@ du support « Indicateurs Magasins Armement ».
 4. **« 📊 Générer le PowerPoint »** : réglez le titre, le sous-titre et la période,
    ajustez l'ordre et les commentaires, puis téléchargez.
 
-### Avoir le VISUEL, et pas seulement un lien
+### Une seule chaîne : le visuel vivant
 
 Le choix se fait dans la fenêtre de génération, liste **« Contenu des visuels »**.
 
-#### 1. Visuel vivant — complément Power BI (par défaut)
+### Ce que fait le complément Power BI
 
 Le générateur pose dans chaque diapositive le **complément Power BI pour PowerPoint**,
 configuré sur l'adresse du KPI. Le visuel est *connecté* : rien à capturer, et le
@@ -124,45 +135,35 @@ mais on ne prétend plus que la diapositive est juste.
 
 #### Relever une empreinte
 
-C'est l'unique geste manuel, et il n'est à faire **qu'une fois par KPI** :
+L'unique geste manuel, **une fois par KPI**. La fenêtre de génération le guide en trois
+étapes, et n'affiche ce guidage que tant qu'il reste quelque chose à relever :
 
-**Une empreinte par KPI**, c'est-à-dire par lien de l'annuaire. Le bouton
-**📋 Préparer le relevé** fabrique le support qui rend ce travail court : une
-diapositive par KPI encore dépourvu d'empreinte, portant son nom et **son lien en
-clair**.
+1. **📋 Préparer le relevé** télécharge un PowerPoint : une diapositive par KPI encore
+   dépourvu d'empreinte, portant son nom et **son lien écrit en clair** ;
+2. dans PowerPoint, pour chaque diapositive : sélectionner le lien affiché,
+   *Insertion › Compléments › Power BI*, le coller, vérifier que le graphique s'affiche.
+   Enregistrer ;
+3. revenir dans la fenêtre et **déposer ce fichier dessus** — ou
+   **🔎 Relever les empreintes**.
 
-1. cliquer sur *Sélection & PowerPoint › Générer › **📋 Préparer le relevé*** ;
-2. pour chaque diapositive : sélectionner le lien affiché, *Insertion › Compléments ›
-   Power BI*, le coller, vérifier que le graphique s'affiche ;
-3. enregistrer le fichier ;
-4. *Générer › **🔎 Relever les empreintes*** et le choisir.
-
-⚠️ **Toujours coller le lien de l'annuaire.** Repartager le visuel depuis Power BI crée
-un **nouveau** `bookmarkGuid` : l'empreinte obtenue ne correspondrait à aucun KPI. C'est
-l'erreur la plus facile à commettre, et la plus difficile à voir.
-
-⚠️ **Et une fois l'empreinte relevée, ne repartagez plus ce lien.** Remplacer le lien
-d'un KPI par un partage neuf change son signet et périme son empreinte du même coup. La
-fenêtre le signale alors par `⟳ lien repartagé` plutôt que par un simple « à relever » :
-on sait tout de suite qu'il ne s'agit pas d'un oubli.
-
-Une fois relevées, les empreintes partent dans la synchronisation : personne d'autre n'a
-à refaire l'insertion.
-
-Le même bouton accepte aussi un **relevé `.json`** déjà constitué — celui que produit
-`outils/relever-empreintes.js --sortie`, ou le contenu du document partagé. C'est le
-moyen de transmettre un relevé sans refaire l'insertion : d'un annuaire à l'autre, ou
-quand quelqu'un a déjà fait le travail.
-
-L'empreinte part alors dans la synchronisation : **toute l'équipe en profite**, personne
-n'a à refaire l'insertion. La fenêtre de génération affiche, pour chaque diapositive,
-`⚡ visuel` (empreinte connue) ou `à relever`.
-
-En ligne de commande, pour traiter un lot de fichiers d'un coup :
+Le bouton accepte aussi un **relevé `.json`** déjà constitué, ce qui permet de transmettre
+un relevé d'un annuaire à l'autre sans refaire l'insertion :
 
 ```bash
 node outils/relever-empreintes.js support1.pptx support2.pptx --sortie empreintes.json
 ```
+
+Une fois relevées, les empreintes partent dans la synchronisation : **toute l'équipe en
+profite**, personne n'a à refaire l'insertion.
+
+⚠️ **Toujours coller le lien affiché sur la diapositive.** Repartager le visuel depuis
+Power BI crée un **nouveau** `bookmarkGuid` : l'empreinte obtenue ne correspondrait à
+aucun KPI. C'est l'erreur la plus facile à commettre, et la plus difficile à voir.
+
+⚠️ **Et une fois l'empreinte relevée, ne repartagez plus ce lien.** Remplacer le lien d'un
+KPI par un partage neuf périme son empreinte. La fenêtre le signale alors par
+`⟳ lien repartagé` plutôt que par un simple `à relever` : on sait tout de suite qu'il ne
+s'agit pas d'un oubli.
 
 #### Où vivent les empreintes
 
@@ -237,179 +238,6 @@ format et le cadre obtenu — puis conclut « Aucune anomalie » ou liste ce qui
 Pour reprendre un lien fautif : dans Power BI, sur **le visuel**, `…` → **Partager** →
 **Lien vers cet élément visuel**, puis collez-le dans la fiche du KPI.
 
-#### 0. Export officiel Power BI — la seule voie vraiment automatique
-
-C'est la réponse de Microsoft à exactement ce problème, et je ne l'avais pas assez creusée
-au départ. L'API **`exportToFile`** rend une page ou un visuel en PNG, PDF ou PPTX, et
-accepte **nativement `pageName` et un signet** — le modèle même de l'annuaire, où un KPI
-est une page plus un `bookmarkGuid`. Microsoft documente d'ailleurs de lire ce signet dans
-l'URL après `bookmarkGuid=` : rien à traduire.
-
-Aucun relevé, aucune insertion, aucune capture d'écran, aucun navigateur.
-
-```bash
-node outils/jeton-powerbi.js --client <id d'application>   # connexion, une fois par jour
-PBI_TOKEN=… npm run exporter -- selection.json             # export + PowerPoint
-```
-
-**Sa condition, unique et incontournable :** le rapport doit vivre dans un espace de
-travail adossé à une **capacité** — Premium, Embedded ou **Fabric**. Une licence Pro seule
-ne suffit pas, et **Premium par utilisateur (PPU) est explicitement exclu** pour les
-rapports interactifs — c'est le piège coûteux à connaître avant d'acheter une licence.
-
-Trois façons d'y accéder :
-
-| | |
-|---|---|
-| **Essai Fabric** | 60 jours, gratuit. De quoi tout éprouver avant de décider. |
-| **Capacité F2 en pause** | reprise le temps de l'export, puis pause : de l'ordre de 1 €/mois. |
-| **Capacité existante** | si l'entreprise en a déjà une, il suffit d'y rattacher l'espace de travail. |
-
-L'espace personnel *Mon espace de travail* **peut** être rattaché à une capacité — c'est
-documenté — mais l'opération demande un administrateur Fabric.
-
-Il faut aussi une **inscription d'application** dans Entra ID (client public, autorisations
-déléguées `Report.Read.All` et `Dataset.Read.All`). Là encore, l'affaire d'un
-administrateur, une fois.
-
-Quand une erreur 403 tombe, c'est presque toujours la capacité qui manque : l'outil le dit
-en toutes lettres plutôt que de rendre le code brut.
-
-#### La page entière plutôt que le visuel seul
-
-Un lien de VISUEL exige une empreinte, et cette empreinte est propre à son signet : une
-insertion manuelle par KPI. Désigner la **PAGE** change la donne — il n'y a plus d'objet
-à retrouver, donc peut-être plus rien à mémoriser — et apporte en prime ce que le visuel
-seul ne montre pas : les sélecteurs de mois et de semaines, l'année, les filtres.
-
-`outils/diagnostic-page-entiere.js` fabrique le support qui tranche : quatre formes
-d'adresse de page, **aucune empreinte nulle part**, plus un témoin.
-
-```bash
-node outils/diagnostic-page-entiere.js --lien "<url d'un KPI>"
-```
-
-| | |
-|---|---|
-| **A** | la page, avec le signet du KPI — la sélection de ce KPI, sélecteurs compris |
-| **B** | la page, sans signet — l'état par défaut |
-| **C** | la page, sans `pbi_source=shareVisual` — une adresse de rapport ordinaire |
-| **D** | l'adresse nue : rapport, page, signet |
-| **E** | témoin : le visuel seul sans empreinte, connu pour échouer |
-
-**Résultat : aucune ne s'affiche.** Le complément exige une empreinte quelle que soit la
-forme de l'adresse — visuel ou page. C'est donc établi une fois pour toutes : **le visuel
-vivant ne peut pas être automatisé**. Il reste deux chemins, et deux seulement.
-
-| | empreinte | données | travail manuel |
-|---|---|---|---|
-| **Visuel vivant** | une par KPI | se rafraîchissent chez le lecteur | une insertion par KPI, une fois |
-| **Image, page entière** | aucune | figées à la génération | aucun |
-
-Le second est le seul qui tienne la promesse « rien à faire ».
-
-#### 2. Image — coller une capture, ou la faire prendre automatiquement
-
-**Deux voies, toutes deux gratuites, aucune empreinte.**
-
-**a. Capture guidée — automatique, et rien à installer.** La meilleure des voies
-gratuites. Bouton **🎥 Capture guidée** :
-
-1. une fenêtre Power BI s'ouvre ;
-2. le navigateur demande quoi partager — désignez **cette fenêtre**, une seule fois ;
-3. l'annuaire la promène de KPI en KPI et saisit chaque page.
-
-Comment c'est possible alors qu'une page web ne peut pas photographier un autre site :
-elle ne le photographie pas. Le navigateur **partage** une fenêtre, avec votre accord
-explicite (`getDisplayMedia`), et c'est lui qui rend l'image. L'annuaire ne lit jamais le
-contenu de cette fenêtre — il n'en a pas le droit et n'en a pas besoin : il la navigue.
-
-Demande Edge ou Chrome, et que les fenêtres surgissantes soient autorisées. Ne masquez pas
-la fenêtre partagée pendant l'opération. Le partage est coupé à la fin, même si une
-capture rate.
-
-**b. Coller — rien à installer non plus.** Si vous préférez cadrer vous-même :
-
-1. sur la page Power BI, `Win+Maj+S`, cadrez, la capture part au presse-papiers ;
-2. dans la fenêtre de génération, cliquez **📋** sur la ligne du KPI ;
-3. `Ctrl+V`.
-
-La ligne passe à `🖼 capture`. On peut aussi **déposer** des fichiers image sur la
-fenêtre : ils se rangent dans l'ordre des KPI qui en manquent. Le **✕** retire une
-capture pour la refaire.
-
-**c. Capture automatique en ligne de commande — Node.js sur le poste.** Utile pour
-enchaîner sans ouvrir l'annuaire, ou pour planifier.
-
-
-
-**C'est le seul mode sans travail manuel**, et celui qui reproduit exactement ce qu'on
-voit dans Power BI : titre, sélecteurs de mois et de semaines, année, filtres, puis le
-graphique. Trois commandes, dont deux une seule fois dans la vie :
-
-**Le plus simple, sous Windows : glissez `selection.json` sur `powerpoint.bat`.** Le
-lanceur installe le navigateur et ouvre la connexion Power BI la première fois seulement,
-puis capture et assemble. Rien à taper.
-
-En ligne de commande, si vous préférez :
-
-```bash
-npm run installer:navigateur                      # une fois, jamais plus
-npm run connexion -- selection.json               # une fois : se connecter à Power BI
-npm run powerpoint -- selection.json              # chaque semaine
-```
-
-⚠️ **L'annuaire ne peut pas photographier Power BI lui-même.** C'est une page web : elle n'a pas le
-droit de photographier Power BI, qui vit sur une autre origine. Choisir « Image » dans la
-fenêtre de génération sans avoir fourni d'images produit donc des **cadres cliquables**,
-pas des graphiques — la fenêtre le dit maintenant, et demande confirmation. Les images se
-produisent sur votre poste, par le lanceur ou la commande ci-dessus.
-
-`selection.json` s'obtient dans l'annuaire par *Sélection & PowerPoint › Générer ›
-**⬇ Exporter la sélection***. La session Power BI est conservée d'une fois sur l'autre.
-
-`--page` vise le canevas du rapport plutôt que le conteneur du graphique. La priorité
-compte : sans elle le conteneur du visuel serait trouvé le premier, et on capturerait le
-graphique seul.
-
-
-
-Pour un support qui doit rester lisible **hors de l'entreprise** (ou par quelqu'un sans
-accès Power BI), il faut de vraies images.
-
-Collage direct : copiez la capture d'un visuel, **Ctrl+V** dans la fenêtre de génération.
-
-Capture automatique de toute la sélection — un outil ouvre chaque lien dans **votre**
-navigateur, avec **votre** session Power BI, attend le rendu et enregistre l'image :
-
-```bash
-npm i -D playwright && npx playwright install chromium
-
-# --page capture la PAGE entière : sélecteurs de dates et filtres compris,
-# et surtout : aucune empreinte n'est nécessaire dans ce mode.
-
-# Une seule fois : se connecter à Power BI (la session est conservée)
-node outils/capturer-visuels.js selection.json --connexion
-
-# Ensuite, chaque semaine :
-node outils/capturer-visuels.js selection.json --deck
-```
-
-`selection.json` s'obtient dans la fenêtre de génération, bouton
-**« ⬇ Exporter la sélection »**. Les images produites peuvent aussi être reprises sans
-quitter l'annuaire : **« 🖼 Charger les captures »**.
-
-Options utiles : `--visible` pour voir le navigateur travailler, `--attente 6000` si vos
-rapports sont lents, `--selecteur "<css>"` si l'interface Power BI change.
-
-En ligne de commande, `node outils/generer-deck.js selection.json --vivant` produit le
-support en visuels vivants, sans aucune capture.
-
-#### 3. Cadre cliquable seul
-
-Le cadre porte le titre et ouvre le rapport d'un clic. Utile pour préparer la trame d'un
-rituel avant d'avoir les données.
-
 ## Ce qui a été ajouté au dépôt
 
 | Fichier | Rôle |
@@ -419,25 +247,13 @@ rituel avant d'avoir les données.
 | `js/selection.js` | modèle des sélections : ordre, périmètres, fusion multi-postes |
 | `js/empreintes.js` | mémoire du complément par visuel : relevé, fusion, application |
 | `outils/relever-empreintes.js` | relève les empreintes d'un ou plusieurs PowerPoint |
-| `powerpoint.bat` | lanceur Windows : glisser `selection.json` dessus suffit |
-| `outils/exporter-powerbi.js` | export officiel `exportToFile` : page ou visuel, signet compris |
-| `outils/jeton-powerbi.js` | connexion Entra par code d'appareil, sans secret sur le poste |
 | `modele-deck.pptx` | charte IDEA (masque, thème, couverture) — **doit être déployé** |
-| `outils/capturer-visuels.js` | capture automatique des visuels Power BI |
-| `outils/generer-deck.js` | support PowerPoint depuis une sélection + des captures |
 | `outils/verifier-liens.js` | audit des liens : visuel, page ou bandeau |
 | `outils/verifier-deck.js` | contrôle d'un support produit, diapositive par diapositive |
-| `verificateur-liens.html` | page d'inspection : ouvrir chaque lien et trancher |
-| `testeur-powerpoint.html` | banc d'essai : générer puis relire le support, hors ligne |
 | `js/inspecter-deck.js` | lecture d'un .pptx produit (partagée page web / ligne de commande) |
 | `outils/construire-annuaire-test.js` | fabrique `annuaire-test.html`, la copie d'essai étanche |
-| `outils/diagnostic-complement.js` | support à cinq variantes pour isoler ce que lit le complément |
-| `outils/diagnostic-etat.js` | l'état peut-il être fabriqué ? partagé entre visuels d'une page ? |
-| `outils/verifier-rendu.js` | ce que le complément a RÉELLEMENT affiché, relu sur un support rouvert |
-| `outils/diagnostic-signet.js` | le signet du lien peut-il l'emporter sur l'état mémorisé ? |
-| `outils/diagnostic-page-entiere.js` | la page entière s'affiche-t-elle sans empreinte ? |
 | `smoke-essai.js` | contrôle d'étanchéité de la copie d'essai |
-| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 449 tests |
+| `zip.test.js`, `pptx.test.js`, `selection.test.js`, `empreintes.test.js`, `deck.test.js`, `outils.test.js` | 313 tests |
 | `smoke-ui.js` | contrôle de bout en bout dans un vrai navigateur |
 
 `app.js`, `index.html`, `style.css`, `service-worker.js` et le banc de test ont été
@@ -449,48 +265,6 @@ Il contient le masque, le thème, les six dispositions et la diapositive de couv
 dont trois jetons sont substitués à la génération : `{{TITRE}}`, `{{SOUS_TITRE}}`,
 `{{PERIODE}}`. Pour changer la charte, ouvrez-le dans PowerPoint, modifiez le masque
 ou la couverture, enregistrez — **en conservant les trois jetons**.
-
-## Quand le visuel affiché n'est pas celui attendu
-
-Premier réflexe, avant toute hypothèse : **ouvrir le support, le réenregistrer, et le
-relire**. À l'ouverture, le complément réécrit dans le fichier ce qu'il a résolu — le nom
-du visuel, la page, l'horodatage. On sait donc sans rien deviner ce que chaque
-diapositive a montré :
-
-```bash
-node outils/verifier-rendu.js support-ouvert.pptx
-```
-
-Il signale les trois façons dont un support peut mentir :
-
-| | |
-|---|---|
-| *le complément n'a pas ouvert cette diapositive* | le fichier a été renvoyé sans être affiché : le relevé ne veut rien dire |
-| *l'état appliqué est celui d'une autre page* | le support montrera la mauvaise page |
-| *l'état ne décrit pas ce visuel* | le bon graphique s'affiche, **avec les filtres d'un voisin** — les chiffres peuvent être faux sans que rien n'ait l'air cassé |
-
-
-
-Le complément est une boîte noire : on ne peut pas savoir de l'extérieur comment il
-interprète l'adresse qu'on lui donne. `outils/diagnostic-complement.js` fabrique donc un
-support où **chaque diapositive teste une hypothèse**, à ouvrir une fois dans PowerPoint :
-
-| | |
-|---|---|
-| **A** | l'état actuel du générateur — visuel désigné, signet marqué comme à appliquer |
-| **B** | sans `visual=` : la page entière, même signet |
-| **C** | A, plus l'état sérialisé copié d'un fichier produit par Power BI |
-| **D** | témoin — le complément de référence, intact |
-| **E** | témoin — le visuel sans aucun signet, donc son état par défaut |
-
-```bash
-node outils/diagnostic-complement.js --lien "<url du KPI>" \
-     --reference MicrosoftPowerBIStorytelling.pptx
-```
-
-Lecture : **A identique à E** → le signet n'est pas appliqué. **A identique à B** → le
-paramètre `visual=` est ignoré. **C correct** → il faut embarquer l'état sérialisé.
-**D incorrect** → le fichier de référence ne porte pas sur le bon visuel.
 
 ## Essayer sans toucher à l'annuaire réel
 
@@ -521,7 +295,7 @@ maintenir à la main.
 ## Tests
 
 ```bash
-node --test              # 864 tests (dont 449 pour cette fonctionnalité)
+node --test              # 751 tests (dont 313 pour cette fonctionnalité)
 npm run test:deck        # les seuls tests de la chaîne PowerPoint
 npm run test:outils      # les outils en ligne de commande
 node build-tests-html.js # régénère tests.html (banc de test navigateur)

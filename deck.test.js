@@ -25,8 +25,6 @@ const FICHES_DECK = [
 /** Prépare l'application avec les fiches ci-dessus et un modèle simulé. */
 function preparerDeck(opts) {
   A.reset(Object.assign({ manualEntries: FICHES_DECK.map(f => ({ ...f })) }, opts || {}));
-  // Comme sur une page fraîchement ouverte : le mode revient à sa valeur par défaut
-  A.saisir("deckModeSelect", "vivant");
   A.run(`
     presets = []; selectionIds = []; selectionMode = false; presetCourant = "";
     empreintes = []; capturesDeck = {}; commentairesVolatils = {};
@@ -411,120 +409,6 @@ test("non-régression : une sélection ne modifie jamais les fiches", () => {
 
 /* ═══ Passerelle vers la capture automatique ═══ */
 
-test("export : le descriptif de sélection décrit chaque diapositive à capturer", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  A.saisir("deckTitleInput", "Indicateurs MAGASINS ARMEMENT");
-  A.saisir("deckPeriodInput", "S30 à S33-2026");
-
-  const sel = A.run("selectionJson()");
-  assert.equal(sel._format, "annuaire-kpi-selection");
-  assert.equal(sel.couverture.titre, "Indicateurs MAGASINS ARMEMENT");
-  assert.equal(sel.couverture.periode, "S30 à S33-2026");
-  assert.equal(sel.diapos.length, 2);
-  assert.ok(sel.diapos[0].lien.startsWith("https://app.powerbi.com/"));
-});
-
-test("export : l'ordre du support est celui de la sélection", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  const sel = A.run("selectionJson()");
-  assert.deepEqual(sel.diapos.map(d => d.kpiId),
-    ["kpi_taux_service_hebdomadaire", "kpi_volumetrie_hebdomadaire"]);
-});
-
-test("export : chaque diapositive annonce le nom d'image attendu, numéroté", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  const sel = A.run("selectionJson()");
-  assert.match(sel.diapos[0].fichier, /^01-/);
-  assert.match(sel.diapos[1].fichier, /^02-/);
-  assert.ok(sel.diapos.every(d => d.fichier.endsWith(".png")));
-});
-
-test("export : une sélection vide n'exporte rien et le dit", () => {
-  preparerDeck();
-  assert.equal(A.run("exporterSelectionJson()"), null);
-  assert.match(A.dernierMessage(), /vide/i);
-});
-
-test("export : le fichier téléchargé porte le nom de la sélection", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.enregistrerSelection("COPIL hebdomadaire");
-  A.run("exporterSelectionJson()");
-  assert.match(A.dernierMessage(), /selection-copil_hebdomadaire\.json/);
-});
-
-test("captures : une image nommée comme attendu rejoint sa diapositive", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  const noms = A.run("selectionJson().diapos.map(function (d) { return d.fichier; })");
-  const place = A.run(`rangerCaptures(${JSON.stringify([noms[1]])},
-    { ${JSON.stringify(noms[1])}: [1, 2, 3, 4] })`);
-  assert.equal(place, 1);
-  assert.ok(A.run(`!!capturesDeck["kpi_taux_service_hebdomadaire"]`), "la 2ᵉ diapositive a sa capture");
-  assert.ok(A.run(`!capturesDeck["kpi_volumetrie_hebdomadaire"]`), "la 1ʳᵉ n'en a pas");
-});
-
-test("captures : des images nommées librement suivent l'ordre du support", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  const place = A.run(`rangerCaptures(["a.png", "b.png"], { "a.png": [1], "b.png": [2] })`);
-  assert.equal(place, 2);
-  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"] && !!capturesDeck["kpi_taux_service_hebdomadaire"]`));
-});
-
-test("captures : un fichier vide est ignoré, pas rangé comme une image", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  assert.equal(A.run(`rangerCaptures(["a.png"], { "a.png": [] })`), 0);
-});
-
-test("captures : plus d'images que de diapositives ne provoque pas d'erreur", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  assert.equal(A.run(`rangerCaptures(["a.png", "b.png", "c.png"],
-    { "a.png": [1], "b.png": [2], "c.png": [3] })`), 1);
-});
-
-test("captures : la fenêtre de génération signale les diapositives pourvues", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");   // les captures ne servent que dans ce mode
-  A.run(`rangerCaptures(["a.png"], { "a.png": [1] })`);
-  assert.ok(A.html("deckList").includes("🖼 capture"));
-});
-
-test("captures : une capture rangée finit bien en IMAGE dans le support", async () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.run(`rangerCaptures(["a.png"], { "a.png": [137, 80, 78, 71, 13, 10, 26, 10,
-    0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 2, 0, 0, 0, 1, 0] })`);
-  const xml = await A.run(`(async function () {
-    var p = selectionCourante();
-    var r = Selection.resoudrePreset(p, data.concat(personalEntries), activeSites());
-    var octets = await PptxDeck.construireDeck(modeleDeckCache, {
-      titre: "T", diapos: r.diapos.map(function (d) {
-        return { titre: d.titre, lien: d.lien,
-                 image: capturesDeck[d.kpiId] ? capturesDeck[d.kpiId].donnees : null };
-      })
-    });
-    var pieces = await ZipMini.lireZip(octets);
-    // Le modèle simulé n'a pas de couverture : la 1ʳᵉ diapositive est le KPI
-    return ZipMini.versTexte(pieces.get("ppt/slides/slide1.xml"));
-  })()`);
-  assert.ok(xml.includes("<p:pic>"), "le visuel est une image");
-  assert.ok(!xml.includes("Visuel à capturer"), "et non un cadre d'attente");
-});
-
-/* ═══ Choix du contenu des visuels ═══ */
-
 test("mode : par défaut, le support embarque les visuels vivants", async () => {
   preparerDeck();
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
@@ -555,7 +439,6 @@ function poserEmpreinte(lien) {
 test("mode : un lien de visuel sans empreinte demande d'abord un relevé", () => {
   preparerDeck();
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "vivant");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("à relever"),
     "sans empreinte, le complément afficherait « l'objet visuel n'existe plus »");
@@ -566,7 +449,6 @@ test("mode : une fois l'empreinte relevée, le visuel est annoncé comme prêt",
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   poserEmpreinte(LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "vivant");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("⚡ visuel"));
 });
@@ -574,31 +456,13 @@ test("mode : une fois l'empreinte relevée, le visuel est annoncé comme prêt",
 test("mode : sans lien Power BI, la ligne le signale", () => {
   preparerDeck();
   A.basculerSelection("kpi_anticipation_mensuelle");
-  A.saisir("deckModeSelect", "vivant");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("sans lien"));
-});
-
-test("mode image : la ligne réclame une capture tant qu'il n'y en a pas", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à capturer"));
-});
-
-test("mode lien : aucune capture n'est réclamée", () => {
-  preparerDeck();
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "lien");
-  A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("lien seul"));
 });
 
 test("génération : le message de fin précise le mode retenu", async () => {
   preparerDeck();
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "vivant");
   await A.run("genererDeck()");
   assert.match(A.dernierMessage(), /visuels vivants/);
 });
@@ -685,19 +549,10 @@ test("liens : la ligne fautive est mise en évidence", () => {
   assert.ok(A.html("deckList").includes("deck-row-warn"));
 });
 
-test("liens : en mode image, le diagnostic laisse la place à l'état de capture", () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", LIEN_PAGE);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à capturer"));
-});
-
-/* ─── Empreintes : relevé, partage, génération ──────────────
+/* ─── Empreintes : relever, partager, générer ───────────────
    Le relevé se fait dans le navigateur, à partir d'un PowerPoint où le
-   visuel a été inséré à la main. C'est l'unique opération manuelle, et
-   elle n'est à faire qu'une fois par KPI. */
+   visuel a été inséré à la main. C'est l'unique geste manuel, et il
+   n'est à faire qu'une fois par KPI. */
 
 /** Un .pptx minimal portant UN complément Power BI, comme après insertion. */
 function pptxAvecComplement(lien, nom) {
@@ -716,6 +571,7 @@ function pptxAvecComplement(lien, nom) {
       donnees: ${JSON.stringify(`<we:webextension><we:properties>${props}</we:properties></we:webextension>`)} }
   ])`);
 }
+
 
 test("empreintes : un PowerPoint fait à la main livre sa mémoire", async () => {
   preparerDeck();
@@ -1084,38 +940,10 @@ test("relevé : un KPI sans lien n'encombre pas le support", async () => {
    diapositive affiche « L'objet visuel ajouté ici n'existe plus ».
    L'annuaire doit le dire AVANT, pas le laisser découvrir en séance. */
 
-test("mode : sans aucune empreinte, c'est l'image qui est proposée", () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.run("ouvrirDeckModal()");
-  assert.equal(A.el("deckModeSelect").value, "image");
-});
-
-test("mode : dès qu'une empreinte existe, le visuel vivant reprend la main", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
-  A.run("ouvrirDeckModal()");
-  assert.equal(A.el("deckModeSelect").value, "vivant");
-});
-
-test("mode : un choix explicite de l'utilisateur n'est jamais écrasé", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "lien");
-  A.run(`document.getElementById("deckModeSelect").dataset.choisi = "1"`);
-  A.run("ouvrirDeckModal()");
-  assert.equal(A.el("deckModeSelect").value, "lien");
-});
-
 test("génération : produire un support muet demande confirmation", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "vivant");
   A.confirmer(false);
   assert.equal(await A.run("genererDeck")(), null, "refusée, rien n'est produit");
 });
@@ -1124,7 +952,6 @@ test("génération : confirmée, elle produit tout de même le support", async (
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "vivant");
   A.confirmer(true);
   const r = await A.run("genererDeck")();
   assert.equal(r.diapos, 1);
@@ -1135,272 +962,8 @@ test("génération : avec toutes les empreintes, aucune question n'est posée", 
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
-  A.saisir("deckModeSelect", "vivant");
   A.confirmer(false);   // un refus ne doit rien changer : la question n'est pas posée
   assert.equal((await A.run("genererDeck")()).diapos, 1);
 });
 
-/* ─── Mode image : l'annuaire ne capture pas lui-même ───────
-   C'est une page web : elle ne peut pas photographier Power BI, qui
-   vit sur une autre origine. Sans image fournie, chaque diapositive
-   reçoit un cadre cliquable — le repli prévu, qui ressemble à une
-   panne. L'annuaire doit donc le dire, et où trouver les images. */
 
-test("image : le bilan dit combien de KPI n'ont pas d'image, et quoi faire", () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run("renderDeckLignes()");
-  const bilan = A.texte("deckWarning");
-  assert.match(bilan, /1 KPI sans image/);
-  assert.match(bilan, /Ctrl\+V/, "la voie sans installation doit être proposée en premier");
-  assert.match(bilan, /powerpoint\.bat/, "la voie automatique aussi");
-});
-
-test("image : générer sans aucune image demande confirmation", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.confirmer(false);
-  assert.equal(await A.run("genererDeck")(), null);
-});
-
-test("image : avec les images chargées, aucune question n'est posée", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run(`capturesDeck["kpi_volumetrie_hebdomadaire"] = { donnees: new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4]), nom: "x.png" }`);
-  A.confirmer(false);   // un refus ne doit rien changer : la question n'est pas posée
-  assert.equal((await A.run("genererDeck")()).diapos, 1);
-});
-
-test("image : le bilan se tait quand toutes les images sont là", () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run(`capturesDeck["kpi_volumetrie_hebdomadaire"] = { donnees: new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4]), nom: "x.png" }`);
-  A.run("renderDeckLignes()");
-  assert.ok(!/sans image/.test(A.texte("deckWarning")));
-});
-
-/* ─── Coller une capture : la voie gratuite sans rien installer ─
-   Win+Maj+S sur la page Power BI, un clic sur la ligne du KPI,
-   Ctrl+V. Ni complément, ni capacité, ni Node.js. */
-
-const PNG_ESSAI = "new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,8,0,0,0,4])";
-
-/** Un presse-papiers qui porte une image, comme le navigateur en fournit. */
-function pressePapiers(type) {
-  return {
-    items: [{
-      type: type || "image/png",
-      getAsFile: () => ({
-        type: type || "image/png",
-        arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10,
-          0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 4]).buffer
-      })
-    }]
-  };
-}
-
-test("collage : viser une ligne puis coller y pose l'image", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`);
-  const servi = await A.run("collerCapture")(pressePapiers());
-  assert.equal(servi, "kpi_volumetrie_hebdomadaire");
-  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
-});
-
-test("collage : sans ligne visée, l'image va au premier KPI qui en manque", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  assert.equal(await A.run("collerCapture")(pressePapiers()), "kpi_volumetrie_hebdomadaire");
-  assert.equal(await A.run("collerCapture")(pressePapiers()), "kpi_taux_service_hebdomadaire");
-});
-
-test("collage : un presse-papiers sans image le dit au lieu de se taire", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  assert.equal(await A.run("collerCapture")({ items: [{ type: "text/plain", getAsFile: () => null }] }), "");
-  assert.match(A.dernierMessage(), /copiez une IMAGE/);
-});
-
-test("collage : viser deux fois la même ligne annule la visée", () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  assert.equal(A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`), "kpi_volumetrie_hebdomadaire");
-  assert.equal(A.run(`viserCollage("kpi_volumetrie_hebdomadaire")`), "");
-});
-
-test("collage : une capture posée peut être retirée pour être refaite", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  await A.run("collerCapture")(pressePapiers());
-  A.run(`retirerCapture("kpi_volumetrie_hebdomadaire")`);
-  assert.ok(A.run(`!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
-});
-
-test("collage : la ligne annonce la capture dès qu'elle est posée", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à capturer"));
-  await A.run("collerCapture")(pressePapiers());
-  assert.ok(A.html("deckList").includes("🖼 capture"));
-});
-
-test("collage : une fois toutes les images posées, la génération ne pose plus de question", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  await A.run("collerCapture")(pressePapiers());
-  A.confirmer(false);
-  assert.equal((await A.run("genererDeck")()).diapos, 1);
-});
-
-test("collage : un JPEG est accepté aussi bien qu'un PNG", async () => {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-  assert.ok(await A.run("collerCapture")(pressePapiers("image/jpeg")));
-});
-
-/* ─── Capture guidée : automatique et sans installation ─────
-   Une page web ne peut pas photographier un autre site. Mais le
-   navigateur sait PARTAGER une fenêtre, si l'utilisateur y consent.
-   L'annuaire ouvre une fenêtre, l'utilisateur la désigne une fois,
-   puis l'annuaire la promène de KPI en KPI. Il ne lit jamais cette
-   fenêtre — il la navigue, et le navigateur lui rend l'image. */
-
-/** Des services de navigateur simulés, qui racontent ce qu'on leur a demandé. */
-function servicesFactices(opts) {
-  const o = opts || {};
-  const journal = { ouverts: [], navigations: [], saisies: 0, fermetures: 0 };
-  return {
-    journal,
-    services: {
-      ouvrir: async lien => { journal.ouverts.push(lien); return o.fenetreBloquee ? null : { closed: false }; },
-      partager: async () => { if (o.partageRefuse) throw new Error("partage refusé"); return { getTracks: () => [] }; },
-      naviguer: (f, lien) => journal.navigations.push(lien),
-      attendre: () => Promise.resolve(),
-      saisir: async () => {
-        journal.saisies++;
-        if (o.saisieRatee && journal.saisies === o.saisieRatee) throw new Error("image vide");
-        return new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 4]);
-      },
-      fermer: () => { journal.fermetures++; }
-    }
-  };
-}
-
-function deuxKpiSansCapture() {
-  preparerDeck();
-  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
-  relier("kpi_taux_service_hebdomadaire", SIGNET_VOISIN);
-  A.basculerSelection("kpi_volumetrie_hebdomadaire");
-  A.basculerSelection("kpi_taux_service_hebdomadaire");
-  A.saisir("deckModeSelect", "image");
-}
-
-test("guidée : chaque KPI est affiché puis saisi", async () => {
-  deuxKpiSansCapture();
-  const f = servicesFactices();
-  const r = await A.run("captureGuidee")(f.services, {});
-  assert.equal(r.faites, 2);
-  assert.deepEqual(r.echecs, []);
-  assert.equal(f.journal.saisies, 2);
-});
-
-test("guidée : la fenêtre s'ouvre AVANT qu'on demande de la partager", async () => {
-  // On ne peut pas désigner une fenêtre qui n'existe pas encore.
-  deuxKpiSansCapture();
-  const f = servicesFactices();
-  await A.run("captureGuidee")(f.services, {});
-  assert.equal(f.journal.ouverts.length, 1, "une seule fenêtre, réutilisée ensuite");
-  assert.equal(f.journal.navigations.length, 1, "le premier KPI est déjà à l'écran");
-});
-
-test("guidée : les images se rangent sur les bons KPI", async () => {
-  deuxKpiSansCapture();
-  await A.run("captureGuidee")(servicesFactices().services, {});
-  assert.ok(A.run(`!!capturesDeck["kpi_volumetrie_hebdomadaire"]`));
-  assert.ok(A.run(`!!capturesDeck["kpi_taux_service_hebdomadaire"]`));
-});
-
-test("guidée : une fenêtre bloquée le dit, au lieu d'échouer sans raison", async () => {
-  deuxKpiSansCapture();
-  const r = await A.run("captureGuidee")(servicesFactices({ fenetreBloquee: true }).services, {});
-  assert.equal(r.faites, 0);
-  assert.match(A.dernierMessage(), /fenêtres surgissantes/);
-});
-
-test("guidée : un partage refusé n'entame rien et le dit", async () => {
-  deuxKpiSansCapture();
-  const f = servicesFactices({ partageRefuse: true });
-  const r = await A.run("captureGuidee")(f.services, {});
-  assert.equal(r.faites, 0);
-  assert.equal(f.journal.saisies, 0);
-  assert.equal(r.echecs.length, 2, "les deux KPI restent à faire");
-});
-
-test("guidée : une image ratée n'interrompt pas les suivantes", async () => {
-  deuxKpiSansCapture();
-  const r = await A.run("captureGuidee")(servicesFactices({ saisieRatee: 1 }).services, {});
-  assert.equal(r.faites, 1);
-  assert.equal(r.echecs.length, 1);
-});
-
-test("guidée : le partage est toujours coupé, même en cas d'échec", async () => {
-  deuxKpiSansCapture();
-  const f = servicesFactices({ saisieRatee: 1 });
-  await A.run("captureGuidee")(f.services, {});
-  assert.equal(f.journal.fermetures, 1, "on ne laisse pas un partage d'écran ouvert");
-});
-
-test("guidée : les KPI déjà capturés sont sautés", async () => {
-  deuxKpiSansCapture();
-  await A.run("collerCapture")(pressePapiers(), "kpi_volumetrie_hebdomadaire");
-  const f = servicesFactices();
-  const r = await A.run("captureGuidee")(f.services, {});
-  assert.equal(r.faites, 1);
-  assert.equal(f.journal.saisies, 1);
-});
-
-test("guidée : sans rien à faire, on n'ouvre même pas de fenêtre", async () => {
-  deuxKpiSansCapture();
-  await A.run("collerCapture")(pressePapiers(), "kpi_volumetrie_hebdomadaire");
-  await A.run("collerCapture")(pressePapiers(), "kpi_taux_service_hebdomadaire");
-  const f = servicesFactices();
-  const r = await A.run("captureGuidee")(f.services, {});
-  assert.equal(r.faites, 0);
-  assert.equal(f.journal.ouverts.length, 0);
-  assert.match(A.dernierMessage(), /déjà là/);
-});
-
-test("guidée : un navigateur sans partage d'écran est reconnu", () => {
-  preparerDeck();
-  A.run(`navigator = { onLine: true, serviceWorker: { register: () => Promise.resolve() } }`);
-  assert.equal(A.run("partageDisponible()"), false);
-  A.run(`navigator = globalThis.__origine.navigator`);
-});
