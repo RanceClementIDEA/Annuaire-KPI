@@ -436,3 +436,16 @@ test("version : celle affichée est celle du cache du service worker", () => {
   assert.ok(cache, "le cache doit porter un numéro de version");
   assert.equal(version, cache);
 });
+
+test("livraison : les six empreintes rétractées portent bien DEUX vues seulement", () => {
+  const brut = JSON.parse(fsO.readFileSync(pathO.join(__dirname, "empreintes-livrees.json"), "utf8"));
+  assert.ok(Array.isArray(brut.retirees), "le fichier livré doit porter ses rétractations");
+  assert.equal(brut.retirees.length, 6);
+  const vues = new Set(brut.retirees.map(r => r.etat));
+  assert.equal(vues.size, 2,
+    "six étiquettes pour deux vues : c'est exactement ce qui rendait le support faux");
+  // Et aucune rétractation ne doit viser une empreinte encore livrée.
+  const livrees = new Set(brut.empreintes.map(e => e.id));
+  brut.retirees.forEach(r => assert.ok(!livrees.has(r.id),
+    "une empreinte rétractée ne doit plus être livrée : " + r.id));
+});

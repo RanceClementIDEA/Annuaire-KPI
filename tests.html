@@ -6020,6 +6020,54 @@ test("sans aucune empreinte, il n'y a rien à dépasser", () => {
   assert.strictEqual(E.empreinteDepassee([E.creerEmpreinte(RELEVE, {})], "pas un lien"), null);
 });
 
+/* ═══ Rétracter une empreinte fausse ═══════════════════════
+   Le fichier livré ne fait que COMBLER les manques : ce qui est déjà dans
+   le stockage l'emporte. Six empreintes mal étiquetées — elles montraient
+   toutes la même vue sous des noms de KPI différents — ont donc survécu au
+   nettoyage du fichier et continuaient de produire des diapositives fausses
+   sur chaque poste. Les retirer du fichier ne suffit pas : il faut le dire. */
+
+const EMP_A = { id: "r/p/v/s1", libelle: "A", signet: "s1",
+  proprietes: { bookmark: "&quot;ETAT-FAUX&quot;" }, _mtime: 10, _by: "moi" };
+const EMP_B = { id: "r/p/v/s2", libelle: "B", signet: "s2",
+  proprietes: { bookmark: "&quot;ETAT-BON&quot;" }, _mtime: 10, _by: "moi" };
+
+test("rétractation : l'empreinte visée disparaît", () => {
+  const sig = E.signatureEtat(EMP_A);
+  const reste = E.sansRetirees([EMP_A, EMP_B], [{ id: EMP_A.id, etat: sig }]);
+  assert.deepEqual(reste.map(e => e.id), [EMP_B.id]);
+});
+
+test("rétractation : les autres empreintes ne bougent pas", () => {
+  const reste = E.sansRetirees([EMP_A, EMP_B], [{ id: "r/p/v/inconnu", etat: "x" }]);
+  assert.equal(reste.length, 2);
+});
+
+test("rétractation : un relevé REFAIT sur le même lien revient", () => {
+  const sig = E.signatureEtat(EMP_A);
+  const refait = { ...EMP_A, proprietes: { bookmark: "&quot;ETAT-REFAIT&quot;" }, _mtime: 99 };
+  const reste = E.sansRetirees([refait], [{ id: EMP_A.id, etat: sig }]);
+  assert.equal(reste.length, 1, "l'état est différent : rien à retirer");
+  assert.equal(reste[0].proprietes.bookmark, "&quot;ETAT-REFAIT&quot;");
+});
+
+test("rétractation : sans état précisé, tout l'identifiant est retiré", () => {
+  const reste = E.sansRetirees([EMP_A, EMP_B], [{ id: EMP_A.id }]);
+  assert.deepEqual(reste.map(e => e.id), [EMP_B.id]);
+});
+
+test("rétractation : sans liste, rien ne change", () => {
+  assert.equal(E.sansRetirees([EMP_A, EMP_B], []).length, 2);
+  assert.equal(E.sansRetirees([EMP_A, EMP_B], null).length, 2);
+});
+
+test("signature : deux états identiques donnent la même, deux états différents non", () => {
+  assert.equal(E.signatureEtat(EMP_A), E.signatureEtat({ ...EMP_A, libelle: "autre" }),
+    "elle ne dépend que de l'état");
+  assert.notEqual(E.signatureEtat(EMP_A), E.signatureEtat(EMP_B));
+  assert.equal(E.signatureEtat({ id: "x", proprietes: {} }), "", "sans état, pas de signature");
+});
+
 __ouvrirGroupe("Fabrique PowerPoint");
 /* Tests de la fabrique PowerPoint (js/pptx.js).
    On vérifie la STRUCTURE du fichier produit — c'est elle que

@@ -2530,7 +2530,8 @@ async function tirerEmpreintes() {
     if (!snap.exists) return 0;
     const distant = snap.data();
     if (!distant || !Array.isArray(distant.kpiEmpreintes)) return 0;
-    empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+    empreintes = Empreintes.sansRetirees(
+      Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes), empreintesRetirees);
     ecrireDonnees(LS_EMPREINTES, empreintes);
     return empreintes.length;
   } catch (err) {
@@ -3026,7 +3027,8 @@ function ecouterEmpreintes(code) {
     const distant = snap.data();
     if (!distant || !Array.isArray(distant.kpiEmpreintes)) return;
     const avant = empreintes.length;
-    empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+    empreintes = Empreintes.sansRetirees(
+      Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes), empreintesRetirees);
     ecrireDonnees(LS_EMPREINTES, empreintes);
     if (empreintes.length !== avant) renderDeckLignes();
   }, () => { /* silencieux : l'annuaire reste utilisable sans les empreintes */ });
@@ -4179,17 +4181,48 @@ function loadEmpreintes() {
  *
  * @returns {Promise<number>} nombre d'empreintes ajoutées
  */
+/* Les rétractations du fichier livré, gardées pour toute la session : un
+   collègue dont le poste n'est pas à jour republierait sinon les empreintes
+   erronées, et l'écoute distante les ramènerait aussitôt. */
+let empreintesRetirees = [];
+
 async function chargerEmpreintesLivrees() {
-  let liste;
+  let liste, retirees = [];
   try {
     const rep = await fetch("./empreintes-livrees.json", { cache: "no-cache" });
     if (!rep.ok) return 0;
     const brut = await rep.json();
     liste = Array.isArray(brut) ? brut
+          : (brut && Array.isArray(brut.empreintes)) ? brut.empreintes
           : (brut && Array.isArray(brut.kpiEmpreintes)) ? brut.kpiEmpreintes : null;
+    retirees = (brut && Array.isArray(brut.retirees)) ? brut.retirees : [];
   } catch (err) {
     return 0;   // pas de fichier, hors ligne, JSON illisible : sans conséquence
   }
+  /* ── RÉTRACTATIONS ──
+     Le fichier livré ne fait que COMBLER les manques : ce qui est déjà dans
+     le stockage l'emporte. Six empreintes mal étiquetées — elles montraient
+     toutes la même vue sous des noms de KPI différents — ont donc survécu
+     au nettoyage du fichier et continuaient de produire des diapositives
+     fausses, sur chaque poste et dans le document partagé. Les retirer du
+     fichier ne suffisait pas : il faut le dire explicitement.
+     La rétractation vise un ÉTAT précis, pas un lien : un relevé refait
+     proprement porte le même identifiant et revient sans obstacle. */
+  empreintesRetirees = retirees;
+  if (retirees.length) {
+    const avantMenage = empreintes.length;
+    empreintes = Empreintes.sansRetirees(empreintes, retirees);
+    const otees = avantMenage - empreintes.length;
+    if (otees) {
+      ecrireDonnees(LS_EMPREINTES, empreintes);
+      /* Et on nettoie le document partagé, sans quoi la prochaine
+         synchronisation les ramènerait chez tout le monde. */
+      pousserEmpreintes();
+      showToast("🧹 " + otees + " empreinte(s) erronée(s) retirée(s) — "
+        + "les diapositives concernées seront recalculées", 6000);
+    }
+  }
+
   if (!liste || !liste.length) return 0;
 
   const valides = liste
@@ -5271,7 +5304,7 @@ document.getElementById("deckHelpBtn")?.addEventListener("click", () => deckHelp
 /* La version du code, affichée sous le nom d'utilisateur. Elle suit celle du
    cache : c'est ce qui distingue « l'annuaire a un défaut » de « ce poste
    n'a pas encore la correction ». La question a coûté un aller-retour. */
-const VERSION_ANNUAIRE = "v20";
+const VERSION_ANNUAIRE = "v21";
 
 function afficherVersionAnnuaire() {
   const el = document.getElementById("appVersion");

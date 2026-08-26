@@ -1,4 +1,4 @@
-const CACHE_NAME = "kpi-idea-cache-v20";
+const CACHE_NAME = "kpi-idea-cache-v21";
 
 /* Les pièces de l'application, mises en cache à l'installation pour qu'elle
    démarre hors ligne. C'est aussi la SEULE liste que le cache d'exécution

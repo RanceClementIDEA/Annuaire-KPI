@@ -321,6 +321,57 @@
    * est plafonné à 1 Mo côté Firestore : l'état sérialisé pèse ~5 Ko par
    * visuel, il faut donc pouvoir prévenir avant de buter dessus.
    */
+  /**
+   * Signature courte d'un état, pour désigner UNE empreinte précise.
+   *
+   * Sert aux rétractations : dire « cette empreinte-là est fausse » sans
+   * condamner le lien. Un relevé refait proprement porte le même
+   * identifiant mais un autre état — il doit revenir sans obstacle.
+   */
+  function signatureEtat(empreinte) {
+    const b = empreinte && empreinte.proprietes && empreinte.proprietes.bookmark;
+    if (!b) return "";
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    const t = String(b);
+    for (let i = 0; i < t.length; i++) {
+      h1 = Math.imul(h1 ^ t.charCodeAt(i), 0x01000193) >>> 0;
+      h2 = Math.imul(h2 + t.charCodeAt(i), 0x85ebca6b) >>> 0;
+    }
+    return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+  }
+
+  /**
+   * Ôte les empreintes dont l'état a été rétracté.
+   *
+   * Six empreintes livrées se sont révélées mal étiquetées : elles
+   * montraient toutes la même vue sous des noms de KPI différents. Les
+   * retirer du fichier livré ne suffisait pas — le fichier ne fait que
+   * COMBLER les manques, si bien qu'elles survivaient dans le stockage de
+   * chaque poste et dans le document partagé, et continuaient de produire
+   * des diapositives fausses.
+   *
+   * @param {Array} liste
+   * @param {Array<{id:string, etat:string}>} rétractations
+   */
+  function sansRetirees(liste, retractations) {
+    const r = Array.isArray(retractations) ? retractations : [];
+    if (!r.length) return Array.isArray(liste) ? liste : [];
+    const morts = new Map();
+    r.forEach(x => {
+      if (!x || !x.id) return;
+      if (!morts.has(x.id)) morts.set(x.id, new Set());
+      if (x.etat) morts.get(x.id).add(x.etat);
+    });
+    return (Array.isArray(liste) ? liste : []).filter(e => {
+      if (!e || !morts.has(e.id)) return true;
+      const etats = morts.get(e.id);
+      // Sans état précisé, on retire l'identifiant en entier.
+      if (!etats.size) return false;
+      // Sinon, seulement CET état : un relevé refait doit pouvoir revenir.
+      return !etats.has(signatureEtat(e));
+    });
+  }
+
   function poids(empreintes) {
     const liste = Array.isArray(empreintes) ? empreintes : [];
     return liste.reduce((n, e) => n + JSON.stringify(e || {}).length, 0);
@@ -348,6 +399,7 @@
     CHAMPS, CHAMPS_DE_SESSION, CHAMPS_ETAT,
     cleVisuel, clePage, pageDeCle, signetDe, signetDeCle, normaliserEmpreinte, creerEmpreinte, raisonRefus, proprietesPour,
     trouver, trouverParPage, resoudre, empreinteDepassee, fusionnerEmpreintes, poids,
+    signatureEtat, sansRetirees,
     empreinteComplete, dechapper
   };
 
