@@ -206,6 +206,31 @@
   }
 
   /**
+   * Une transformation qui ne change rien.
+   *
+   * Elle survient quand deux empreintes portent le MÊME état sous deux
+   * étiquettes différentes — un visuel inséré plusieurs fois sans que les
+   * segments aient été touchés entre-temps. L'axe qu'on croirait apprendre
+   * là est creux : l'appliquer rendrait la vue de départ sous un autre nom,
+   * ce qui est précisément l'erreur qu'on cherche à éviter.
+   */
+  function estVide(transfo) {
+    if (!transfo) return true;
+    return !Object.keys(transfo.conteneurs || {}).length
+        && !(transfo.retires || []).length
+        && !(transfo.substitutions || []).length;
+  }
+
+  /**
+   * La signature d'une vue : ses conteneurs, et rien d'autre.
+   * Deux empreintes de même signature montrent la même chose, quels que
+   * soient leur signet et leur libellé.
+   */
+  function signature(etat) {
+    return JSON.stringify(section(etat).visualContainers || {});
+  }
+
+  /**
    * Une transformation touche-t-elle les mêmes conteneurs qu'une autre ?
    * Deux axes qui se recouvrent ne peuvent pas être combinés : la
    * seconde effacerait la première.
@@ -217,9 +242,9 @@
   }
 
   const API = {
-    nu, lireEtat, ecrireEtat, section,
+    nu, lireEtat, ecrireEtat, section, signature,
     conteneursDivergents, transformation, substitutions, appliquerSubstitutions,
-    appliquer, appliquerToutes, seChevauchent
+    appliquer, appliquerToutes, seChevauchent, estVide
   };
 
   if (estNode) module.exports = API;
