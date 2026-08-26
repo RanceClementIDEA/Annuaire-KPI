@@ -7162,6 +7162,52 @@ test("signet : deux KPI d'un même visuel gardent chacun son empreinte", async (
   assert.equal(A.run("empreintes.length"), 2);
 });
 
+/* ─── Dire POURQUOI une insertion a été écartée ─────────────
+   Vérifié sur un fichier réel : le complément, ne pouvant résoudre le
+   signet d'un lien, était retombé sur la page d'accueil du rapport et
+   avait mémorisé CETTE page. L'empreinte est justement refusée — mais
+   le refus doit s'expliquer, sinon on cherche longtemps. */
+
+/** Un complément dont l'état appartient à une AUTRE page que le lien. */
+function pptxAutrePage(lien) {
+  const props = [
+    `<we:property name="reportUrl" value="&quot;${lien.replace(/&/g, "&amp;")}&quot;"/>`,
+    `<we:property name="artifactName" value="&quot;Histo&quot;"/>`,
+    `<we:property name="pageName" value="&quot;pageDAccueil&quot;"/>`,
+    `<we:property name="bookmark" value="&quot;H4sIEtat&quot;"/>`
+  ].join("");
+  return A.run(`ZipMini.ecrireZip([
+    { nom: "[Content_Types].xml", donnees: '<?xml version="1.0"?><Types></Types>' },
+    { nom: "ppt/webextensions/webextension1.xml",
+      donnees: ${JSON.stringify(`<we:webextension><we:properties>${props}</we:properties></we:webextension>`)} }
+  ])`);
+}
+
+test("relevé : un signet mort est nommé, pas silencieusement ignoré", async () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  const bilan = await A.run("releverEmpreintesDepuis")(pptxAutrePage(SIGNET_KPI));
+  assert.equal(bilan.total, 0, "rien n'est relevé");
+  assert.equal(bilan.motifs.autrepage, 1, "et la cause est identifiée");
+  assert.match(A.run("phraseRefus")(bilan.motifs), /signet.*n'existe plus/,
+    "le message doit dire que le signet est mort");
+});
+
+test("relevé : une diapositive fabriquée est distinguée d'un signet mort", () => {
+  const sans = { reportUrl: "&quot;" + SIGNET_KPI.replace(/&/g, "&amp;") + "&quot;" };
+  assert.equal(A.run("Empreintes.raisonRefus")(sans), "fabrique");
+  assert.equal(A.run("Empreintes.raisonRefus")({ reportUrl: "&quot;https://exemple/&quot;" }), "lien");
+});
+
+test("relevé : une insertion valable n'a aucun motif de refus", () => {
+  const props = {
+    reportUrl: "&quot;" + SIGNET_KPI.replace(/&/g, "&amp;") + "&quot;",
+    artifactName: "&quot;Histo&quot;",
+    bookmark: "&quot;H4sIEtat&quot;"
+  };
+  assert.equal(A.run("Empreintes.raisonRefus")(props), "");
+});
+
 /* ─── Le support de relevé ─────────────────────────────────
    Une insertion par lien reste nécessaire : autant la rendre courte
    et sans ambiguïté.

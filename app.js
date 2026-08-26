@@ -4491,6 +4491,11 @@ async function releverEmpreintesDepuis(octets) {
 
   const trouvees = [];
   let ignores = 0;
+  /* Chaque refus a une cause, et l'une d'elles se répare : une insertion
+     qui a renvoyé une AUTRE page que celle du lien signifie que le signet
+     du lien n'existe plus dans Power BI — le complément est retombé sur
+     la page d'accueil. Le taire laisserait chercher longtemps. */
+  const motifs = {};
   noms.forEach(nom => {
     const xml = ZipMini.versTexte(pieces.get(nom));
     const props = {};
@@ -4498,14 +4503,33 @@ async function releverEmpreintesDepuis(octets) {
     let m;
     while ((m = re.exec(xml))) props[m[1]] = m[2];
     const emp = Empreintes.creerEmpreinte(props, { horodatage: now(), auteur: currentUser || "?" });
-    if (emp) trouvees.push(emp); else ignores++;
+    if (emp) { trouvees.push(emp); return; }
+    ignores++;
+    const r = Empreintes.raisonRefus(props) || "vide";
+    motifs[r] = (motifs[r] || 0) + 1;
   });
 
   const avant = new Set(empreintes.map(e => e.id));
   empreintes = Empreintes.fusionnerEmpreintes(trouvees, empreintes);
   const ajoutees = empreintes.filter(e => !avant.has(e.id)).length;
   if (trouvees.length) saveEmpreintes();
-  return { ajoutees, total: trouvees.length, ignores };
+  return { ajoutees, total: trouvees.length, ignores, motifs };
+}
+
+/** Ce qu'il faut dire quand un relevé a écarté des insertions. */
+function phraseRefus(motifs) {
+  const m = motifs || {};
+  const bouts = [];
+  if (m.autrepage) {
+    bouts.push(`${m.autrepage} insertion(s) ont renvoyé une AUTRE page du rapport : `
+      + `le signet de ces liens n'existe plus dans Power BI, le complément est retombé `
+      + `sur la page d'accueil. Relevez plutôt une variante voisine — l'annuaire en `
+      + `déduira celle-ci.`);
+  }
+  if (m.lien) bouts.push(`${m.lien} complément(s) ne désignent pas un visuel`);
+  if (m.fabrique) bouts.push(`${m.fabrique} diapositive(s) fabriquée(s), sans insertion manuelle`);
+  if (m.vide) bouts.push(`${m.vide} complément(s) sans rien d'exploitable`);
+  return bouts.join(" · ");
 }
 
 /**
@@ -4547,14 +4571,18 @@ async function importerEmpreintes(fichier) {
       ? importerEmpreintesJson(await fichier.text())
       : await releverEmpreintesDepuis(new Uint8Array(await fichier.arrayBuffer()));
 
+    /* Un refus se nomme : sans cela on cherche longtemps pourquoi une
+       insertion pourtant faite à la main n'a rien donné. */
+    const refus = phraseRefus(bilan.motifs);
     if (!bilan.total) {
       showToast(estJson
         ? "Ce relevé ne contient aucune empreinte exploitable"
-        : "Aucun visuel inséré à la main dans ce fichier — "
-          + "il faut un PowerPoint où le visuel a été ajouté depuis Power BI", 5000);
+        : refus || "Aucun visuel inséré à la main dans ce fichier — "
+          + "il faut un PowerPoint où le visuel a été ajouté depuis Power BI", 8000);
     } else {
       showToast("🔎 " + bilan.total + " empreinte(s) relevée(s)"
-        + (bilan.ajoutees ? ", dont " + bilan.ajoutees + " nouvelle(s)" : ""), 3400);
+        + (bilan.ajoutees ? ", dont " + bilan.ajoutees + " nouvelle(s)" : "")
+        + (refus ? " — mais " + refus : ""), refus ? 9000 : 3400);
       logActivity("empreintes", fichier.name, bilan.total + " visuel(s)");
       saveActivity();
     }
