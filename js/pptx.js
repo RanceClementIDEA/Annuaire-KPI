@@ -43,11 +43,41 @@
 
   /* ─── Utilitaires ────────────────────────────────────────── */
 
-  /** Échappe le texte destiné à un attribut ou un nœud XML. */
+  /**
+   * Échappe le texte destiné à un attribut ou un nœud XML.
+   *
+   * Les caractères de contrôle sont ÔTÉS, pas échappés : XML 1.0 les
+   * interdit purement et simplement, même sous forme d'entité. Or ils
+   * arrivent tout seuls — U+000B est ce que Word insère pour un saut de
+   * ligne dans une cellule, et un copier-coller Word → Excel le fait
+   * voyager jusqu'ici. Un seul suffisait à rendre le support illisible :
+   * PowerPoint refusait d'ouvrir le fichier, sans dire pourquoi.
+   * La tabulation, le saut de ligne et le retour chariot sont légitimes.
+   */
+  const CARACTERES_INTERDITS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
+
   function esc(v) {
     return String(v === undefined || v === null ? "" : v)
+      .replace(CARACTERES_INTERDITS, "")
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  }
+
+  /**
+   * Une valeur d'empreinte, rendue sûre SANS la réencoder.
+   *
+   * Les relevés portent des valeurs déjà encodées (`&quot;…&quot;`) : les
+   * repasser dans `esc()` donnerait `&amp;quot;`, que le complément ne
+   * saurait plus lire. On se contente donc du strict nécessaire — ôter les
+   * caractères que XML interdit, et échapper les guillemets et chevrons
+   * NUS, ceux qui ne font pas déjà partie d'une entité.
+   */
+  function valeurSure(v) {
+    return String(v === undefined || v === null ? "" : v)
+      .replace(CARACTERES_INTERDITS, "")
+      .replace(/&(?!#\d+;|#x[0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9]*;)/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
   /** Identifiant de champ stable : deux générations donnent le même fichier. */
@@ -344,7 +374,14 @@
       return bloc && !(m && remplacee(m[1]));
     }).concat(
       Object.keys(sup).filter(n => sup[n] !== null)
-        .map(n => `<we:property name="${esc(n)}" value="${sup[n]}"/>`)
+        /* Les valeurs relevées arrivent DÉJÀ encodées pour XML — les
+           réencoder produirait un double échappement que le complément ne
+           saurait plus lire. Mais « déjà encodée » ne veut pas dire
+           « valide » : un relevé .json retouché à la main peut porter un
+           guillemet nu, qui referme l'attribut et casse la pièce. On ôte
+           donc les caractères interdits et on ferme les guillemets nus,
+           sans toucher aux entités existantes. */
+        .map(n => `<we:property name="${esc(n)}" value="${valeurSure(sup[n])}"/>`)
     ).join("");
 
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n`
@@ -549,7 +586,8 @@
   }
 
   const API = {
-    construireDeck, dimensionsImage, cadrer, esc, extensionImage,
+    construireDeck, dimensionsImage, cadrer, esc, valeurSure, extensionImage,
+    xmlTitre, xmlCommentaire, xmlWebextension,
     cheminRapport, nomPage, analyserLien, urlPourComplement, adresseIncorporation,
     COMPLEMENT, PROPRIETES_PAR_DEFAUT, cadreComplement, avecEmpreinte,
     BARRE_COMPLEMENT, HAUTEUR_MINI_COMPLEMENT,

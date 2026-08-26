@@ -710,3 +710,60 @@ test("sans liste d'empreintes, la diapositive est rendue telle quelle", () => {
   assert.strictEqual(P.avecEmpreinte(d, null), d);
   assert.strictEqual(P.avecEmpreinte(d, []), d);
 });
+
+/* ═══ Ce qui rend un .pptx illisible ═══════════════════════
+   XML 1.0 interdit les caractères de contrôle — même échappés. U+000B est
+   ce que Word insère pour un saut de ligne dans une cellule ; un
+   copier-coller Word → Excel le fait voyager jusqu'au titre d'un KPI. Un
+   seul suffisait à ce que PowerPoint refuse d'ouvrir le support, sans dire
+   pourquoi. */
+
+test("XML : un caractère de contrôle dans un titre est ôté, pas échappé", () => {
+  const xml = P.xmlTitre(2, "Volum\u000Bétrie\u0000 Distribution");
+  assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml),
+    "aucun caractère interdit ne doit subsister");
+  assert.match(xml, /<a:t>Volumétrie Distribution<\/a:t>/);
+});
+
+test("XML : les 29 caractères interdits sont tous filtrés", () => {
+  const interdits = [];
+  for (let c = 0; c <= 0x1F; c++) if (![9, 10, 13].includes(c)) interdits.push(c);
+  const texte = interdits.map(c => String.fromCharCode(c)).join("");
+  const xml = P.xmlCommentaire(3, texte);
+  assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml),
+    interdits.length + " caractères devaient disparaître");
+});
+
+test("XML : tabulation, saut de ligne et retour chariot restent, eux", () => {
+  const xml = P.xmlTitre(2, "a\tb\nc\rd");
+  assert.ok(/a\tb\nc\rd/.test(xml), "ces trois-là sont légitimes en XML");
+});
+
+test("XML : une valeur d'empreinte déjà encodée n'est pas réencodée", () => {
+  const diapo = { titre: "T", lien: "https://app.powerbi.com/groups/me/reports/r/p?visual=v",
+    vivant: true, proprietesComplement: { bookmark: "&quot;H4sIABC&quot;" } };
+  const xml = P.xmlWebextension(0, diapo);
+  assert.match(xml, /value="&quot;H4sIABC&quot;"/);
+  assert.ok(!/&amp;quot;/.test(xml), "surtout pas de double échappement");
+});
+
+test("XML : un guillemet NU dans une empreinte importée ne casse plus la pièce", () => {
+  /* Un relevé .json retouché à la main : la valeur n'est pas encodée.
+     Recopiée telle quelle, elle refermait l'attribut et rendait la pièce
+     invalide — le complément ne lisait plus rien. */
+  const diapo = { titre: "T", lien: "https://app.powerbi.com/groups/me/reports/r/p?visual=v",
+    vivant: true, proprietesComplement: { artifactName: 'Marge " brute' } };
+  const xml = P.xmlWebextension(0, diapo);
+  const attributs = xml.match(/value="[^"]*"/g) || [];
+  assert.equal(attributs.length, (xml.match(/<we:property /g) || []).length,
+    "chaque propriété doit avoir exactement un attribut value bien fermé");
+  assert.match(xml, /Marge &quot; brute/);
+});
+
+test("XML : valeurSure laisse les entités tranquilles et ferme les nus", () => {
+  assert.equal(P.valeurSure("&quot;etat&quot;"), "&quot;etat&quot;");
+  assert.equal(P.valeurSure("a&b"), "a&amp;b");
+  assert.equal(P.valeurSure('a"b'), "a&quot;b");
+  assert.equal(P.valeurSure("a<b>c"), "a&lt;b&gt;c");
+  assert.equal(P.valeurSure("x&amp;y"), "x&amp;y", "une entité déjà là reste intacte");
+});

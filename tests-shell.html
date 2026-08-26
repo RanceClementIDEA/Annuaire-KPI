@@ -246,6 +246,20 @@ const assert = {
   /* Sous Node, deepStrictEqual compare aussi les types. La comparaison par
      JSON suffit ici : les tests concernés portent sur des données simples. */
   deepStrictEqual(a,b,m){ return assert.deepEqual(a,b,m); },
+  /* Le code ne doit PAS lever : sert à vérifier qu'un attribut `onclick`
+     généré reste du JavaScript valide, quel que soit le titre du KPI. */
+  doesNotThrow(fn, m){
+    try { fn(); }
+    catch(e){ throw new Error((m ? m + " — " : "") + "a levé : " + e.message); }
+  },
+  throws(fn, re, m){
+    let erreur = null;
+    try { fn(); } catch(e){ erreur = e; }
+    if (!erreur) throw new Error(m || "aurait dû lever");
+    if (re && re.test && !re.test(String(erreur.message))) {
+      throw new Error(m || `message inattendu : ${erreur.message}`);
+    }
+  },
   /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
   async rejects(fn, re, m){
     let erreur = null;

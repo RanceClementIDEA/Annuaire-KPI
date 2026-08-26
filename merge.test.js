@@ -7,7 +7,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   mergeEntries, mergeOverrides, mergeDeleted,
-  mergeFavorites, mergeActivity, normalizeDeleted, isDeletedIn
+  mergeFavorites, mergeActivity, normalizeDeleted, isDeletedIn, mergeParUtilisateur
 } = require("./js/merge.js");
 
 /* ─── mergeEntries ─────────────────────────────────────────── */
@@ -215,4 +215,43 @@ test("les surcharges tolèrent des valeurs nulles", () => {
 test("normalizeDeleted conserve l'ordre des identifiants", () => {
   const r = normalizeDeleted(["z", "a", "m"]);
   assert.deepEqual(r.map(d => d.id), ["z", "a", "m"]);
+});
+
+/* ═══ L'espace personnel, rangé par utilisateur ════════════
+   Le document partagé est une photographie COMPLÈTE. Pour les AUTRES
+   utilisateurs, l'absence d'un bloc est donc une information : elle veut
+   dire « je ne partage plus ». La conserver revenait à republier les notes
+   privées d'un collègue qui venait justement de couper le partage. */
+
+test("perso : le bloc d'un collègue absent du document n'est pas ressuscité", () => {
+  const distant = { alice: [{ id: "a1" }] };                 // bruno a coupé
+  const local = { alice: [{ id: "a1" }], bruno: [{ id: "b1", title: "note privée" }] };
+  const r = mergeParUtilisateur(local, distant, "alice");
+  assert.equal(r.bruno, undefined, "la note privée de bruno ne doit pas repartir");
+  assert.deepEqual(r.alice, [{ id: "a1" }]);
+});
+
+test("perso : MON bloc m'appartient, même absent du document", () => {
+  const r = mergeParUtilisateur({ alice: [{ id: "a1" }] }, { bruno: [] }, "alice");
+  assert.deepEqual(r.alice, [{ id: "a1" }], "mon travail local reste");
+  assert.deepEqual(r.bruno, []);
+});
+
+test("perso : sans bloc local, je récupère le mien depuis le document", () => {
+  const r = mergeParUtilisateur({}, { alice: [{ id: "a1" }] }, "alice");
+  assert.deepEqual(r.alice, [{ id: "a1" }], "nouvel appareil : on retrouve son espace");
+});
+
+test("perso : le bloc d'un collègue présent est bien repris", () => {
+  const r = mergeParUtilisateur({ bruno: [{ id: "vieux" }] },
+                                  { bruno: [{ id: "neuf" }] }, "alice");
+  assert.deepEqual(r.bruno, [{ id: "neuf" }], "le document fait foi pour les autres");
+});
+
+test("perso : deux postes du même utilisateur ne se volent pas leur bloc", () => {
+  // Alice sur deux appareils : chacun garde SON local, personne ne perd rien
+  const doc = { alice: [{ id: "depuis-le-poste-B" }] };
+  const a = mergeParUtilisateur({ alice: [{ id: "depuis-le-poste-A" }] }, doc, "alice");
+  assert.deepEqual(a.alice, [{ id: "depuis-le-poste-A" }],
+    "le poste A garde le sien ; la fusion élément par élément se fait ailleurs");
 });

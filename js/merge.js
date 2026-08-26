@@ -151,10 +151,22 @@
    * @returns {Object<string,Array>}
    */
   function mergeParUtilisateur(local, distant, moi) {
-    const out = { ...(local && typeof local === "object" ? local : {}) };
+    const l = (local && typeof local === "object") ? local : {};
     const d = (distant && typeof distant === "object") ? distant : {};
+
+    /* Le document partagé est une photographie COMPLÈTE : pour les autres
+       utilisateurs, l'absence d'un bloc est une information, pas un oubli.
+       On la respectait autrefois à l'envers — les clés présentes écrasaient,
+       les clés absentes survivaient — si bien que couper le partage de son
+       espace personnel était annulé au premier envoi d'un collègue : ses
+       notes privées repartaient au nuage, publiées par quelqu'un d'autre.
+       Seul MON bloc échappe à la règle : c'est moi qui en décide. */
+    const out = {};
     Object.keys(d).forEach(u => { if (u !== moi) out[u] = d[u]; });
-    if (moi && d[moi] !== undefined && out[moi] === undefined) out[moi] = d[moi];
+    if (moi) {
+      if (l[moi] !== undefined) out[moi] = l[moi];
+      else if (d[moi] !== undefined) out[moi] = d[moi];
+    }
     return out;
   }
 

@@ -246,6 +246,20 @@ const assert = {
   /* Sous Node, deepStrictEqual compare aussi les types. La comparaison par
      JSON suffit ici : les tests concernés portent sur des données simples. */
   deepStrictEqual(a,b,m){ return assert.deepEqual(a,b,m); },
+  /* Le code ne doit PAS lever : sert à vérifier qu'un attribut `onclick`
+     généré reste du JavaScript valide, quel que soit le titre du KPI. */
+  doesNotThrow(fn, m){
+    try { fn(); }
+    catch(e){ throw new Error((m ? m + " — " : "") + "a levé : " + e.message); }
+  },
+  throws(fn, re, m){
+    let erreur = null;
+    try { fn(); } catch(e){ erreur = e; }
+    if (!erreur) throw new Error(m || "aurait dû lever");
+    if (re && re.test && !re.test(String(erreur.message))) {
+      throw new Error(m || `message inattendu : ${erreur.message}`);
+    }
+  },
   /* Équivalent de assert.rejects : la promesse DOIT échouer, avec le bon message. */
   async rejects(fn, re, m){
     let erreur = null;
@@ -399,7 +413,18 @@ function __module(nom){
     const noyau = fabrique(
       undefined, undefined, undefined,
       documentSim, stockageSim,
-      { onLine: true, serviceWorker: { register: () => Promise.resolve() } },
+      /* Le vrai `navigator.serviceWorker` écoute aussi les messages : sans
+         cette méthode, le banc divergeait du navigateur et laissait passer
+         un plantage au démarrage. */
+      { onLine: true, serviceWorker: {
+          register: () => Promise.resolve(),
+          __ecoutes: {},
+          addEventListener(type, cb) { (this.__ecoutes[type] = this.__ecoutes[type] || []).push(cb); },
+          removeEventListener(type, cb) {
+            this.__ecoutes[type] = (this.__ecoutes[type] || []).filter(f => f !== cb);
+          },
+          __emettre(type, data) { (this.__ecoutes[type] || []).forEach(cb => cb({ data })); }
+        } },
       { protocol: "https:", origin: "https://test", href: "https://test/" },
       undefined, xlsxSim,
       { innerWidth: 1200, innerHeight: 800, addEventListener() {}, removeEventListener() {},
@@ -409,7 +434,24 @@ function __module(nom){
       () => null,
       function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
       function () {},
-      { createObjectURL: () => "blob:x", revokeObjectURL() {} },
+      /* `URL` est AUSSI un constructeur dans un navigateur : le stubber en
+         simple objet faisait échouer tout `new URL(...)` en silence, et le
+         banc s'écartait du réel. */
+      Object.assign(
+        function URL(entree, base) {
+          const t = String(entree == null ? "" : entree);
+          const m = t.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+          this.href = m ? t : String(base || "https://test/").replace(/[^/]*$/, "") + t;
+          this.protocol = (m ? m[1] : "https") + ":";
+          const reste = this.href.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+          this.host = reste.split(/[/?#]/)[0] || "";
+          this.origin = this.protocol + "//" + this.host;
+          this.pathname = "/" + reste.split(/[?#]/)[0].split("/").slice(1).join("/");
+          const q = this.href.indexOf("?");
+          this.search = q >= 0 ? this.href.slice(q).split("#")[0] : "";
+        },
+        { createObjectURL: () => "blob:x", revokeObjectURL() {} }
+      ),
       url => {
         const chemin = String(url).replace(/^\.\//, "");
         if (Object.prototype.hasOwnProperty.call(fichiersServis, chemin)) {
@@ -1143,6 +1185,45 @@ test("les surcharges tolèrent des valeurs nulles", () => {
 test("normalizeDeleted conserve l'ordre des identifiants", () => {
   const r = normalizeDeleted(["z", "a", "m"]);
   assert.deepEqual(r.map(d => d.id), ["z", "a", "m"]);
+});
+
+/* ═══ L'espace personnel, rangé par utilisateur ════════════
+   Le document partagé est une photographie COMPLÈTE. Pour les AUTRES
+   utilisateurs, l'absence d'un bloc est donc une information : elle veut
+   dire « je ne partage plus ». La conserver revenait à republier les notes
+   privées d'un collègue qui venait justement de couper le partage. */
+
+test("perso : le bloc d'un collègue absent du document n'est pas ressuscité", () => {
+  const distant = { alice: [{ id: "a1" }] };                 // bruno a coupé
+  const local = { alice: [{ id: "a1" }], bruno: [{ id: "b1", title: "note privée" }] };
+  const r = mergeParUtilisateur(local, distant, "alice");
+  assert.equal(r.bruno, undefined, "la note privée de bruno ne doit pas repartir");
+  assert.deepEqual(r.alice, [{ id: "a1" }]);
+});
+
+test("perso : MON bloc m'appartient, même absent du document", () => {
+  const r = mergeParUtilisateur({ alice: [{ id: "a1" }] }, { bruno: [] }, "alice");
+  assert.deepEqual(r.alice, [{ id: "a1" }], "mon travail local reste");
+  assert.deepEqual(r.bruno, []);
+});
+
+test("perso : sans bloc local, je récupère le mien depuis le document", () => {
+  const r = mergeParUtilisateur({}, { alice: [{ id: "a1" }] }, "alice");
+  assert.deepEqual(r.alice, [{ id: "a1" }], "nouvel appareil : on retrouve son espace");
+});
+
+test("perso : le bloc d'un collègue présent est bien repris", () => {
+  const r = mergeParUtilisateur({ bruno: [{ id: "vieux" }] },
+                                  { bruno: [{ id: "neuf" }] }, "alice");
+  assert.deepEqual(r.bruno, [{ id: "neuf" }], "le document fait foi pour les autres");
+});
+
+test("perso : deux postes du même utilisateur ne se volent pas leur bloc", () => {
+  // Alice sur deux appareils : chacun garde SON local, personne ne perd rien
+  const doc = { alice: [{ id: "depuis-le-poste-B" }] };
+  const a = mergeParUtilisateur({ alice: [{ id: "depuis-le-poste-A" }] }, doc, "alice");
+  assert.deepEqual(a.alice, [{ id: "depuis-le-poste-A" }],
+    "le poste A garde le sien ; la fusion élément par élément se fait ailleurs");
 });
 
 __ouvrirGroupe("Synchronisation multi-appareils");
@@ -3921,6 +4002,137 @@ test("favoris : sans suppression définitive, rien n'est touché", () => {
   assert.deepEqual(envoi.favoritesByUser.jean, ["b", "c"]);
 });
 
+/* ═══ Les valeurs passées aux attributs onclick ════════════
+   `esc()` seul ne suffit pas : il change l'apostrophe en `&#39;`, que le
+   navigateur redécode en `'` AVANT de lire le JavaScript de l'attribut.
+   La chaîne se refermait alors trop tôt. « Taux d'occupation » — un
+   intitulé français ordinaire — cassait ainsi le choix du rapport, sans
+   le moindre message. */
+
+test("attribut : une apostrophe dans une valeur ne casse plus le code de l'attribut", () => {
+  const attr = A.run(`jsAttr("taux d'occupation")`);
+  // Ce que le navigateur fera : décoder les entités, puis lire le JavaScript.
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const code = "f(" + decode(attr) + ")";
+  assert.doesNotThrow(() => new Function("f", code), "code produit : " + code);
+});
+
+test("attribut : la valeur arrive intacte à la fonction appelée", () => {
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  ["taux d'occupation", 'guillemet " ici', "anti\\slash", "<script>", "a&b", "sauf\nligne"]
+    .forEach(valeur => {
+      const code = "return " + decode(A.run(`jsAttr(${JSON.stringify(valeur)})`));
+      assert.equal(new Function(code)(), valeur, "valeur : " + JSON.stringify(valeur));
+    });
+});
+
+test("attribut : une valeur forgée ne peut pas s'échapper vers du code", () => {
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const mechant = "a');globalThis.__perce=1;//";
+  const code = "f(" + decode(A.run(`jsAttr(${JSON.stringify(mechant)})`)) + ")";
+  let recu = null;
+  new Function("f", code)(v => { recu = v; });
+  assert.equal(recu, mechant, "la charge reste une simple chaîne");
+  assert.equal(globalThis.__perce, undefined, "et rien ne s'est exécuté");
+});
+
+test("attribut : une carte dont le titre porte une apostrophe reste cliquable", () => {
+  A.reset({ manualEntries: [{ id: "kpi_apostrophe", manual: true,
+    title: "Taux d'occupation", freq: "Mensuelle", ritual: "COPIL",
+    _mtime: 1, _by: "c", logistiport: "https://app.powerbi.com/groups/me/reports/r/p?visual=v" }] });
+  A.run("rebuildData(false); filterData();");
+  /* Les cartes sont assemblées par `cardBody` puis posées par `render` :
+     on interroge donc la source du HTML, pas le conteneur. */
+  const html = A.run(`cardBody(data[0], false, "", titleKey(data[0].title))`) || "";
+  const handlers = html.match(/on(?:click|change|input)="([^"]*)"/g) || [];
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  handlers.forEach(h => {
+    const code = decode(h.replace(/^on\w+="/, "").replace(/"$/, ""));
+    assert.doesNotThrow(() => new Function("event", code), "attribut cassé : " + code);
+  });
+  assert.ok(handlers.length > 0, "la carte doit bien porter des gestionnaires");
+});
+
+/* ═══ Ce qui condamnait l'annuaire ═════════════════════════
+   Une fiche dont un champ texte n'est pas une chaîne — un titre saisi
+   comme nombre dans Excel, ou reçue ainsi d'un collègue — faisait lever
+   `toLowerCase is not a function`. L'exception survenait APRÈS l'écriture
+   en mémoire locale : la fiche empoisonnée était conservée, et l'annuaire
+   relevait la même erreur à chaque démarrage. Le bouton de connexion
+   lui-même n'y survivait pas — plus aucun moyen d'entrer. */
+
+const TORDUS = [
+  ["titre numérique", { id: "x", title: 2024, freq: "Mensuelle", _mtime: 9e14 }],
+  ["titre tableau", { id: "y", title: ["a"], freq: "Mensuelle", _mtime: 9e14 }],
+  ["type numérique", { id: "z", title: "T", type: 12, freq: "Mensuelle", _mtime: 9e14 }],
+  ["identifiant numérique", { id: 77, title: "T", freq: "Mensuelle", _mtime: 9e14 }],
+  ["temporalité numérique", { id: "w", title: "T", freq: 3, _mtime: 9e14 }]
+];
+
+TORDUS.forEach(([nom, fiche]) => {
+  test("robustesse : une fiche à " + nom + " ne condamne plus l'annuaire", () => {
+    A.reset({});
+    A.run("applyRemoteData")({ kpiManual: [fiche] }, true);
+    assert.doesNotThrow(() => A.run("rebuildData(false); filterData();"),
+      "le rendu doit survivre");
+    assert.doesNotThrow(() => A.run(`cardBody(data[0], false, "", titleKey(data[0].title))`),
+      "la carte doit se construire");
+  });
+});
+
+test("robustesse : une sauvegarde à champs tordus n'empêche pas l'annuaire de vivre", () => {
+  A.reset({ manualEntries: [{ id: "sain", manual: true, title: "Sain",
+    freq: "Mensuelle", _mtime: 1, _by: "c" }] });
+  A.run(`manualEntries = mergeEntries(manualEntries, assainirFiches([
+    { id: "tordu", title: 42, freq: {}, _mtime: 9e14 }
+  ]));`);
+  assert.doesNotThrow(() => A.run("rebuildData(false); filterData();"));
+  assert.ok(A.run(`data.some(k => k.id === "sain")`), "la fiche saine reste");
+});
+
+/* ═══ Les liens qu'on refuse d'ouvrir ══════════════════════
+   Un classeur Excel porte des hyperliens arbitraires ; une sauvegarde et le
+   document partagé peuvent en apporter d'autres. `javascript:` passait sans
+   contrôle : ouvrir la fiche exécutait le lien. */
+
+test("liens : seules les adresses http et https sont ouvrables", () => {
+  A.reset({});
+  ["https://app.powerbi.com/x", "http://intranet/rapport"]
+    .forEach(u => assert.equal(A.run(`lienOuvrable(${JSON.stringify(u)})`), true, u));
+  ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,<script>x</script>",
+   "vbscript:x", "file:///etc/passwd", "", "   "]
+    .forEach(u => assert.equal(A.run(`lienOuvrable(${JSON.stringify(u)})`), false, u));
+});
+
+/* ═══ Une zone ne doit pas heurter un champ de fiche ═══════
+   Les liens sont rangés en propriétés de la fiche, indexées par la clé de la
+   zone. Une zone nommée « Title » écrivait donc son lien PAR-DESSUS le titre
+   du KPI ; une zone « ID » dédoublait la fiche. */
+
+test("zones : une clé qui heurte un champ de fiche est préfixée", () => {
+  A.reset({});
+  A.run("sitesDraft = [];");
+  ["Title", "ID", "Freq", "Manual", "Type"].forEach(nom => {
+    const cle = A.run(`slugifySite(${JSON.stringify(nom)})`);
+    assert.ok(/^zone_/.test(cle), nom + " → " + cle);
+    A.run(`sitesDraft.push({ key: ${JSON.stringify(cle)} });`);
+  });
+});
+
+test("zones : une clé réservée venue du dehors est écartée", () => {
+  A.reset({});
+  const sains = A.run(`sitesSains([
+    { key: "logistiport", name: "Logistiport" },
+    { key: "title", name: "Piège" },
+    { key: "id", name: "Piège" },
+    { key: "", name: "Vide" },
+    null
+  ])`);
+  assert.deepEqual(sains.map(s => s.key), ["logistiport"]);
+});
+
 __ouvrirGroupe("Flux complets : synchro, formulaire, persistance");
 /* Flux complets sur les fonctions RÉELLES d'app.js :
    synchronisation avec Firebase simulé, formulaire KPI de bout en bout,
@@ -4097,6 +4309,131 @@ test("envoi : les empreintes aussi passent par une transaction", async () => {
   const ids = (doc.kpiEmpreintes || []).map(e => e.id).sort();
   assert.ok(ids.includes("r/p/v/s2"), "celle du collègue survit : " + ids.join(", "));
   assert.ok(ids.includes("r/p/v/s3"), "la nôtre aussi : " + ids.join(", "));
+});
+
+/* Firestore refuse un document de plus de 1 Mo. Une empreinte pèse ~6 Ko :
+   la limite tombe vers 170 relevés, et l'annuaire en vise 156. L'échec était
+   MUET — l'écriture locale réussissait, le message de succès s'affichait, et
+   le relevé n'atteignait jamais l'équipe. Sur les autres postes le KPI restait
+   « indisponible » pour toujours, sans que personne sache pourquoi. */
+
+test("empreintes : au-delà du plafond, l'envoi est refusé ET annoncé", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = Array.from({ length: 200 }, (_, i) => ({
+    id: "r/p/v/s" + i, libelle: "E" + i, signet: "s" + i,
+    proprietes: { bookmark: "&quot;" + "x".repeat(6000) + "&quot;" },
+    _mtime: 1, _by: "moi" }));`);
+  const ok = await A.run("pousserEmpreintes()");
+  assert.equal(ok, false, "l'envoi doit être refusé");
+  assert.match(A.dernierMessage(), /dépassent la taille/,
+    "et l'utilisateur doit l'apprendre : " + A.dernierMessage());
+});
+
+test("empreintes : sous le plafond, l'envoi passe normalement", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "E", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 1, _by: "moi" }];`);
+  assert.equal(await A.run("pousserEmpreintes()"), true);
+});
+
+test("empreintes : une panne du partage ne se tait plus", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "E", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 1, _by: "moi" }];`);
+  A.panneCloud("permission-denied");
+  const ok = await A.run("pousserEmpreintes()");
+  A.panneCloud(null);
+  assert.equal(ok, false);
+  assert.match(A.dernierMessage(), /non partagées/,
+    "message affiché : " + A.dernierMessage());
+});
+
+/* Les ZONES avaient leur propre fusion, la seule à ne pas passer par
+   l'arbitrage commun : à date égale, « le local » gagnait — or le local
+   n'est pas le même objet d'un poste à l'autre. Deux postes retenaient donc
+   des zones différentes, définitivement, et les liens rangés sous cette clé
+   disparaissaient chez tout le monde sauf un. */
+
+test("zones : à date égale, tous les postes retiennent LA MÊME version", async () => {
+  const distant = { key: "armement", name: "Armement (distant)", _mtime: 5000, _by: "bruno" };
+  const local   = { key: "armement", name: "Armement (local)",   _mtime: 5000, _by: "alice" };
+
+  const vu = [];
+  for (const [mien, sien] of [[local, distant], [distant, local]]) {
+    await appareilConnecte();
+    A.run(`sites = [${JSON.stringify(mien)}];`);
+    A.run(`mergeRemoteSites({ kpiSites: [${JSON.stringify(sien)}] });`);
+    vu.push(A.run(`sites.find(s => s.key === "armement").name`));
+  }
+  assert.equal(vu[0], vu[1],
+    "les deux postes doivent désigner le même gagnant, ici : " + vu.join(" / "));
+});
+
+test("zones : la version la plus récente l'emporte toujours", async () => {
+  await appareilConnecte();
+  A.run(`sites = [{ key: "z", name: "ancienne", _mtime: 100, _by: "a" }];`);
+  A.run(`mergeRemoteSites({ kpiSites: [{ key: "z", name: "récente", _mtime: 900, _by: "b" }] });`);
+  assert.equal(A.run(`sites.find(s => s.key === "z").name`), "récente");
+
+  A.run(`sites = [{ key: "z", name: "récente locale", _mtime: 900, _by: "a" }];`);
+  A.run(`mergeRemoteSites({ kpiSites: [{ key: "z", name: "vieille distante", _mtime: 100, _by: "b" }] });`);
+  assert.equal(A.run(`sites.find(s => s.key === "z").name`), "récente locale");
+});
+
+test("mise à jour : un onglet resté ouvert est prévenu, pas laissé dans le noir", async () => {
+  await appareilConnecte();
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible", cache: "v99" });`);
+  assert.match(A.dernierMessage(), /nouvelle version/,
+    "message affiché : " + A.dernierMessage());
+});
+
+test("mise à jour : l'avertissement ne se répète pas", async () => {
+  await appareilConnecte();
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible" });`);
+  A.run(`showToast("autre chose", 10);`);
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible" });`);
+  assert.equal(A.dernierMessage(), "autre chose", "le second message ne doit rien réafficher");
+});
+
+/* Les favoris portaient DEUX dates contradictoires. La liste reçue du nuage
+   était adoptée, puis aussitôt réestampillée avec la vieille date locale :
+   elle se faisait battre au tour suivant, revenait, repartait — un favori
+   ajouté depuis un autre poste clignotait sans fin. */
+
+test("favoris : la liste reçue garde SA date, pas celle d'hier", async () => {
+  await appareilConnecte();
+  A.run(`currentUser = "alice"; favorites = ["kpi_a"];
+         setMeta({ favAt: 100 });
+         Store.writeJSON(Store.KEYS.SYNC_FAV, { alice: ["kpi_a"] });
+         Store.writeJSON(Store.KEYS.FAV_META, { alice: 100 });`);
+
+  // Un autre poste d'Alice a ajouté un favori, plus tard.
+  A.run(`mergeRemoteFavorites({ favoritesByUser: { alice: ["kpi_a", "kpi_b"] },
+                                favoritesMeta: { alice: 900 } });`);
+
+  assert.deepEqual(A.run("favorites"), ["kpi_a", "kpi_b"], "la liste est adoptée");
+  assert.equal(A.run(`Store.readJSON(Store.KEYS.FAV_META, {}).alice`), 900,
+    "et sa date avec — sinon elle repart périmée");
+  assert.equal(A.run("getMeta().favAt"), 900);
+});
+
+test("favoris : une liste plus ancienne ne rajeunit pas la date locale", async () => {
+  await appareilConnecte();
+  A.run(`currentUser = "alice"; favorites = ["kpi_a", "kpi_b"];
+         setMeta({ favAt: 900 });
+         Store.writeJSON(Store.KEYS.SYNC_FAV, { alice: ["kpi_a", "kpi_b"] });
+         Store.writeJSON(Store.KEYS.FAV_META, { alice: 900 });`);
+  A.run(`mergeRemoteFavorites({ favoritesByUser: { alice: ["kpi_a"] },
+                                favoritesMeta: { alice: 100 } });`);
+  assert.equal(A.run("getMeta().favAt"), 900, "la date locale, plus récente, tient");
+  assert.deepEqual(A.run("favorites"), ["kpi_a", "kpi_b"]);
+});
+
+test("version : le code chargé s'annonce, pour lever le doute", async () => {
+  await appareilConnecte();
+  A.run("afficherVersionAnnuaire()");
+  assert.match(A.texte("appVersion"), /^Annuaire v\d+/,
+    "affiché : " + A.texte("appVersion"));
 });
 
 test("envoi : un message confirme l'opération manuelle", async () => {
@@ -6395,6 +6732,63 @@ test("sans liste d'empreintes, la diapositive est rendue telle quelle", () => {
   assert.strictEqual(P.avecEmpreinte(d, []), d);
 });
 
+/* ═══ Ce qui rend un .pptx illisible ═══════════════════════
+   XML 1.0 interdit les caractères de contrôle — même échappés. U+000B est
+   ce que Word insère pour un saut de ligne dans une cellule ; un
+   copier-coller Word → Excel le fait voyager jusqu'au titre d'un KPI. Un
+   seul suffisait à ce que PowerPoint refuse d'ouvrir le support, sans dire
+   pourquoi. */
+
+test("XML : un caractère de contrôle dans un titre est ôté, pas échappé", () => {
+  const xml = P.xmlTitre(2, "Volum\u000Bétrie\u0000 Distribution");
+  assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml),
+    "aucun caractère interdit ne doit subsister");
+  assert.match(xml, /<a:t>Volumétrie Distribution<\/a:t>/);
+});
+
+test("XML : les 29 caractères interdits sont tous filtrés", () => {
+  const interdits = [];
+  for (let c = 0; c <= 0x1F; c++) if (![9, 10, 13].includes(c)) interdits.push(c);
+  const texte = interdits.map(c => String.fromCharCode(c)).join("");
+  const xml = P.xmlCommentaire(3, texte);
+  assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(xml),
+    interdits.length + " caractères devaient disparaître");
+});
+
+test("XML : tabulation, saut de ligne et retour chariot restent, eux", () => {
+  const xml = P.xmlTitre(2, "a\tb\nc\rd");
+  assert.ok(/a\tb\nc\rd/.test(xml), "ces trois-là sont légitimes en XML");
+});
+
+test("XML : une valeur d'empreinte déjà encodée n'est pas réencodée", () => {
+  const diapo = { titre: "T", lien: "https://app.powerbi.com/groups/me/reports/r/p?visual=v",
+    vivant: true, proprietesComplement: { bookmark: "&quot;H4sIABC&quot;" } };
+  const xml = P.xmlWebextension(0, diapo);
+  assert.match(xml, /value="&quot;H4sIABC&quot;"/);
+  assert.ok(!/&amp;quot;/.test(xml), "surtout pas de double échappement");
+});
+
+test("XML : un guillemet NU dans une empreinte importée ne casse plus la pièce", () => {
+  /* Un relevé .json retouché à la main : la valeur n'est pas encodée.
+     Recopiée telle quelle, elle refermait l'attribut et rendait la pièce
+     invalide — le complément ne lisait plus rien. */
+  const diapo = { titre: "T", lien: "https://app.powerbi.com/groups/me/reports/r/p?visual=v",
+    vivant: true, proprietesComplement: { artifactName: 'Marge " brute' } };
+  const xml = P.xmlWebextension(0, diapo);
+  const attributs = xml.match(/value="[^"]*"/g) || [];
+  assert.equal(attributs.length, (xml.match(/<we:property /g) || []).length,
+    "chaque propriété doit avoir exactement un attribut value bien fermé");
+  assert.match(xml, /Marge &quot; brute/);
+});
+
+test("XML : valeurSure laisse les entités tranquilles et ferme les nus", () => {
+  assert.equal(P.valeurSure("&quot;etat&quot;"), "&quot;etat&quot;");
+  assert.equal(P.valeurSure("a&b"), "a&amp;b");
+  assert.equal(P.valeurSure('a"b'), "a&quot;b");
+  assert.equal(P.valeurSure("a<b>c"), "a&lt;b&gt;c");
+  assert.equal(P.valeurSure("x&amp;y"), "x&amp;y", "une entité déjà là reste intacte");
+});
+
 __ouvrirGroupe("Sélection → PowerPoint : flux complet");
 /* Flux complet « sélection de rituel → PowerPoint », sur les fonctions
    RÉELLES d'app.js chargées dans le harnais.
@@ -7753,8 +8147,11 @@ test("dérivation : recomposer deux fois ne cumule pas les déductions", async (
    déduisent donc l'un de l'autre, exactement comme deux zones. */
 
 const T1 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t1";
-const T2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t2";
-const T3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t3";
+const T2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t2";
+const T3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t3";
+/* Le MÊME KPI, mais sur un autre visuel de la même page : une leçon apprise
+   entre ces deux-là emporterait tout ce qui distingue les deux graphiques. */
+const T_AUTRE_VISUEL = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t9";
 
 /* Deux intitulés — donc deux graphiques — sur deux zones. */
 const FICHES_TITRES = [
@@ -7787,6 +8184,45 @@ test("axes : un intitulé relevé sur une zone se déduit sur l'autre", async ()
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T3, "TAUX-ARM"));
   const bilan = await A.run("engendrerEmpreintes")();
   assert.equal(bilan.restantes, 0, "tout est couvert ou déduit");
+});
+
+/* Une leçon ne s'apprend QU'ENTRE DEUX ÉTATS DU MÊME VISUEL.
+   Sur les données réelles, une leçon de zone apprise entre deux visuels de
+   la page Volumétrie emportait la colonne de calendrier : changer de zone
+   rendait un KPI mensuel en hebdomadaire, sous son titre mensuel. C'est la
+   vue fausse qui passe inaperçue en réunion. */
+
+test("axes : rien ne s'apprend entre deux VISUELS différents", async () => {
+  A.reset({ manualEntries: [
+    { id: "kpi_a", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T1, armement: T_AUTRE_VISUEL }
+  ] });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T_AUTRE_VISUEL, "ARM"));
+  const axes = await A.run("axesDerivation")();
+  assert.deepEqual(Object.keys(axes), [],
+    "un axe appris entre deux visuels emporterait tout ce qui les distingue : "
+    + Object.keys(axes));
+});
+
+test("axes : deux fiches distinctes de même intitulé et temporalité n'apprennent rien", async () => {
+  /* Deux lignes d'annuaire peuvent porter le même intitulé et la même
+     temporalité. Les prendre pour un axe « zone » reviendrait à apprendre
+     un changement de KPI. */
+  A.reset({ manualEntries: [
+    { id: "kpi_un", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T1 },
+    { id: "kpi_deux", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", armement: T2 }
+  ] });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "UN"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "DEUX"));
+  const axes = await A.run("axesDerivation")();
+  assert.deepEqual(Object.keys(axes), [], "aucun axe : " + Object.keys(axes));
 });
 
 test("axes : un exemple mêlant deux différences n'est jamais retenu", async () => {

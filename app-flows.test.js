@@ -176,6 +176,131 @@ test("envoi : les empreintes aussi passent par une transaction", async () => {
   assert.ok(ids.includes("r/p/v/s3"), "la nôtre aussi : " + ids.join(", "));
 });
 
+/* Firestore refuse un document de plus de 1 Mo. Une empreinte pèse ~6 Ko :
+   la limite tombe vers 170 relevés, et l'annuaire en vise 156. L'échec était
+   MUET — l'écriture locale réussissait, le message de succès s'affichait, et
+   le relevé n'atteignait jamais l'équipe. Sur les autres postes le KPI restait
+   « indisponible » pour toujours, sans que personne sache pourquoi. */
+
+test("empreintes : au-delà du plafond, l'envoi est refusé ET annoncé", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = Array.from({ length: 200 }, (_, i) => ({
+    id: "r/p/v/s" + i, libelle: "E" + i, signet: "s" + i,
+    proprietes: { bookmark: "&quot;" + "x".repeat(6000) + "&quot;" },
+    _mtime: 1, _by: "moi" }));`);
+  const ok = await A.run("pousserEmpreintes()");
+  assert.equal(ok, false, "l'envoi doit être refusé");
+  assert.match(A.dernierMessage(), /dépassent la taille/,
+    "et l'utilisateur doit l'apprendre : " + A.dernierMessage());
+});
+
+test("empreintes : sous le plafond, l'envoi passe normalement", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "E", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 1, _by: "moi" }];`);
+  assert.equal(await A.run("pousserEmpreintes()"), true);
+});
+
+test("empreintes : une panne du partage ne se tait plus", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "E", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 1, _by: "moi" }];`);
+  A.panneCloud("permission-denied");
+  const ok = await A.run("pousserEmpreintes()");
+  A.panneCloud(null);
+  assert.equal(ok, false);
+  assert.match(A.dernierMessage(), /non partagées/,
+    "message affiché : " + A.dernierMessage());
+});
+
+/* Les ZONES avaient leur propre fusion, la seule à ne pas passer par
+   l'arbitrage commun : à date égale, « le local » gagnait — or le local
+   n'est pas le même objet d'un poste à l'autre. Deux postes retenaient donc
+   des zones différentes, définitivement, et les liens rangés sous cette clé
+   disparaissaient chez tout le monde sauf un. */
+
+test("zones : à date égale, tous les postes retiennent LA MÊME version", async () => {
+  const distant = { key: "armement", name: "Armement (distant)", _mtime: 5000, _by: "bruno" };
+  const local   = { key: "armement", name: "Armement (local)",   _mtime: 5000, _by: "alice" };
+
+  const vu = [];
+  for (const [mien, sien] of [[local, distant], [distant, local]]) {
+    await appareilConnecte();
+    A.run(`sites = [${JSON.stringify(mien)}];`);
+    A.run(`mergeRemoteSites({ kpiSites: [${JSON.stringify(sien)}] });`);
+    vu.push(A.run(`sites.find(s => s.key === "armement").name`));
+  }
+  assert.equal(vu[0], vu[1],
+    "les deux postes doivent désigner le même gagnant, ici : " + vu.join(" / "));
+});
+
+test("zones : la version la plus récente l'emporte toujours", async () => {
+  await appareilConnecte();
+  A.run(`sites = [{ key: "z", name: "ancienne", _mtime: 100, _by: "a" }];`);
+  A.run(`mergeRemoteSites({ kpiSites: [{ key: "z", name: "récente", _mtime: 900, _by: "b" }] });`);
+  assert.equal(A.run(`sites.find(s => s.key === "z").name`), "récente");
+
+  A.run(`sites = [{ key: "z", name: "récente locale", _mtime: 900, _by: "a" }];`);
+  A.run(`mergeRemoteSites({ kpiSites: [{ key: "z", name: "vieille distante", _mtime: 100, _by: "b" }] });`);
+  assert.equal(A.run(`sites.find(s => s.key === "z").name`), "récente locale");
+});
+
+test("mise à jour : un onglet resté ouvert est prévenu, pas laissé dans le noir", async () => {
+  await appareilConnecte();
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible", cache: "v99" });`);
+  assert.match(A.dernierMessage(), /nouvelle version/,
+    "message affiché : " + A.dernierMessage());
+});
+
+test("mise à jour : l'avertissement ne se répète pas", async () => {
+  await appareilConnecte();
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible" });`);
+  A.run(`showToast("autre chose", 10);`);
+  A.run(`navigator.serviceWorker.__emettre("message", { type: "maj-disponible" });`);
+  assert.equal(A.dernierMessage(), "autre chose", "le second message ne doit rien réafficher");
+});
+
+/* Les favoris portaient DEUX dates contradictoires. La liste reçue du nuage
+   était adoptée, puis aussitôt réestampillée avec la vieille date locale :
+   elle se faisait battre au tour suivant, revenait, repartait — un favori
+   ajouté depuis un autre poste clignotait sans fin. */
+
+test("favoris : la liste reçue garde SA date, pas celle d'hier", async () => {
+  await appareilConnecte();
+  A.run(`currentUser = "alice"; favorites = ["kpi_a"];
+         setMeta({ favAt: 100 });
+         Store.writeJSON(Store.KEYS.SYNC_FAV, { alice: ["kpi_a"] });
+         Store.writeJSON(Store.KEYS.FAV_META, { alice: 100 });`);
+
+  // Un autre poste d'Alice a ajouté un favori, plus tard.
+  A.run(`mergeRemoteFavorites({ favoritesByUser: { alice: ["kpi_a", "kpi_b"] },
+                                favoritesMeta: { alice: 900 } });`);
+
+  assert.deepEqual(A.run("favorites"), ["kpi_a", "kpi_b"], "la liste est adoptée");
+  assert.equal(A.run(`Store.readJSON(Store.KEYS.FAV_META, {}).alice`), 900,
+    "et sa date avec — sinon elle repart périmée");
+  assert.equal(A.run("getMeta().favAt"), 900);
+});
+
+test("favoris : une liste plus ancienne ne rajeunit pas la date locale", async () => {
+  await appareilConnecte();
+  A.run(`currentUser = "alice"; favorites = ["kpi_a", "kpi_b"];
+         setMeta({ favAt: 900 });
+         Store.writeJSON(Store.KEYS.SYNC_FAV, { alice: ["kpi_a", "kpi_b"] });
+         Store.writeJSON(Store.KEYS.FAV_META, { alice: 900 });`);
+  A.run(`mergeRemoteFavorites({ favoritesByUser: { alice: ["kpi_a"] },
+                                favoritesMeta: { alice: 100 } });`);
+  assert.equal(A.run("getMeta().favAt"), 900, "la date locale, plus récente, tient");
+  assert.deepEqual(A.run("favorites"), ["kpi_a", "kpi_b"]);
+});
+
+test("version : le code chargé s'annonce, pour lever le doute", async () => {
+  await appareilConnecte();
+  A.run("afficherVersionAnnuaire()");
+  assert.match(A.texte("appVersion"), /^Annuaire v\d+/,
+    "affiché : " + A.texte("appVersion"));
+});
+
 test("envoi : un message confirme l'opération manuelle", async () => {
   await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
   await A.run("pushToCloud(true)");

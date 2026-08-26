@@ -422,3 +422,17 @@ test("dérivation : le lien se reconstitue depuis la clé et le signet", () => {
   assert.match(lien, /visual=vA/);
   assert.match(lien, /bookmarkGuid=sig-1/);
 });
+
+/* La version affichée doit suivre celle du cache : sinon l'écran annonce une
+   version que le service worker ne sert pas, et l'on repart chercher un
+   défaut dans un code qui n'est pas celui qui tourne. La question s'est
+   posée pour de bon — sept diapositives fausses venaient d'une version pas
+   encore déployée, pas d'un défaut. */
+test("version : celle affichée est celle du cache du service worker", () => {
+  const sw = fsO.readFileSync(pathO.join(__dirname, "service-worker.js"), "utf8");
+  const app = fsO.readFileSync(pathO.join(__dirname, "app.js"), "utf8");
+  const cache = (sw.match(/kpi-idea-cache-(v\d+)/) || [])[1];
+  const version = (app.match(/VERSION_ANNUAIRE = "(v\d+)"/) || [])[1];
+  assert.ok(cache, "le cache doit porter un numéro de version");
+  assert.equal(version, cache);
+});

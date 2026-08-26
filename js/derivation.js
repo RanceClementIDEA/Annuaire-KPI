@@ -115,6 +115,7 @@
     const conteneurs = {};
     const retires = [];
     let subs = [];
+    let transposable = true;
     conteneursDivergents(source, cible).forEach(k => {
       if (vc[k] === undefined) { retires.push(k); return; }
       /* Le conteneur du visuel lui-même n'est pas recopié : il est
@@ -122,12 +123,33 @@
          qui vaut pour n'importe quel autre. */
       if (visuel && k === visuel) {
         subs = substitutions(vs[k], vc[k]);
-        if (!subs.length) conteneurs[k] = JSON.parse(JSON.stringify(vc[k]));
+        /* Faute de substitution lisible — zéro colonne changée, ou deux et
+           l'on ne saurait laquelle répond à laquelle — on recopie le
+           conteneur de l'exemple. Mais cette recopie porte la clé de SON
+           visuel : posée sur un autre, elle ne touche pas le graphique
+           affiché. Les segments de page bougent, le graphique reste sur
+           l'ancienne configuration — une vue mi-figue mi-raisin qu'aucun
+           contrôle n'attrapait. On note donc que la leçon ne se transpose
+           pas, et `appliquer` refusera de la poser ailleurs. */
+        if (!subs.length) { conteneurs[k] = JSON.parse(JSON.stringify(vc[k])); transposable = false; }
         return;
       }
       conteneurs[k] = JSON.parse(JSON.stringify(vc[k]));
     });
-    return { conteneurs, retires, substitutions: subs };
+    return { conteneurs, retires, substitutions: subs, visuel: visuel || "", transposable };
+  }
+
+  /**
+   * Une leçon vaut-elle pour CE visuel ?
+   *
+   * Apprise sur un visuel, une leçon se transpose à un autre par
+   * substitution de colonne. Faute de substitution lisible, elle ne
+   * s'applique qu'à son visuel d'origine.
+   */
+  function transposableVers(transfo, visuelCible) {
+    if (!transfo) return false;
+    if (transfo.transposable !== false) return true;
+    return !transfo.visuel || !visuelCible || transfo.visuel === visuelCible;
   }
 
   /**
@@ -238,11 +260,24 @@
   function seChevauchent(a, b) {
     const cles = k => Object.keys((k && k.conteneurs) || {}).concat((k && k.retires) || []);
     const ensemble = new Set(cles(a));
-    return cles(b).some(k => ensemble.has(k));
+    if (cles(b).some(k => ensemble.has(k))) return true;
+
+    /* Les conteneurs peuvent être disjoints et les SUBSTITUTIONS se
+       contredire quand même : elles s'appliquent toutes au conteneur du
+       visuel visé. Deux leçons qui touchent la même colonne s'enchaînent
+       alors, et la colonne finale n'est celle d'aucune des deux — mesuré
+       sur les données réelles : « → YearWeek » suivi de « YearWeek → Date »
+       donnait Date pour un changement de zone. Mieux vaut refuser la
+       combinaison et réclamer un relevé. */
+    const sa = (a && a.substitutions) || [], sb = (b && b.substitutions) || [];
+    if (!sa.length || !sb.length) return false;
+    const touchees = new Set();
+    sa.forEach(s => { touchees.add(s.de); touchees.add(s.a); });
+    return sb.some(s => touchees.has(s.de) || touchees.has(s.a));
   }
 
   const API = {
-    nu, lireEtat, ecrireEtat, section, signature,
+    nu, lireEtat, ecrireEtat, section, signature, transposableVers,
     conteneursDivergents, transformation, substitutions, appliquerSubstitutions,
     appliquer, appliquerToutes, seChevauchent, estVide
   };

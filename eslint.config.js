@@ -28,7 +28,8 @@ export default [
         mergeEntries: "readonly", mergeOverrides: "readonly", mergeDeleted: "readonly",
         mergeFavorites: "readonly", mergeActivity: "readonly",
         normalizeDeleted: "readonly", isDeletedIn: "readonly",
-        mergeParUtilisateur: "readonly", sansMarqueursPurges: "readonly"
+        mergeParUtilisateur: "readonly", sansMarqueursPurges: "readonly",
+        emporte: "readonly"
       }
     },
     rules: {

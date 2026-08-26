@@ -21,7 +21,8 @@
     "build:essai": "node outils/construire-annuaire-test.js",
     "smoke:essai": "node smoke-essai.js",
     "relever": "node outils/relever-empreintes.js",
-    "smoke:concurrence": "node smoke-concurrence.js"
+    "smoke:concurrence": "node smoke-concurrence.js",
+    "smoke:sw": "node smoke-serviceworker.js"
   },
   "license": "UNLICENSED"
 }

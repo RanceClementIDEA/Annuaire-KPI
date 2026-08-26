@@ -1356,8 +1356,11 @@ test("dérivation : recomposer deux fois ne cumule pas les déductions", async (
    déduisent donc l'un de l'autre, exactement comme deux zones. */
 
 const T1 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t1";
-const T2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t2";
-const T3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t3";
+const T2 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t2";
+const T3 = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vA&bookmarkGuid=t3";
+/* Le MÊME KPI, mais sur un autre visuel de la même page : une leçon apprise
+   entre ces deux-là emporterait tout ce qui distingue les deux graphiques. */
+const T_AUTRE_VISUEL = "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=vB&bookmarkGuid=t9";
 
 /* Deux intitulés — donc deux graphiques — sur deux zones. */
 const FICHES_TITRES = [
@@ -1390,6 +1393,45 @@ test("axes : un intitulé relevé sur une zone se déduit sur l'autre", async ()
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T3, "TAUX-ARM"));
   const bilan = await A.run("engendrerEmpreintes")();
   assert.equal(bilan.restantes, 0, "tout est couvert ou déduit");
+});
+
+/* Une leçon ne s'apprend QU'ENTRE DEUX ÉTATS DU MÊME VISUEL.
+   Sur les données réelles, une leçon de zone apprise entre deux visuels de
+   la page Volumétrie emportait la colonne de calendrier : changer de zone
+   rendait un KPI mensuel en hebdomadaire, sous son titre mensuel. C'est la
+   vue fausse qui passe inaperçue en réunion. */
+
+test("axes : rien ne s'apprend entre deux VISUELS différents", async () => {
+  A.reset({ manualEntries: [
+    { id: "kpi_a", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T1, armement: T_AUTRE_VISUEL }
+  ] });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T_AUTRE_VISUEL, "ARM"));
+  const axes = await A.run("axesDerivation")();
+  assert.deepEqual(Object.keys(axes), [],
+    "un axe appris entre deux visuels emporterait tout ce qui les distingue : "
+    + Object.keys(axes));
+});
+
+test("axes : deux fiches distinctes de même intitulé et temporalité n'apprennent rien", async () => {
+  /* Deux lignes d'annuaire peuvent porter le même intitulé et la même
+     temporalité. Les prendre pour un axe « zone » reviendrait à apprendre
+     un changement de KPI. */
+  A.reset({ manualEntries: [
+    { id: "kpi_un", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", logistiport: T1 },
+    { id: "kpi_deux", manual: true, title: "Volumétrie", freq: "Hebdomadaire",
+      ritual: "COPIL", _mtime: 1, _by: "c", armement: T2 }
+  ] });
+  A.run(`presets = []; selectionIds = []; empreintes = []; empreintesDerivees = {};
+         commentairesVolatils = {}; rebuildData(false);`);
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T1, "UN"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(T2, "DEUX"));
+  const axes = await A.run("axesDerivation")();
+  assert.deepEqual(Object.keys(axes), [], "aucun axe : " + Object.keys(axes));
 });
 
 test("axes : un exemple mêlant deux différences n'est jamais retenu", async () => {

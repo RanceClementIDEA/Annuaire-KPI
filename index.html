@@ -67,7 +67,10 @@
       <div class="user-avatar" id="userAvatar">?</div>
       <div class="user-details">
         <span class="user-name" id="userInfo">—</span>
-        <span class="user-role">Utilisateur</span>
+        <!-- La version du code réellement chargé. Sans elle, impossible de
+             savoir si un support fautif vient d'un défaut ou d'une version
+             pas encore déployée : la question s'est posée pour de bon. -->
+        <span class="user-role" id="appVersion" title="Version du code chargé">Utilisateur</span>
       </div>
       <button id="logoutBtn" title="Déconnexion" class="btn-logout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>

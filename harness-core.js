@@ -124,7 +124,18 @@
     const noyau = fabrique(
       undefined, undefined, undefined,
       documentSim, stockageSim,
-      { onLine: true, serviceWorker: { register: () => Promise.resolve() } },
+      /* Le vrai `navigator.serviceWorker` écoute aussi les messages : sans
+         cette méthode, le banc divergeait du navigateur et laissait passer
+         un plantage au démarrage. */
+      { onLine: true, serviceWorker: {
+          register: () => Promise.resolve(),
+          __ecoutes: {},
+          addEventListener(type, cb) { (this.__ecoutes[type] = this.__ecoutes[type] || []).push(cb); },
+          removeEventListener(type, cb) {
+            this.__ecoutes[type] = (this.__ecoutes[type] || []).filter(f => f !== cb);
+          },
+          __emettre(type, data) { (this.__ecoutes[type] || []).forEach(cb => cb({ data })); }
+        } },
       { protocol: "https:", origin: "https://test", href: "https://test/" },
       undefined, xlsxSim,
       { innerWidth: 1200, innerHeight: 800, addEventListener() {}, removeEventListener() {},
@@ -134,7 +145,24 @@
       () => null,
       function () { this.readAsText = () => {}; this.readAsArrayBuffer = () => {}; },
       function () {},
-      { createObjectURL: () => "blob:x", revokeObjectURL() {} },
+      /* `URL` est AUSSI un constructeur dans un navigateur : le stubber en
+         simple objet faisait échouer tout `new URL(...)` en silence, et le
+         banc s'écartait du réel. */
+      Object.assign(
+        function URL(entree, base) {
+          const t = String(entree == null ? "" : entree);
+          const m = t.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+          this.href = m ? t : String(base || "https://test/").replace(/[^/]*$/, "") + t;
+          this.protocol = (m ? m[1] : "https") + ":";
+          const reste = this.href.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "");
+          this.host = reste.split(/[/?#]/)[0] || "";
+          this.origin = this.protocol + "//" + this.host;
+          this.pathname = "/" + reste.split(/[?#]/)[0].split("/").slice(1).join("/");
+          const q = this.href.indexOf("?");
+          this.search = q >= 0 ? this.href.slice(q).split("#")[0] : "";
+        },
+        { createObjectURL: () => "blob:x", revokeObjectURL() {} }
+      ),
       url => {
         const chemin = String(url).replace(/^\.\//, "");
         if (Object.prototype.hasOwnProperty.call(fichiersServis, chemin)) {

@@ -242,6 +242,15 @@ function ecrireDonnees(cle, valeur) {
   }
 }
 
+/* Une valeur passée à une fonction depuis un attribut `onclick`.
+   `esc()` seul ne suffit PAS : il transforme l'apostrophe en `&#39;`, que le
+   navigateur redécode en `'` AVANT de lire le JavaScript — la chaîne se
+   referme trop tôt. Un titre français ordinaire — « Taux d'occupation » —
+   cassait ainsi le choix du rapport, en silence.
+   JSON.stringify pose des guillemets et échappe tout le reste ; esc() rend
+   ensuite le tout inoffensif comme attribut. */
+function jsAttr(v) { return esc(JSON.stringify(String(v ?? ""))); }
+
 // Échappe le HTML pour un affichage sûr dans les cartes
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, c => ({
@@ -823,8 +832,39 @@ function transformData(sheet, rawData) {
 }
 
 // Transforme un texte en identifiant stable (minuscules, sans accents ni espaces)
+/* Les champs textuels d'une fiche, ramenés à des chaînes.
+   Une fiche venue du dehors — document partagé d'un collègue, sauvegarde
+   restaurée, classeur Excel — peut porter n'importe quel type. Un nombre
+   dans `title` suffisait à condamner l'annuaire : l'exception survenait
+   après l'écriture locale, si bien que la fiche empoisonnée revenait à
+   chaque démarrage et qu'aucun bouton ne répondait plus. */
+const CHAMPS_TEXTE = ["id", "title", "freq", "type", "process", "ritual", "desc", "_by", "_space"];
+
+function assainirFiche(k) {
+  if (!k || typeof k !== "object") return null;
+  const out = { ...k };
+  CHAMPS_TEXTE.forEach(c => {
+    if (out[c] === undefined || out[c] === null) return;
+    if (typeof out[c] !== "string") out[c] = String(out[c]);
+  });
+  /* Un lien doit être une chaîne : ailleurs il finirait dans `window.open`
+     ou dans le XML du support. */
+  Object.keys(out).forEach(c => {
+    if (CHAMPS_TEXTE.includes(c) || c.startsWith("_")) return;
+    if (out[c] !== null && out[c] !== undefined && typeof out[c] !== "string"
+        && typeof out[c] !== "boolean" && typeof out[c] !== "number") {
+      delete out[c];
+    }
+  });
+  return out.id ? out : null;
+}
+
+function assainirFiches(liste) {
+  return (Array.isArray(liste) ? liste : []).map(assainirFiche).filter(Boolean);
+}
+
 function slugifyId(txt) {
-  return (txt || "").toLowerCase()
+  return String(txt == null ? "" : txt).toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "vide";
 }
@@ -1732,13 +1772,29 @@ function editKPI(id) { openKpiModal(id); }
 ============================================ */
 let sitesDraft = []; // copie de travail éditée dans la modale
 
+/* Les liens sont rang\u00e9s en propri\u00e9t\u00e9s de la fiche, index\u00e9es par la cl\u00e9 de la
+   zone. Une zone nomm\u00e9e \u00ab Title \u00bb \u00e9crivait donc son lien PAR-DESSUS le titre
+   du KPI \u2014 v\u00e9rifi\u00e9 : l'intitul\u00e9 devenait \u00ab https://Taux de service \u00bb, et une
+   zone \u00ab ID \u00bb d\u00e9doublait la fiche. Ces noms-l\u00e0 sont r\u00e9serv\u00e9s. */
+const CHAMPS_RESERVES = new Set([
+  "id", "title", "freq", "type", "process", "ritual", "desc", "manual",
+  "_mtime", "_by", "_space", "_deleted", "_deletedat", "space", "owner"
+]);
+
 function slugifySite(name) {
-  const base = (name || "site").toLowerCase()
+  let base = (name || "site").toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "site";
+  if (CHAMPS_RESERVES.has(base)) base = "zone_" + base;
   let key = base, n = 2;
   while (sitesDraft.some(s => s.key === key)) key = base + "_" + (n++);
   return key;
+}
+
+/** Les zones dont la cl\u00e9 heurterait un champ de fiche, \u00e9cart\u00e9es \u00e0 l'entr\u00e9e. */
+function sitesSains(liste) {
+  return (Array.isArray(liste) ? liste : []).filter(s =>
+    s && typeof s.key === "string" && s.key && !CHAMPS_RESERVES.has(s.key.toLowerCase()));
 }
 
 function renderSitesList() {
@@ -2001,7 +2057,31 @@ function openReport(selectId, ev) {
   const opt = sel.options[sel.selectedIndex];
   const url = opt && opt.dataset ? opt.dataset.url : "";
   if (!url) { showToast("Sélectionnez d'abord un rapport"); return; }
+  if (!lienOuvrable(url)) {
+    showToast("⚠ Lien refusé : seules les adresses http:// et https:// sont ouvertes", 5000);
+    return;
+  }
   window.open(url, "_blank", "noopener,noreferrer");
+}
+
+/**
+ * Ce lien peut-il être ouvert ?
+ *
+ * Un classeur Excel porte des hyperliens arbitraires, et une sauvegarde
+ * comme le document partagé peuvent en apporter d'autres. `javascript:` y
+ * passait sans contrôle : ouvrir la fiche exécutait le lien. On n'ouvre
+ * donc que le web, et rien d'autre.
+ */
+function lienOuvrable(url) {
+  /* Les navigateurs ignorent espaces et caractères de contrôle avant le
+     schéma : « java\nscript:… » s'exécute. On les ôte donc avant de juger. */
+  const t = String(url == null ? "" : url).replace(/[\u0000-\u0020]/g, "");
+  if (!t) return false;
+  const schema = t.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+  // Pas de schéma : adresse relative, donc notre propre site.
+  if (!schema) return true;
+  const p = schema[1].toLowerCase();
+  return p === "http" || p === "https";
 }
 
 // Mémorise le SITE choisi (pas l'URL) pour le conserver en changeant de temporalité
@@ -2016,7 +2096,12 @@ function onReportSelect(selId, key) {
 // Ordre d'affichage des temporalités : Mensuelle → Hebdomadaire → Quotidienne
 const FREQ_ORDER = { "mensuelle": 1, "hebdomadaire": 2, "quotidienne": 3 };
 function freqRank(f) { return FREQ_ORDER[(f || "").toLowerCase().trim()] || 9; }
-function titleKey(t) { return (t || "").toLowerCase().replace(/\s+/g, " ").trim(); }
+/* `String(...)` et non `(t || "")` : un titre arrivé sous forme de nombre —
+   « 2024 » saisi dans Excel, ou une fiche reçue d'un collègue — faisait lever
+   `toLowerCase is not a function`. L'exception survenait APRÈS l'écriture en
+   mémoire locale : la fiche empoisonnée était donc conservée, et l'annuaire
+   relevait la même erreur à chaque démarrage. Plus aucun moyen d'entrer. */
+function titleKey(t) { return String(t == null ? "" : t).toLowerCase().replace(/\s+/g, " ").trim(); }
 
 // Classe de couleur du tag Processus : réception / distribution se distinguent des sites
 function processTagClass(p) {
@@ -2028,7 +2113,7 @@ function processTagClass(p) {
 
 // Classe de couleur du tag Type : contractuel / non contractuel / opérationnel
 function typeTagClass(t) {
-  const v = (t || "").toLowerCase();
+  const v = String(t == null ? "" : t).toLowerCase();
   if (v.includes("non") && v.includes("contract")) return "tag tag-type tag-noncontract";
   if (v.includes("contract"))  return "tag tag-type tag-contract";
   if (v.includes("opérat") || v.includes("operat")) return "tag tag-type tag-operationnel";
@@ -2061,9 +2146,9 @@ function derniereModifHtml(kpi) {
 
 function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const isFav  = isFavorite(kpi.id);
-  const selId  = "sel_" + kpi.id.replace(/[^a-zA-Z0-9_]/g, "_");
-  const safeId = esc(kpi.id).replace(/'/g, "\\'");
-  const safeKey = esc(key).replace(/'/g, "\\'");
+  const selId  = "sel_" + String(kpi.id == null ? "" : kpi.id).replace(/[^a-zA-Z0-9_]/g, "_");
+  const safeId = jsAttr(kpi.id);
+  const safeKey = jsAttr(key);
 
   // Périmètres présents pour ce KPI, dans l'ordre de la config des sites
   const present = activeSites().filter(s => kpi[s.key]);
@@ -2081,7 +2166,7 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
   const rang = selectionIds.indexOf(kpi.id);
   const coche = selectionMode ? `
       <label class="card-select${rang >= 0 ? " on" : ""}" title="Ajouter cette temporalité à la sélection">
-        <input type="checkbox" ${rang >= 0 ? "checked" : ""} onchange="basculerSelection('${safeId}')">
+        <input type="checkbox" ${rang >= 0 ? "checked" : ""} onchange="basculerSelection(${safeId})">
         <span class="card-select-rang">${rang >= 0 ? rang + 1 : ""}</span>
       </label>` : "";
 
@@ -2092,13 +2177,13 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
       <div class="card-header">
         <div class="card-title">${esc(kpi.title)}</div>
         <div class="card-tools">
-          <button type="button" class="btn-tool" onclick="editKPI('${safeId}')" title="Modifier">
+          <button type="button" class="btn-tool" onclick="editKPI(${safeId})" title="Modifier">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
-          <button type="button" class="btn-tool btn-tool-danger" onclick="deleteKPI('${safeId}')" title="Supprimer">
+          <button type="button" class="btn-tool btn-tool-danger" onclick="deleteKPI(${safeId})" title="Supprimer">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
           </button>
-          <button type="button" class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite('${safeId}')" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
+          <button type="button" class="btn-fav${isFav ? " active" : ""}" onclick="toggleFavorite(${safeId})" title="${isFav ? "Retirer des favoris" : "Ajouter aux favoris"}">⭐</button>
         </div>
       </div>
 
@@ -2115,11 +2200,11 @@ function cardBody(kpi, grouped, freqSelectorHtml = "", key = "") {
 
       ${options ? `
       <div class="card-action">
-        <select id="${selId}" onchange="onReportSelect('${selId}','${safeKey}')">
+        <select id="${selId}" onchange="onReportSelect(${jsAttr(selId)},${safeKey})">
           <option value="">Choisir un rapport</option>
           ${options}
         </select>
-        <button type="button" class="btn-open" onclick="openReport('${selId}', event)">
+        <button type="button" class="btn-open" onclick="openReport(${jsAttr(selId)}, event)">
           Ouvrir
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         </button>
@@ -2154,7 +2239,7 @@ function freqSelectorHtml(gid, variants, selIdx) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           Temporalité
         </span>
-        <select onchange="changeGroupFreq('${gid}', this.value)">
+        <select onchange="changeGroupFreq(${jsAttr(gid)}, this.value)">
           ${variants.map((v, vi) => `<option value="${vi}"${vi === selIdx ? " selected" : ""}>${esc(v.freq || "Sans fréquence")}</option>`).join("")}
         </select>
       </div>`;
@@ -2292,6 +2377,11 @@ function ensureBuiltinConfig() {
   setSyncConfig({ config: { ...BUILTIN_FIREBASE_CONFIG }, code: BUILTIN_SYNC_CODE, enabled: true });
 }
 
+/* Firestore plafonne un document à 1 Mio. On s'arrête un peu avant : la
+   sérialisation ajoute des noms de champs, et mieux vaut prévenir que
+   découvrir le refus au moment d'écrire. */
+const PLAFOND_EMPREINTES = 900 * 1024;
+
 let fbApp = null, fbDb = null, fbUnsub = null, fbUnsubEmpreintes = null;
 let syncDebounceHandle = null;
 let lastSyncPushAt = 0;
@@ -2384,6 +2474,20 @@ function empreintesDocRef(code) {
 async function pousserEmpreintes() {
   const cfg = getSyncConfig();
   if (!cfg || !fbDb || !currentUser || !navigator.onLine) return false;
+  /* Firestore refuse tout document de plus de 1 Mo. Une empreinte pèse
+     ~6 Ko : la limite tombe vers 170 relevés, et l'annuaire en vise 156.
+     Jusqu'ici l'échec était MUET — l'écriture locale réussissait, le
+     message de succès s'affichait, et le relevé n'atteignait jamais
+     l'équipe. On prévient donc AVANT d'écrire, et on le dit. */
+  const poids = Empreintes.poids(empreintes);
+  if (poids > PLAFOND_EMPREINTES) {
+    setSyncStatusUI("error", "document des empreintes trop volumineux");
+    showToast("⚠ Les empreintes dépassent la taille qu'accepte le partage ("
+      + Math.round(poids / 1024) + " Ko sur " + Math.round(PLAFOND_EMPREINTES / 1024)
+      + " Ko). Elles restent sur cet appareil mais ne sont PAS partagées.", 9000);
+    return false;
+  }
+
   /* Même précaution que pour l'annuaire : entre la relecture et l'écriture,
      un autre poste peut avoir publié ses empreintes, et les siennes
      seraient perdues. La transaction referme cette fenêtre. */
@@ -2408,7 +2512,11 @@ async function pousserEmpreintes() {
     }
     return true;
   } catch (err) {
-    // L'annuaire doit rester utilisable même si ce document-là échoue.
+    /* L'annuaire doit rester utilisable même si ce document-là échoue —
+       mais se taire faisait croire au partage. On le dit une fois. */
+    setSyncStatusUI("error", "empreintes non partagées : " + (err.message || ""));
+    showToast("⚠ Empreintes non partagées : " + (err.message || "erreur inconnue")
+      + ". Elles restent sur cet appareil.", 7000);
     return false;
   }
 }
@@ -2597,7 +2705,7 @@ async function pushToCloud(manual, forcer) {
  */
 function mergeRemoteContent(payload) {
   // Fiches partagées (nouveau format)
-  let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
+  let remoteManual = Array.isArray(payload.kpiManual) ? assainirFiches(payload.kpiManual)
                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
 
   // ── Compatibilité ancien format : kpiExcel + kpiOverrides → fiches ──
@@ -2675,7 +2783,7 @@ function mergeRemoteContent(payload) {
     if (isPersonalSyncOn()) {
       const mien = Array.isArray(payload.personalByUser[currentUser]) ? payload.personalByUser[currentUser] : [];
       const mienneTrash = Array.isArray(distantTrash[currentUser]) ? distantTrash[currentUser] : [];
-      personalEntries = mergeEntries(personalEntries, mien);
+      personalEntries = mergeEntries(personalEntries, assainirFiches(mien));
       personalTrash   = mergePersonalTrash(personalTrash, mienneTrash);
       appliquerCorbeillePerso();
       Store.writeJSON("kpiPersonal_" + currentUser, personalEntries);
@@ -2697,12 +2805,21 @@ function mergeRemoteSites(payload) {
   if (!Array.isArray(payload.kpiSites) || !payload.kpiSites.length) return;
   const map = new Map();
   // On part des sites distants…
-  payload.kpiSites.forEach(s => { if (s && s.key) map.set(s.key, s); });
-  // …puis on garde la version locale quand elle est plus récente
+  sitesSains(payload.kpiSites).forEach(s => map.set(s.key, s));
+  /* …puis on garde la version locale quand elle l'emporte.
+     Le `>=` d'avant faisait gagner « le local » à égalité de date — or le
+     local n'est pas le même objet d'un poste à l'autre. Deux postes
+     retenaient donc des zones différentes, DÉFINITIVEMENT : recréer une zone
+     supprimée sous le même nom reprend la date du marqueur, si bien que la
+     zone ressuscitée et la suppression qui la tue portent la même
+     milliseconde. Les liens rangés sous cette clé disparaissaient chez tout
+     le monde sauf chez celui qui l'avait recréée.
+     `emporte()` tranche l'égalité de la même façon partout : par l'auteur,
+     puis par le contenu. */
   sites.forEach(s => {
     if (!s || !s.key) return;
     const other = map.get(s.key);
-    if (!other || (s._mtime || 0) >= (other._mtime || 0)) map.set(s.key, s);
+    if (!other || emporte(s, other, "_mtime")) map.set(s.key, s);
   });
   sites = [...map.values()];
   saveSites(false);
@@ -2717,7 +2834,20 @@ function mergeRemoteFavorites(payload) {
     mergeFavorites(localMap, localMeta, payload.favoritesByUser, payload.favoritesMeta);
   Store.writeJSON(Store.KEYS.SYNC_FAV, map);
   Store.writeJSON(Store.KEYS.FAV_META, fmeta);
-  if (map[currentUser]) { favorites = map[currentUser]; saveFavoritesLocalOnly(); }
+  if (map[currentUser]) {
+    favorites = map[currentUser];
+    /* Adopter la liste SANS adopter sa date remettait aussitôt la vieille
+       date locale par-dessus (saveFavorisPartages relit `favAt`). La liste
+       reçue repartait donc estampillée d'hier, se faisait battre au tour
+       suivant, revenait, repartait… un favori ajouté ailleurs clignotait
+       sans fin. On prend la date avec la liste. */
+    const dateFusionnee = fmeta[currentUser];
+    if (dateFusionnee) {
+      const m = getMeta();
+      if ((m.favAt || 0) < dateFusionnee) { m.favAt = dateFusionnee; setMeta(m); }
+    }
+    saveFavoritesLocalOnly();
+  }
 }
 
 /**
@@ -2778,7 +2908,7 @@ async function pullFromCloud(manual, replace) {
 // Sert à sortir d'une divergence : le cloud fait autorité, le local est écrasé.
 function replaceLocalWithRemote(payload) {
   // Fiches partagées : on prend celles du cloud telles quelles
-  let remoteManual = Array.isArray(payload.kpiManual) ? [...payload.kpiManual]
+  let remoteManual = Array.isArray(payload.kpiManual) ? assainirFiches(payload.kpiManual)
                    : (Array.isArray(payload.kpiData) ? payload.kpiData.filter(d => d.manual) : []);
   // Compat ancien format : convertit kpiExcel + overrides en fiches,
   // uniquement si le document ne contient pas déjà la liste moderne.
@@ -2825,7 +2955,7 @@ function replaceLocalWithRemote(payload) {
   }
   nettoyerPurgees();
   nettoyerMarqueursPurges();
-  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) { sites = payload.kpiSites; saveSites(false); }
+  if (Array.isArray(payload.kpiSites) && payload.kpiSites.length) { sites = sitesSains(payload.kpiSites); saveSites(false); }
   if (Array.isArray(payload.kpiActivity)) { activityLog = payload.kpiActivity; saveActivity(false); }
   // Champ absent ≠ liste vide : un document ancien n'a pas de sélections,
   // les effacer ferait perdre le travail d'ordre du jour de l'équipe.
@@ -3760,8 +3890,8 @@ function importBackup(file) {
     // définitives, puis renvoyait le tout au cloud : les fiches supprimées
     // depuis la sauvegarde ressuscitaient pour toute l'équipe, et les fiches
     // créées entre-temps disparaissaient.
-    if (Array.isArray(b.manualEntries))   manualEntries = mergeEntries(manualEntries, b.manualEntries);
-    if (Array.isArray(b.personalEntries)) personalEntries = mergeEntries(personalEntries, b.personalEntries);
+    if (Array.isArray(b.manualEntries))   manualEntries = mergeEntries(manualEntries, assainirFiches(b.manualEntries));
+    if (Array.isArray(b.personalEntries)) personalEntries = mergeEntries(personalEntries, assainirFiches(b.personalEntries));
     if (Array.isArray(b.personalTrash))   personalTrash = mergePersonalTrash(personalTrash, b.personalTrash);
     // Compat : ancienne sauvegarde avec excelData/overrides → fiches
     if (Array.isArray(b.excelData) && b.excelData.length) {
@@ -3780,7 +3910,7 @@ function importBackup(file) {
     if (Array.isArray(b.activityLog))     { activityLog = mergeActivity(activityLog, b.activityLog, MAX_ACTIVITY); saveActivity(false); }
     if (b.meta && typeof b.meta === "object") setMeta(b.meta);
     if (b.favoritesMeta) Store.writeJSON(Store.KEYS.FAV_META, b.favoritesMeta);
-    if (Array.isArray(b.sites) && b.sites.length) sites = b.sites;
+    if (Array.isArray(b.sites) && b.sites.length) sites = sitesSains(b.sites);
     if (b.favoritesByUser) {
       Store.writeJSON(Store.KEYS.SYNC_FAV, b.favoritesByUser);
       if (b.favoritesByUser[currentUser]) favorites = b.favoritesByUser[currentUser];
@@ -4137,6 +4267,25 @@ async function axesDerivation() {
       /* Même page, sinon les conteneurs ne parlent pas de la même chose. */
       const page = Empreintes.pageDeCle(a.emp.id);
       if (!page || page !== Empreintes.pageDeCle(b.emp.id)) continue;
+
+      /* Et MÊME VISUEL. Sans cette condition, une leçon de zone apprise sur
+         deux visuels différents emporte tout ce qui les distingue — jusqu'à
+         la colonne de calendrier. Vérifié sur les données réelles : la leçon
+         « Global → MG », apprise entre deux visuels de la page Volumétrie,
+         changeait ReducMonth-year en YearWeek. Changer de zone rendait donc
+         un KPI mensuel en hebdomadaire, sous son titre mensuel — la vue
+         fausse qui passe inaperçue en réunion.
+         La transposition vers un autre visuel reste possible : elle se fait
+         à l'APPLICATION, par substitution de colonne, pas à l'apprentissage. */
+      if (a.emp.id.split("/")[2] !== b.emp.id.split("/")[2]) continue;
+
+      /* Et même ligne d'annuaire de part et d'autre de l'axe : deux fiches
+         distinctes peuvent porter le même intitulé et la même temporalité,
+         et l'on apprendrait alors un changement de KPI en croyant apprendre
+         un changement de zone. */
+      if (a.v.kpiId === b.v.kpiId && a.v.site !== b.v.site) { /* même fiche : légitime */ }
+      else if (a.v.kpiId !== b.v.kpiId && a.v.titre === b.v.titre && a.v.freq === b.v.freq) continue;
+
       // Deux empreintes ne servent d'exemple que si UN SEUL axe les sépare.
       const memeTitre = a.v.titre === b.v.titre;
       const memeSite = a.v.site === b.v.site;
@@ -4199,7 +4348,15 @@ async function engendrerEmpreintes() {
        La base doit vivre sur la MÊME page de rapport que la cible :
        hors de sa page, un conteneur ne désigne plus rien. */
     const page = Empreintes.pageDeCle(cle);
-    const lecon = axe => axes[page + "|" + axe];
+    const visuelCible = cle.split("/")[2];
+    /* Une leçon qui ne se transpose pas — faute de substitution de colonne
+       lisible — ne vaut que pour son propre visuel. Posée ailleurs, elle
+       déplaçait les segments de la page sans toucher au graphique affiché :
+       une vue à moitié juste, que rien ne signalait. */
+    const lecon = axe => {
+      const t = axes[page + "|" + axe];
+      return Derivation.transposableVers(t, visuelCible) ? t : null;
+    };
     const candidats = [...parCle.values()]
       .map(e => ({ emp: e, v: varianteDe.get(e.id) }))
       .filter(x => x.v && Empreintes.pageDeCle(x.emp.id) === page)
@@ -4261,11 +4418,18 @@ async function engendrerEmpreintes() {
  * n'existe plus » — alors que la fenêtre l'annonçait « ✨ déduit ».
  */
 function empreintesUtilisables() {
-  return empreintes.concat(Object.keys(empreintesDerivees).map(c => empreintesDerivees[c]));
+  /* Une empreinte SANS état ne sert à rien — le complément n'a rien à
+     restaurer — et pire, elle masquait celle qu'on savait recomposer :
+     `resoudre` retient la première correspondance, la diapositive sortait
+     muette, et le garde-fou la comptait pourtant comme couverte. */
+  return empreintes.filter(e => e && e.proprietes && e.proprietes.bookmark)
+    .concat(Object.keys(empreintesDerivees).map(c => empreintesDerivees[c]));
 }
 
 function empreintePour(lien) {
-  const exacte = Empreintes.resoudre(empreintes, lien);
+  // Même règle qu'à la fabrique : sans état, une empreinte ne couvre rien.
+  const exacte = Empreintes.resoudre(
+    empreintes.filter(e => e && e.proprietes && e.proprietes.bookmark), lien);
   if (exacte) return exacte;
   const derivee = empreintesDerivees[Empreintes.cleVisuel(lien)];
   return derivee
@@ -4824,7 +4988,6 @@ function renderDeckLignes() {
   const nomZone = c => (sites.find(s => s.key === c) || {}).name || c;
 
   el.innerHTML = diapos.map((d, i) => {
-    const q = t => esc(t).replace(/'/g, "\\'");
     /* Le choix de zone, à même la ligne : c'est là qu'on se demande
        « et sur Global, ça donne quoi ? ». Cocher une zone AJOUTE une
        diapositive, elle n'en remplace aucune. */
@@ -4837,7 +5000,7 @@ function renderDeckLignes() {
     const premiere = diapos.findIndex(x => x.kpiId === d.kpiId) === i;
     const zones = dispo.map(z => `
       <button type="button" class="deck-zone${actives.includes(z) ? " on" : ""}"
-              onclick="basculerZone('${q(d.kpiId)}', '${q(z)}')"
+              onclick="basculerZone(${jsAttr(d.kpiId)}, ${jsAttr(z)})"
               title="${actives.includes(z) ? "Retirer" : "Ajouter"} une diapositive sur ${esc(nomZone(z))}"
       >${esc(nomZone(z))}</button>`).join("");
 
@@ -4851,7 +5014,7 @@ function renderDeckLignes() {
           ? `<div class="deck-zones"><span class="deck-zones-label">Zones :</span>${zones}</div>` : ""}
         <input type="text" class="deck-comment" data-kpi="${esc(d.kpiId)}"
                placeholder="Commentaires : …" value="${esc(d.commentaire)}"
-               oninput="noterCommentaire('${q(d.kpiId)}', this.value, '${q(d.site)}')">
+               oninput="noterCommentaire(${jsAttr(d.kpiId)}, this.value, ${jsAttr(d.site)})">
       </div>
       <div class="deck-tools">
         <span class="deck-shot${etatVisuel(d).cls}">${etatVisuel(d).texte}</span>
@@ -5105,11 +5268,36 @@ document.getElementById("deckHelpBtn")?.addEventListener("click", () => deckHelp
 /* ============================================
    PWA : service worker
 ============================================ */
+/* La version du code, affichée sous le nom d'utilisateur. Elle suit celle du
+   cache : c'est ce qui distingue « l'annuaire a un défaut » de « ce poste
+   n'a pas encore la correction ». La question a coûté un aller-retour. */
+const VERSION_ANNUAIRE = "v20";
+
+function afficherVersionAnnuaire() {
+  const el = document.getElementById("appVersion");
+  if (el) el.textContent = "Annuaire " + VERSION_ANNUAIRE;
+  return VERSION_ANNUAIRE;
+}
+afficherVersionAnnuaire();
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./service-worker.js")
       .then(() => console.log("✅ Service worker enregistré"))
       .catch(err => console.warn("Service worker non enregistré :", err));
+  });
+
+  /* Une nouvelle version est en place, mais cet onglet exécute encore
+     l'ancien code — et reçoit déjà les nouveaux fichiers. Le laisser dans
+     cet état, c'est risquer un annuaire qui se vide sous les yeux de son
+     lecteur, sans un mot. On le dit, et on propose de recharger. */
+  let majSignalee = false;
+  navigator.serviceWorker.addEventListener("message", e => {
+    if (!e.data || e.data.type !== "maj-disponible" || majSignalee) return;
+    majSignalee = true;
+    if (typeof showToast === "function") {
+      showToast("🔄 Une nouvelle version de l'annuaire est disponible — rechargez la page", 12000);
+    }
   });
 }
 

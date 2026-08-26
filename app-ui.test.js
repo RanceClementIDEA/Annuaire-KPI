@@ -1719,3 +1719,134 @@ test("favoris : sans suppression définitive, rien n'est touché", () => {
   const envoi = A.run("buildSyncPayload()");
   assert.deepEqual(envoi.favoritesByUser.jean, ["b", "c"]);
 });
+
+/* ═══ Les valeurs passées aux attributs onclick ════════════
+   `esc()` seul ne suffit pas : il change l'apostrophe en `&#39;`, que le
+   navigateur redécode en `'` AVANT de lire le JavaScript de l'attribut.
+   La chaîne se refermait alors trop tôt. « Taux d'occupation » — un
+   intitulé français ordinaire — cassait ainsi le choix du rapport, sans
+   le moindre message. */
+
+test("attribut : une apostrophe dans une valeur ne casse plus le code de l'attribut", () => {
+  const attr = A.run(`jsAttr("taux d'occupation")`);
+  // Ce que le navigateur fera : décoder les entités, puis lire le JavaScript.
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const code = "f(" + decode(attr) + ")";
+  assert.doesNotThrow(() => new Function("f", code), "code produit : " + code);
+});
+
+test("attribut : la valeur arrive intacte à la fonction appelée", () => {
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  ["taux d'occupation", 'guillemet " ici', "anti\\slash", "<script>", "a&b", "sauf\nligne"]
+    .forEach(valeur => {
+      const code = "return " + decode(A.run(`jsAttr(${JSON.stringify(valeur)})`));
+      assert.equal(new Function(code)(), valeur, "valeur : " + JSON.stringify(valeur));
+    });
+});
+
+test("attribut : une valeur forgée ne peut pas s'échapper vers du code", () => {
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+  const mechant = "a');globalThis.__perce=1;//";
+  const code = "f(" + decode(A.run(`jsAttr(${JSON.stringify(mechant)})`)) + ")";
+  let recu = null;
+  new Function("f", code)(v => { recu = v; });
+  assert.equal(recu, mechant, "la charge reste une simple chaîne");
+  assert.equal(globalThis.__perce, undefined, "et rien ne s'est exécuté");
+});
+
+test("attribut : une carte dont le titre porte une apostrophe reste cliquable", () => {
+  A.reset({ manualEntries: [{ id: "kpi_apostrophe", manual: true,
+    title: "Taux d'occupation", freq: "Mensuelle", ritual: "COPIL",
+    _mtime: 1, _by: "c", logistiport: "https://app.powerbi.com/groups/me/reports/r/p?visual=v" }] });
+  A.run("rebuildData(false); filterData();");
+  /* Les cartes sont assemblées par `cardBody` puis posées par `render` :
+     on interroge donc la source du HTML, pas le conteneur. */
+  const html = A.run(`cardBody(data[0], false, "", titleKey(data[0].title))`) || "";
+  const handlers = html.match(/on(?:click|change|input)="([^"]*)"/g) || [];
+  const decode = t => t.replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  handlers.forEach(h => {
+    const code = decode(h.replace(/^on\w+="/, "").replace(/"$/, ""));
+    assert.doesNotThrow(() => new Function("event", code), "attribut cassé : " + code);
+  });
+  assert.ok(handlers.length > 0, "la carte doit bien porter des gestionnaires");
+});
+
+/* ═══ Ce qui condamnait l'annuaire ═════════════════════════
+   Une fiche dont un champ texte n'est pas une chaîne — un titre saisi
+   comme nombre dans Excel, ou reçue ainsi d'un collègue — faisait lever
+   `toLowerCase is not a function`. L'exception survenait APRÈS l'écriture
+   en mémoire locale : la fiche empoisonnée était conservée, et l'annuaire
+   relevait la même erreur à chaque démarrage. Le bouton de connexion
+   lui-même n'y survivait pas — plus aucun moyen d'entrer. */
+
+const TORDUS = [
+  ["titre numérique", { id: "x", title: 2024, freq: "Mensuelle", _mtime: 9e14 }],
+  ["titre tableau", { id: "y", title: ["a"], freq: "Mensuelle", _mtime: 9e14 }],
+  ["type numérique", { id: "z", title: "T", type: 12, freq: "Mensuelle", _mtime: 9e14 }],
+  ["identifiant numérique", { id: 77, title: "T", freq: "Mensuelle", _mtime: 9e14 }],
+  ["temporalité numérique", { id: "w", title: "T", freq: 3, _mtime: 9e14 }]
+];
+
+TORDUS.forEach(([nom, fiche]) => {
+  test("robustesse : une fiche à " + nom + " ne condamne plus l'annuaire", () => {
+    A.reset({});
+    A.run("applyRemoteData")({ kpiManual: [fiche] }, true);
+    assert.doesNotThrow(() => A.run("rebuildData(false); filterData();"),
+      "le rendu doit survivre");
+    assert.doesNotThrow(() => A.run(`cardBody(data[0], false, "", titleKey(data[0].title))`),
+      "la carte doit se construire");
+  });
+});
+
+test("robustesse : une sauvegarde à champs tordus n'empêche pas l'annuaire de vivre", () => {
+  A.reset({ manualEntries: [{ id: "sain", manual: true, title: "Sain",
+    freq: "Mensuelle", _mtime: 1, _by: "c" }] });
+  A.run(`manualEntries = mergeEntries(manualEntries, assainirFiches([
+    { id: "tordu", title: 42, freq: {}, _mtime: 9e14 }
+  ]));`);
+  assert.doesNotThrow(() => A.run("rebuildData(false); filterData();"));
+  assert.ok(A.run(`data.some(k => k.id === "sain")`), "la fiche saine reste");
+});
+
+/* ═══ Les liens qu'on refuse d'ouvrir ══════════════════════
+   Un classeur Excel porte des hyperliens arbitraires ; une sauvegarde et le
+   document partagé peuvent en apporter d'autres. `javascript:` passait sans
+   contrôle : ouvrir la fiche exécutait le lien. */
+
+test("liens : seules les adresses http et https sont ouvrables", () => {
+  A.reset({});
+  ["https://app.powerbi.com/x", "http://intranet/rapport"]
+    .forEach(u => assert.equal(A.run(`lienOuvrable(${JSON.stringify(u)})`), true, u));
+  ["javascript:alert(1)", "JavaScript:alert(1)", "data:text/html,<script>x</script>",
+   "vbscript:x", "file:///etc/passwd", "", "   "]
+    .forEach(u => assert.equal(A.run(`lienOuvrable(${JSON.stringify(u)})`), false, u));
+});
+
+/* ═══ Une zone ne doit pas heurter un champ de fiche ═══════
+   Les liens sont rangés en propriétés de la fiche, indexées par la clé de la
+   zone. Une zone nommée « Title » écrivait donc son lien PAR-DESSUS le titre
+   du KPI ; une zone « ID » dédoublait la fiche. */
+
+test("zones : une clé qui heurte un champ de fiche est préfixée", () => {
+  A.reset({});
+  A.run("sitesDraft = [];");
+  ["Title", "ID", "Freq", "Manual", "Type"].forEach(nom => {
+    const cle = A.run(`slugifySite(${JSON.stringify(nom)})`);
+    assert.ok(/^zone_/.test(cle), nom + " → " + cle);
+    A.run(`sitesDraft.push({ key: ${JSON.stringify(cle)} });`);
+  });
+});
+
+test("zones : une clé réservée venue du dehors est écartée", () => {
+  A.reset({});
+  const sains = A.run(`sitesSains([
+    { key: "logistiport", name: "Logistiport" },
+    { key: "title", name: "Piège" },
+    { key: "id", name: "Piège" },
+    { key: "", name: "Vide" },
+    null
+  ])`);
+  assert.deepEqual(sains.map(s => s.key), ["logistiport"]);
+});
