@@ -7389,6 +7389,46 @@ test("dérivation : une leçon apprise sur une page ne s'applique pas à une aut
   assert.equal(bilan.restantes, 1);
 });
 
+/* Le piège le plus vicieux : DEUX ÉTIQUETTES SUR LA MÊME VUE.
+   Insérer deux fois le même visuel sans toucher aux segments entre-temps
+   donne deux empreintes identiques sous deux noms de KPI. L'axe qu'on
+   croirait apprendre là est creux — l'appliquer rendrait la vue de départ
+   sous un autre nom, exactement l'erreur qu'on traque. */
+
+test("dérivation : deux étiquettes sur la même vue n'apprennent aucun axe", async () => {
+  preparerAxes();
+  // Le MÊME segment des deux côtés : les états seront identiques.
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "LOG"));
+  const cles = Object.keys(await A.run("axesDerivation")());
+  assert.deepEqual(cles, [], "une leçon creuse est refusée : " + cles);
+  assert.equal((await A.run("engendrerEmpreintes")()).engendrees, 0);
+});
+
+test("dérivation : l'annuaire nomme les empreintes jumelles au lieu de les subir", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "LOG"));
+  const groupes = await A.run("reperterEmpreintesJumelles")();
+  assert.equal(groupes.length, 1, "un groupe de jumelles");
+  assert.equal(groupes[0].length, 2);
+});
+
+test("dérivation : des vues réellement distinctes ne sont pas dites jumelles", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  assert.deepEqual(await A.run("reperterEmpreintesJumelles")(), []);
+});
+
+test("dérivation : une transformation creuse est reconnue comme telle", async () => {
+  assert.equal(A.run("Derivation.estVide")({ conteneurs: {}, retires: [], substitutions: [] }), true);
+  assert.equal(A.run("Derivation.estVide")(null), true);
+  assert.equal(A.run("Derivation.estVide")({ conteneurs: { a: 1 }, retires: [] }), false);
+  assert.equal(A.run("Derivation.estVide")({ conteneurs: {}, retires: ["a"] }), false);
+  assert.equal(A.run("Derivation.estVide")({ conteneurs: {}, retires: [], substitutions: [{ de: "x", a: "y" }] }), false);
+});
+
 test("dérivation : rien n'est déduit tant qu'aucun axe n'est connu", async () => {
   preparerAxes();
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));

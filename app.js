@@ -4131,10 +4131,14 @@ async function axesDerivation() {
         /* Le visuel de l'exemple est passé : son conteneur ne sera pas
            recopié mais traduit en substitution de colonne, ce qui rend
            la leçon transposable à un autre visuel. */
-        axes[cle] = Derivation.transformation(
+        const t = Derivation.transformation(
           await Derivation.lireEtat(a.emp.proprietes.bookmark),
           await Derivation.lireEtat(b.emp.proprietes.bookmark),
           a.emp.id.split("/")[2]);
+        /* Une leçon creuse vient de deux étiquettes posées sur la MÊME vue :
+           l'une des deux est fausse. L'apprendre reviendrait à rendre la vue
+           de départ sous un autre nom — l'erreur même qu'on traque. */
+        if (!Derivation.estVide(t)) axes[cle] = t;
       } catch (err) { /* état illisible : on passe */ }
     }
   }
@@ -4414,12 +4418,14 @@ function ouvrirDeckModal() {
   if (!selectionIds.length) { showToast("Sélectionnez d'abord des KPI", 2600); return; }
   /* Recomposer d'abord : sans cela la fenêtre annoncerait des relevés
      qui, en réalité, se déduisent de ceux déjà faits. */
-  engendrerEmpreintes().then(bilan => {
-    if (bilan.engendrees) {
-      showToast("✨ " + bilan.engendrees + " empreinte(s) déduites de vos relevés", 3600);
-    }
-    renderDeckLignes();
-  });
+  reperterEmpreintesJumelles()
+    .then(() => engendrerEmpreintes())
+    .then(bilan => {
+      if (bilan.engendrees) {
+        showToast("✨ " + bilan.engendrees + " empreinte(s) déduites de vos relevés", 3600);
+      }
+      renderDeckLignes();
+    });
   const titre = document.getElementById("deckTitleInput");
   if (titre && !titre.value) {
     const p = presets.find(x => x.id === presetCourant);
@@ -4723,9 +4729,40 @@ function renderDeckLignes() {
           + `soit le mode « Image », qui capture la page entière sans aucune empreinte.`);
       }
     }
+    if (empreintesJumelles.length) {
+      parties.push(`${empreintesJumelles.length} empreinte(s) montrent la MÊME vue sous des noms `
+        + `différents : le visuel a été inséré plusieurs fois sans toucher aux segments entre-temps. `
+        + `Une seule de chaque groupe est juste — les autres afficheraient le mauvais graphique. `
+        + `Relevez-les à nouveau.`);
+    }
     avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";
     avert.style.display = parties.length ? "block" : "none";
   }
+}
+
+/* Les empreintes qui montrent la même chose sous des noms différents.
+   Deux insertions du même visuel sans avoir changé de segment entre-temps
+   produisent deux empreintes identiques : l'une d'elles ment forcément.
+   Mieux vaut le dire que laisser une diapositive afficher les chiffres
+   d'un autre KPI sous le bon titre. */
+let empreintesJumelles = [];
+
+/** @returns {Promise<Array<Array<{id:string, libelle:string}>>>} les groupes. */
+async function reperterEmpreintesJumelles() {
+  const parVue = new Map();
+  const varianteDe = new Map(variantesAvecLien().map(v => [Empreintes.cleVisuel(v.lien), v]));
+  for (const e of empreintes) {
+    if (!e.proprietes || !e.proprietes.bookmark) continue;
+    const v = varianteDe.get(e.id);
+    if (!v) continue;   // empreinte orpheline : traitée ailleurs
+    let sig;
+    try { sig = Derivation.signature(await Derivation.lireEtat(e.proprietes.bookmark)); }
+    catch (err) { continue; }
+    if (!parVue.has(sig)) parVue.set(sig, []);
+    parVue.get(sig).push({ id: e.id, libelle: v.titre + " · " + v.freq + " · " + v.site });
+  }
+  empreintesJumelles = [...parVue.values()].filter(g => g.length > 1);
+  return empreintesJumelles;
 }
 
 /** Mémorise le commentaire saisi pour une diapositive. */
