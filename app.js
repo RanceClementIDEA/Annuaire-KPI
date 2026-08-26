@@ -4309,6 +4309,20 @@ function viderSelection() {
 }
 
 /** Déplace une ligne de la sélection (ordre du jour). */
+/**
+ * Déplace une DIAPOSITIVE dans le support.
+ *
+ * Les lignes d'un même KPI sur plusieurs zones se suivent : on déplace
+ * donc le KPI entier, ses zones avec lui, plutôt que de disperser des
+ * lignes qui se lisent ensemble.
+ */
+function deplacerDiapo(index, sens) {
+  const { diapos } = diaposCourantes();
+  const d = diapos[index];
+  if (!d) return selectionIds.slice();
+  return deplacerSelection(d.kpiId, sens);
+}
+
 function deplacerSelection(id, sens) {
   const i = selectionIds.indexOf(id);
   const j = i + (sens < 0 ? -1 : 1);
@@ -4332,19 +4346,85 @@ function majBarreSelection() {
 /* ─── Sélections enregistrées ────────────────────────────── */
 
 /** La sélection en cours, sous forme de sélection enregistrable. */
+/* Les zones retenues pour un KPI donné, quand on en veut plusieurs.
+   { kpiId: ["logistiport", "global"] } — absent ou vide veut dire « comme
+   avant » : une seule ligne, sur la première zone renseignée. */
+let zonesParKpi = {};
+
+/** Les zones où CE KPI porte effectivement un lien. */
+function zonesDisponibles(kpiId) {
+  const kpi = [...data, ...personalEntries].find(k => k && k.id === kpiId);
+  if (!kpi) return [];
+  return activeSites().filter(s => s && s.key && kpi[s.key]).map(s => s.key);
+}
+
 function selectionCourante(nom) {
   const existante = presets.find(p => p.id === presetCourant);
+  const items = [];
+  selectionIds.forEach(id => {
+    /* Une ligne par zone demandée ; à défaut, une seule ligne sans zone,
+       que `resoudrePreset` posera sur la première zone renseignée. */
+    const zones = (zonesParKpi[id] || []).filter(z => zonesDisponibles(id).includes(z));
+    (zones.length ? zones : [""]).forEach(site => {
+      const anc = existante && existante.items.find(it => it.kpiId === id && (it.site || "") === site);
+      items.push({ kpiId: id, site, commentaire: anc ? anc.commentaire : "" });
+    });
+  });
   return Selection.normaliserPreset({
     id: existante ? existante.id : undefined,
     name: nom || (existante && existante.name) || "Sélection",
     defaultSite: existante ? existante.defaultSite : "",
-    items: selectionIds.map(id => {
-      const ancienne = existante && existante.items.find(it => it.kpiId === id);
-      return { kpiId: id, site: ancienne ? ancienne.site : "", commentaire: ancienne ? ancienne.commentaire : "" };
-    }),
+    items,
     _mtime: now(),
     _by: currentUser || "?"
   });
+}
+
+/**
+ * Ajoute ou retire une zone pour un KPI de la sélection.
+ *
+ * Le premier clic doit AJOUTER, jamais remplacer : tant qu'aucune zone
+ * n'a été choisie, la ligne affichée en vaut déjà une, et l'oublier
+ * faisait basculer la diapositive au lieu d'en créer une seconde.
+ */
+function basculerZone(kpiId, site) {
+  const dispo = zonesDisponibles(kpiId);
+  if (!dispo.includes(site)) return [];
+  let zones = (zonesParKpi[kpiId] || []).filter(z => dispo.includes(z));
+  if (!zones.length) zones = [dispo[0]];   // la ligne déjà à l'écran
+
+  const i = zones.indexOf(site);
+  if (i >= 0) {
+    // On ne laisse jamais un KPI sélectionné sans aucune diapositive.
+    if (zones.length === 1) return zones.slice();
+    zones.splice(i, 1);
+  } else {
+    zones.push(site);
+  }
+  // Ordre de l'annuaire : les zones se lisent partout dans le même ordre.
+  zonesParKpi[kpiId] = dispo.filter(z => zones.includes(z));
+  renderDeckLignes();
+  return zonesParKpi[kpiId].slice();
+}
+
+/** Toutes les zones renseignées, pour tous les KPI de la sélection. */
+function toutesLesZones() {
+  let ajoutees = 0;
+  selectionIds.forEach(id => {
+    const dispo = zonesDisponibles(id);
+    ajoutees += Math.max(0, dispo.length - Math.max(1, (zonesParKpi[id] || []).length));
+    zonesParKpi[id] = dispo;
+  });
+  renderDeckLignes();
+  showToast(ajoutees ? "🗺 " + ajoutees + " diapositive(s) ajoutée(s)" : "Toutes les zones y sont déjà", 2600);
+  return ajoutees;
+}
+
+/** Revient à une diapositive par KPI. */
+function uneSeuleZone() {
+  zonesParKpi = {};
+  renderDeckLignes();
+  showToast("↺ Une diapositive par KPI", 2200);
 }
 
 /**
@@ -4697,86 +4777,88 @@ function etatVisuel(d) {
   /* L'empreinte vaut pour un lien précis, signet compris : c'est le
      signet qui porte les filtres, et donc ce qui distingue deux KPI
      partageant le même visuel. */
+  /* Le témoin dit ce que la diapositive montrera, sans exposer la
+     mécanique : les empreintes sont livrées avec le code, et rien ici ne
+     demande un geste à l'utilisateur. */
   const emp = empreintePour(d.lien);
-  if (emp) return { texte: emp.derivee ? "✨ déduit" : "⚡ visuel", cls: " on" };
-  /* Une empreinte du même visuel sur un autre signet : le lien a été
-     repartagé depuis le relevé. Le dire épargne une longue recherche. */
+  if (emp) return { texte: "⚡ visuel", cls: " on" };
+  /* Une empreinte du même visuel sur un autre signet : le lien a changé
+     depuis la livraison. Le distinguer aide à savoir quoi corriger. */
   return Empreintes.empreinteDepassee(empreintes, d.lien)
-    ? { texte: "⟳ lien repartagé", cls: " alerte" }
-    : { texte: "à relever", cls: " alerte" };
+    ? { texte: "⚠ lien à mettre à jour", cls: " alerte" }
+    : { texte: "⚠ visuel indisponible", cls: " alerte" };
 }
 
 function renderDeckLignes() {
   const el = document.getElementById("deckList");
   if (!el) return;
   const { diapos } = diaposCourantes();
-  el.innerHTML = diapos.map((d, i) => `
+  const sites = activeSites();
+  const nomZone = c => (sites.find(s => s.key === c) || {}).name || c;
+
+  el.innerHTML = diapos.map((d, i) => {
+    const q = t => esc(t).replace(/'/g, "\\'");
+    /* Le choix de zone, à même la ligne : c'est là qu'on se demande
+       « et sur Global, ça donne quoi ? ». Cocher une zone AJOUTE une
+       diapositive, elle n'en remplace aucune. */
+    const dispo = zonesDisponibles(d.kpiId);
+    const retenues = (zonesParKpi[d.kpiId] || []).filter(z => dispo.includes(z));
+    const actives = retenues.length ? retenues : [d.site];
+    /* Les pastilles ne paraissent que sur la PREMIÈRE ligne d'un KPI :
+       elles valent pour lui tout entier, et les répéter sur chacune de ses
+       zones donnait à croire qu'elles ne concernaient que cette ligne-là. */
+    const premiere = diapos.findIndex(x => x.kpiId === d.kpiId) === i;
+    const zones = dispo.map(z => `
+      <button type="button" class="deck-zone${actives.includes(z) ? " on" : ""}"
+              onclick="basculerZone('${q(d.kpiId)}', '${q(z)}')"
+              title="${actives.includes(z) ? "Retirer" : "Ajouter"} une diapositive sur ${esc(nomZone(z))}"
+      >${esc(nomZone(z))}</button>`).join("");
+
+    return `
     <div class="deck-row${diagnosticLien(d).ok ? "" : " deck-row-warn"}">
       <span class="deck-num">${i + 1}</span>
       <div class="deck-main">
         <b>${esc(d.titre)}</b>
         <span class="deck-sub">${esc([d.kpi.freq || "", diagnosticLien(d).detail].filter(Boolean).join(" · "))}</span>
+        ${premiere && dispo.length > 1
+          ? `<div class="deck-zones"><span class="deck-zones-label">Zones :</span>${zones}</div>` : ""}
         <input type="text" class="deck-comment" data-kpi="${esc(d.kpiId)}"
                placeholder="Commentaires : …" value="${esc(d.commentaire)}"
-               oninput="noterCommentaire('${esc(d.kpiId).replace(/'/g, "\\'")}', this.value)">
+               oninput="noterCommentaire('${q(d.kpiId)}', this.value, '${q(d.site)}')">
       </div>
       <div class="deck-tools">
         <span class="deck-shot${etatVisuel(d).cls}">${etatVisuel(d).texte}</span>
-        <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', -1)" title="Monter">▲</button>
-        <button type="button" class="btn-tool" onclick="deplacerSelection('${esc(d.kpiId).replace(/'/g, "\\'")}', 1)" title="Descendre">▼</button>
+        <button type="button" class="btn-tool" onclick="deplacerDiapo(${i}, -1)" title="Monter">▲</button>
+        <button type="button" class="btn-tool" onclick="deplacerDiapo(${i}, 1)" title="Descendre">▼</button>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 
-  /* Le guidage ne s'affiche que tant qu'il reste des empreintes à
-     relever : une fois le travail fait, il n'a plus rien à dire. */
-  const guide = document.getElementById("deckGuide");
-  const nbDeduites = diapos.filter(d => { const e = empreintePour(d.lien); return e && e.derivee; }).length;
-  const compteur = document.getElementById("deckGuideCompte");
-  if (compteur) {
-    compteur.textContent = nbDeduites
-      ? nbDeduites + " diapositive(s) sont déduites de relevés existants — autant en moins à faire."
-      : "";
-    compteur.style.display = nbDeduites ? "block" : "none";
-  }
-  if (guide) {
-    const reste = diapos.some(d => d.lien && !empreintePour(d.lien));
-    guide.classList.toggle("termine", !reste);
-  }
+  /* Plus de mode d'emploi dans la fenêtre : le témoin de chaque ligne dit
+     déjà où elle en est, et « ❓ Guide » explique le reste à la demande. */
 
   // Bilan : ce qui empêcherait le support d'afficher le bon graphique.
   const soucis = diapos.filter(d => !diagnosticLien(d).ok);
   const avert = document.getElementById("deckWarning");
   if (avert) {
+    /* Court, et rien que l'utile : ce qui empêchera une diapositive de
+       montrer le bon graphique, et le geste qui y remédie. Le détail est
+       dans « ❓ Guide » pour qui veut comprendre. */
     const pages = soucis.filter(d => diagnosticLien(d).court === "⚠ page entière").length;
     const plats = soucis.filter(d => diagnosticLien(d).court === "⚠ format allongé").length;
     const vides = soucis.filter(d => !d.lien).length;
     const parties = [];
-    if (pages) parties.push(`${pages} lien(s) de PAGE : tout le rapport s'affichera, pas le seul graphique`);
-    if (plats) parties.push(`${plats} visuel(s) au format très allongé : à confirmer en les ouvrant`);
     if (vides) parties.push(`${vides} KPI sans lien`);
+    if (pages) parties.push(`${pages} lien de page entière : tout le rapport s'affichera`);
+    if (plats) parties.push(`${plats} visuel très allongé — à vérifier`);
     if (modeDeck() === "vivant") {
       const sansEmpreinte = diapos.filter(d => diagnosticLien(d).ok && !empreintePour(d.lien));
       if (sansEmpreinte.length) {
-        /* Une empreinte vaut pour UN lien, signet compris : chaque KPI
-           demande donc sa propre insertion. Autant le dire franchement,
-           plutôt que d'annoncer un chiffre rassurant et faux. */
-        const repartages = sansEmpreinte.filter(d => Empreintes.empreinteDepassee(empreintes, d.lien)).length;
-        if (repartages) {
-          parties.push(`${repartages} KPI dont le lien a été REPARTAGÉ depuis son relevé : `
-            + `chaque partage crée un nouveau signet, et l'empreinte d'hier ne vaut plus. `
-            + `Ne repartagez plus un lien une fois son empreinte relevée.`);
-        }
-        parties.push(`${sansEmpreinte.length} KPI sans empreinte : leur visuel ne s'affichera pas. `
-          + `Deux issues — soit « 📋 Préparer le relevé » et une insertion à la main par KPI, `
-          + `en collant LE LIEN DE L'ANNUAIRE et jamais un lien repartagé ; `
-          + `soit le mode « Image », qui capture la page entière sans aucune empreinte.`);
+        parties.push(`${sansEmpreinte.length} diapositive(s) sans visuel disponible`);
       }
     }
     if (empreintesJumelles.length) {
-      parties.push(`${empreintesJumelles.length} empreinte(s) montrent la MÊME vue sous des noms `
-        + `différents : le visuel a été inséré plusieurs fois sans toucher aux segments entre-temps. `
-        + `Une seule de chaque groupe est juste — les autres afficheraient le mauvais graphique. `
-        + `Relevez-les à nouveau.`);
+      parties.push(`${empreintesJumelles.length} empreintes montrent la même vue sous des noms différents — à relever à nouveau`);
     }
     avert.textContent = parties.length ? "⚠ " + parties.join(" · ") : "";
     avert.style.display = parties.length ? "block" : "none";
@@ -4809,14 +4891,24 @@ async function reperterEmpreintesJumelles() {
 }
 
 /** Mémorise le commentaire saisi pour une diapositive. */
-function noterCommentaire(kpiId, texte) {
+/** Le commentaire retenu pour une diapositive, zone comprise. */
+function commentaireDe(d) {
+  return commentairesVolatils[d.kpiId + (d.site ? "|" + d.site : "")]
+      || commentairesVolatils[d.kpiId] || "";
+}
+
+function noterCommentaire(kpiId, texte, site) {
+  /* Le commentaire appartient à la LIGNE — KPI et zone — puisqu'un même
+     KPI peut désormais figurer sur plusieurs zones. */
+  const cle = kpiId + (site ? "|" + site : "");
   const preset = presets.find(p => p.id === presetCourant);
   if (preset) {
-    const it = preset.items.find(x => x.kpiId === kpiId);
+    const it = preset.items.find(x => x.kpiId === kpiId && (x.site || "") === (site || ""))
+            || preset.items.find(x => x.kpiId === kpiId);
     if (it) { it.commentaire = texte; preset._mtime = now(); savePresets(); return texte; }
   }
   // Sélection non enregistrée : on garde le commentaire le temps de la session
-  commentairesVolatils[kpiId] = texte;
+  commentairesVolatils[cle] = texte;
   return texte;
 }
 
@@ -4878,11 +4970,8 @@ async function genererDeck() {
     const muets = diapos.filter(d => d.lien && !empreintePour(d.lien));
     if (muets.length) {
       const suite = confirm(
-        muets.length + " KPI sur " + diapos.length + " n'ont pas d'empreinte.\n\n"
-        + "Leur diapositive affichera « L'objet visuel ajouté ici n'existe plus ».\n\n"
-        + "Deux façons d'y remédier :\n"
-        + "  • « 📋 Préparer le relevé », puis une insertion à la main par KPI ;\n"
-        + "  • le mode « Image », qui capture la page entière sans aucune empreinte.\n\n"
+        muets.length + " KPI sur " + diapos.length + " n'ont pas de visuel disponible.\n\n"
+        + "Leur diapositive restera vide dans PowerPoint.\n\n"
         + "Produire quand même le support ?");
       if (!suite) return null;
     }
@@ -4894,7 +4983,7 @@ async function genererDeck() {
     diapos: diapos.map(d => ({
       titre: d.titre,
       lien: d.lien,
-      commentaire: d.commentaire || commentairesVolatils[d.kpiId] || "",
+      commentaire: d.commentaire || commentaireDe(d) || "",
       // Le complément Power BI affiche le visuel connecté : aucune image à fournir.
       vivant: !!d.lien
     })),
@@ -4922,34 +5011,16 @@ async function genererDeck() {
 
 /* ─── Branchements ───────────────────────────────────────── */
 
-/* Déposer le PowerPoint du relevé sur la fenêtre : c'est le geste
-   naturel après l'avoir enregistré, et il évite de chercher un bouton. */
-document.getElementById("deckModal")?.addEventListener("dragover", e => {
-  e.preventDefault();
-  document.getElementById("deckGuide")?.classList.add("survol");
-});
-document.getElementById("deckModal")?.addEventListener("dragleave", () => {
-  document.getElementById("deckGuide")?.classList.remove("survol");
-});
+/* Les empreintes sont livrées avec le code (empreintes-livrees.json) : rien
+   à relever, donc aucun bouton. Le dépôt d'un fichier reste branché — c'est
+   la porte de secours quand un lien change et qu'il faut réparer une ligne
+   sans publier une nouvelle version — mais il ne s'annonce plus. */
+document.getElementById("deckModal")?.addEventListener("dragover", e => e.preventDefault());
 document.getElementById("deckModal")?.addEventListener("drop", async e => {
   e.preventDefault();
-  document.getElementById("deckGuide")?.classList.remove("survol");
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (!f) return;
-  if (!/\.(pptx|json)$/i.test(f.name || "")) {
-    showToast("Déposez le PowerPoint du relevé, ou un fichier .json d'empreintes", 4000);
-    return;
-  }
+  if (!f || !/\.(pptx|json)$/i.test(f.name || "")) return;
   await importerEmpreintes(f);
-});
-
-document.getElementById("deckPreparerBtn")?.addEventListener("click", () => preparerReleve());
-document.getElementById("deckEmpreintesBtn")?.addEventListener("click",
-  () => document.getElementById("deckEmpreintesInput")?.click());
-document.getElementById("deckEmpreintesInput")?.addEventListener("change", async e => {
-  const f = e.target.files && e.target.files[0];
-  e.target.value = "";       // rechoisir le même fichier doit rester possible
-  if (f) await importerEmpreintes(f);
 });
 
 document.getElementById("selectionModeBtn")?.addEventListener("click", () => basculerModeSelection());
@@ -4994,6 +5065,15 @@ const pbiCarousel = createCarousel({
   lastLabel: "Compris ✓"
 });
 document.getElementById("pbiHelpBtn")?.addEventListener("click", () => pbiCarousel.open());
+
+/* Le guide de génération : cinq étapes, de la sélection au fichier. Il
+   remplace les explications qui encombraient la fenêtre. */
+const deckHelpCarousel = createCarousel({
+  modalId: "deckHelpModal", trackId: "deckHelpTrack", dotsId: "deckHelpDots",
+  prevId: "deckHelpPrev", nextId: "deckHelpNext", closeId: "closeDeckHelpBtn",
+  lastLabel: "Compris ✓"
+});
+document.getElementById("deckHelpBtn")?.addEventListener("click", () => deckHelpCarousel.open());
 
 /* ============================================
    PWA : service worker

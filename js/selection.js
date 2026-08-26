@@ -39,7 +39,15 @@
     const items = (Array.isArray(src.items) ? src.items : [])
       .map(it => (typeof it === "string" ? { kpiId: it } : it))
       .filter(it => it && typeof it.kpiId === "string" && it.kpiId)
-      .filter(it => { if (vus.has(it.kpiId)) return false; vus.add(it.kpiId); return true; })
+      /* La clé d'une ligne est le KPI ET SA ZONE : c'est ce qui permet de
+         montrer le même indicateur sur Logistiport puis sur Global dans un
+         même support. Une sélection d'avant, dont les lignes n'ont pas de
+         zone, garde exactement le comportement d'alors : une ligne par KPI. */
+      .filter(it => {
+        const cle = it.kpiId + "|" + (typeof it.site === "string" ? it.site : "");
+        if (vus.has(cle)) return false;
+        vus.add(cle); return true;
+      })
       .map(it => ({
         kpiId: it.kpiId,
         site: typeof it.site === "string" ? it.site : "",

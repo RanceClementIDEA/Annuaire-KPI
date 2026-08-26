@@ -6720,7 +6720,7 @@ test("mode : un lien de visuel sans empreinte demande d'abord un relevé", () =>
   preparerDeck();
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à relever"),
+  assert.ok(A.html("deckList").includes("visuel indisponible"),
     "sans empreinte, le complément afficherait « l'objet visuel n'existe plus »");
 });
 
@@ -6777,7 +6777,7 @@ test("liens : un visuel sans empreinte est signalé dans le bilan", () => {
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
   assert.equal(A.el("deckWarning").style.display, "block");
-  assert.ok(A.texte("deckWarning").includes("sans empreinte"));
+  assert.match(A.texte("deckWarning"), /sans visuel disponible/);
 });
 
 test("liens : un lien de PAGE est signalé — il afficherait tout le rapport", () => {
@@ -6786,7 +6786,7 @@ test("liens : un lien de PAGE est signalé — il afficherait tout le rapport", 
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("⚠ page entière"));
-  assert.match(A.texte("deckWarning"), /lien\(s\) de PAGE/);
+  assert.match(A.texte("deckWarning"), /lien de page entière/);
 });
 
 test("liens : le message explique comment reprendre un lien de page", () => {
@@ -6804,7 +6804,7 @@ test("liens : un visuel dix fois plus large que haut est signalé comme suspect"
   A.run("renderDeckLignes()");
   assert.ok(A.html("deckList").includes("⚠ format allongé"));
   assert.ok(A.html("deckList").includes("1141×51 px"));
-  assert.match(A.texte("deckWarning"), /format très allongé/);
+  assert.match(A.texte("deckWarning"), /très allongé/);
 });
 
 test("liens : le bilan cumule les différents soucis", () => {
@@ -6816,8 +6816,8 @@ test("liens : le bilan cumule les différents soucis", () => {
   A.basculerSelection("kpi_anticipation_mensuelle");   // sans lien
   A.run("renderDeckLignes()");
   const bilan = A.texte("deckWarning");
-  assert.match(bilan, /1 lien\(s\) de PAGE/);
-  assert.match(bilan, /1 visuel\(s\) au format très allongé/);
+  assert.match(bilan, /1 lien de page entière/);
+  assert.match(bilan, /1 visuel très allongé/);
   assert.match(bilan, /1 KPI sans lien/);
 });
 
@@ -6905,7 +6905,7 @@ test("empreintes : importer un fichier remet la liste à jour toute seule", asyn
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à relever"));
+  assert.ok(A.html("deckList").includes("visuel indisponible"));
   await A.run("importerEmpreintes")(fichierChoisi(pptxAvecComplement(LIEN_VISUEL)));
   assert.ok(A.html("deckList").includes("⚡ visuel"), "la liste se remet à jour toute seule");
 });
@@ -6927,7 +6927,7 @@ test("empreintes : relever un KPI ne couvre pas son voisin de la même page", ()
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.basculerSelection("kpi_taux_service_hebdomadaire");
   A.run("renderDeckLignes()");
-  assert.equal((A.html("deckList").match(/à relever/g) || []).length, 2);
+  assert.equal((A.html("deckList").match(/visuel indisponible/g) || []).length, 2);
 });
 
 test("empreintes : le bilan annonce des KPI à insérer, pas des pages", async () => {
@@ -6938,8 +6938,10 @@ test("empreintes : le bilan annonce des KPI à insérer, pas des pages", async (
   A.basculerSelection("kpi_taux_service_hebdomadaire");
   A.run("renderDeckLignes()");
   const bilan = A.texte("deckWarning");
-  assert.match(bilan, /2 KPI sans empreinte/);
-  assert.match(bilan, /LIEN DE L'ANNUAIRE/);
+  assert.match(bilan, /2 diapositive\(s\) sans visuel disponible/);
+  /* Court : le bilan dit QUOI faire, pas pourquoi. Le pourquoi est dans
+     « ❓ Guide », et la fenêtre doit rester lisible d'un coup d'œil. */
+  assert.ok(bilan.length < 200, "bilan de " + bilan.length + " caractères : " + bilan);
 });
 
 test("empreintes : le support produit porte bien la mémoire relevée", async () => {
@@ -6990,7 +6992,7 @@ test("empreintes : un relevé .json couvre le KPI qu'il décrit, et lui seul", a
   await A.run("importerEmpreintes")(fichierJson(jsonEmpreinte(LIEN_VISUEL)));
   const html = A.html("deckList");
   assert.equal((html.match(/⚡ visuel/g) || []).length, 1);
-  assert.equal((html.match(/à relever/g) || []).length, 1);
+  assert.equal((html.match(/visuel indisponible/g) || []).length, 1);
 });
 
 test("empreintes : un relevé sans état est écarté plutôt qu'accepté à moitié", () => {
@@ -7053,7 +7055,7 @@ test("livraison : elles couvrent le KPI qu'elles décrivent", async () => {
   relier("kpi_volumetrie_hebdomadaire", LIEN_VISUEL);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
-  assert.ok(A.html("deckList").includes("à relever"));
+  assert.ok(A.html("deckList").includes("visuel indisponible"));
   A.servir("empreintes-livrees.json", livraison(LIEN_VISUEL, "Histo empilé"));
   await A.run("chargerEmpreintesLivrees")();
   assert.ok(A.html("deckList").includes("⚡ visuel"));
@@ -7125,27 +7127,29 @@ test("signet : sur un AUTRE signet, la ligne dit que le lien a été repartagé"
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
   A.run("renderDeckLignes()");
   const html = A.html("deckList");
-  assert.ok(html.includes("lien repartagé"), html);
+  assert.ok(html.includes("lien à mettre à jour"), html);
   assert.ok(!html.includes("⚡ visuel"), "surtout pas de « ⚡ visuel » rassurant");
 });
 
-test("signet : un visuel jamais relevé dit simplement « à relever »", () => {
+test("signet : un visuel sans empreinte dit simplement « indisponible »", () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   A.run("renderDeckLignes()");
   const html = A.html("deckList");
-  assert.ok(html.includes("à relever"));
-  assert.ok(!html.includes("repartagé"), "rien n'a été repartagé ici");
+  assert.ok(html.includes("visuel indisponible"));
+  assert.ok(!html.includes("à mettre à jour"), "aucun lien n'a changé ici");
 });
 
-test("signet : le bilan nomme les liens repartagés à part", async () => {
+test("signet : le bilan reste court — c'est la LIGNE qui nomme le repartage", async () => {
   preparerDeck();
   relier("kpi_volumetrie_hebdomadaire", SIGNET_VOISIN);
   A.basculerSelection("kpi_volumetrie_hebdomadaire");
   await A.run("releverEmpreintesDepuis")(pptxAvecComplement(SIGNET_KPI));
   A.run("renderDeckLignes()");
-  assert.match(A.texte("deckWarning"), /REPARTAGÉ/);
+  assert.match(A.html("deckList"), /à mettre à jour/, "la ligne le dit");
+  assert.ok(A.texte("deckWarning").length < 200,
+    "le bilan ne répète pas l'explication : " + A.texte("deckWarning"));
 });
 
 test("signet : rien n'est posé sur la diapositive plutôt qu'une vue fausse", async () => {
@@ -7206,6 +7210,89 @@ test("relevé : une insertion valable n'a aucun motif de refus", () => {
     bookmark: "&quot;H4sIEtat&quot;"
   };
   assert.equal(A.run("Empreintes.raisonRefus")(props), "");
+});
+
+/* ─── Le même KPI sur plusieurs zones ──────────────────────
+   Un COPIL compare souvent le même indicateur d'un site à l'autre.
+   Une ligne de support est donc identifiée par le KPI ET SA ZONE :
+   cocher une zone AJOUTE une diapositive, elle n'en remplace aucune. */
+
+test("zones : par défaut, une seule diapositive par KPI", () => {
+  preparerDeck();
+  relier("kpi_volumetrie_hebdomadaire", SIGNET_KPI);
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  assert.equal(A.run("diaposCourantes()").diapos.length, 1);
+});
+
+test("zones : cocher une seconde zone ajoute une diapositive", () => {
+  preparerDeck({ manualEntries: [{ id: "kpi_multi", manual: true, title: "Volumétrie",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 1, _by: "c",
+    logistiport: SIGNET_KPI, armement: SIGNET_VOISIN }] });
+  A.basculerSelection("kpi_multi");
+  assert.equal(A.run("diaposCourantes()").diapos.length, 1, "une seule au départ");
+  A.run("basculerZone")("kpi_multi", "logistiport");
+  A.run("basculerZone")("kpi_multi", "armement");
+  const diapos = A.run("diaposCourantes()").diapos;
+  assert.equal(diapos.length, 2, "deux diapositives, deux zones");
+  assert.deepEqual(diapos.map(d => d.site), ["logistiport", "armement"]);
+  assert.deepEqual(diapos.map(d => d.lien), [SIGNET_KPI, SIGNET_VOISIN],
+    "chaque diapositive porte le lien de SA zone");
+});
+
+test("zones : décocher retire la diapositive correspondante", () => {
+  preparerDeck({ manualEntries: [{ id: "kpi_multi", manual: true, title: "Volumétrie",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 1, _by: "c",
+    logistiport: SIGNET_KPI, armement: SIGNET_VOISIN }] });
+  A.basculerSelection("kpi_multi");
+  A.run("basculerZone")("kpi_multi", "logistiport");
+  A.run("basculerZone")("kpi_multi", "armement");
+  A.run("basculerZone")("kpi_multi", "armement");
+  assert.equal(A.run("diaposCourantes()").diapos.length, 1);
+});
+
+test("zones : une zone sans lien n'est jamais proposée", () => {
+  preparerDeck({ manualEntries: [{ id: "kpi_multi", manual: true, title: "Volumétrie",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 1, _by: "c", logistiport: SIGNET_KPI }] });
+  A.basculerSelection("kpi_multi");
+  assert.deepEqual(A.run("zonesDisponibles")("kpi_multi"), ["logistiport"]);
+});
+
+test("zones : « toutes les zones » couvre la sélection entière", () => {
+  preparerDeck({ manualEntries: [{ id: "kpi_multi", manual: true, title: "Volumétrie",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 1, _by: "c",
+    logistiport: SIGNET_KPI, armement: SIGNET_VOISIN }] });
+  A.basculerSelection("kpi_multi");
+  A.run("toutesLesZones")();
+  assert.equal(A.run("diaposCourantes()").diapos.length, 2);
+  A.run("uneSeuleZone")();
+  assert.equal(A.run("diaposCourantes()").diapos.length, 1, "et l'on peut revenir en arrière");
+});
+
+test("zones : le commentaire appartient à la ligne, pas au KPI", () => {
+  preparerDeck({ manualEntries: [{ id: "kpi_multi", manual: true, title: "Volumétrie",
+    freq: "Hebdomadaire", ritual: "COPIL", _mtime: 1, _by: "c",
+    logistiport: SIGNET_KPI, armement: SIGNET_VOISIN }] });
+  A.basculerSelection("kpi_multi");
+  A.run("toutesLesZones")();
+  A.run("noterCommentaire")("kpi_multi", "vu au COPIL", "armement");
+  const d = A.run("diaposCourantes()").diapos;
+  const com = A.run(`diaposCourantes().diapos.map(d => d.commentaire || commentaireDe(d))`);
+  assert.equal(com[d.findIndex(x => x.site === "armement")], "vu au COPIL");
+  assert.equal(com[d.findIndex(x => x.site === "logistiport")], "",
+    "la zone voisine garde son propre commentaire");
+});
+
+test("zones : une sélection d'avant, sans zones, ne change pas de comportement", () => {
+  const preset = A.run(`Selection.normaliserPreset({ name: "COPIL",
+    items: [{ kpiId: "a" }, { kpiId: "a" }, { kpiId: "b" }] })`);
+  assert.equal(preset.items.length, 2, "les doublons sans zone restent fusionnés");
+});
+
+test("zones : le même KPI sur deux zones fait bien deux lignes distinctes", () => {
+  const preset = A.run(`Selection.normaliserPreset({ name: "COPIL",
+    items: [{ kpiId: "a", site: "logistiport" }, { kpiId: "a", site: "global" },
+            { kpiId: "a", site: "global" }] })`);
+  assert.equal(preset.items.length, 2, "deux zones, deux lignes ; le doublon exact tombe");
 });
 
 /* ─── Le support de relevé ─────────────────────────────────

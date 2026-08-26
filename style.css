@@ -1025,7 +1025,9 @@ select.modal-input {
 }
 
 /* Le guide Power BI est ouvert DEPUIS la modale KPI : il doit passer au-dessus */
-#pbiHelpModal { z-index: 2600; }
+/* Les guides s'ouvrent PAR-DESSUS la fenêtre qui les appelle : sans cela
+   ils apparaissent derrière elle, et l'on croit que le bouton ne fait rien. */
+#pbiHelpModal, #deckHelpModal { z-index: 2600; }
 
 .pbi-help-head { padding: 26px 26px 0; text-align: center; }
 .pbi-help-head h3 { color: var(--text-1); font-size: 17px; margin: 0 0 6px; }
@@ -1364,7 +1366,9 @@ select.modal-input {
 .sel-btn-danger:hover { background: rgba(239,68,68,.35); }
 .sel-select {
   background: rgba(255,255,255,.08); color: var(--text-1); border: 1px solid var(--border);
-  border-radius: 7px; padding: 6px 9px; font-size: 13px; max-width: 240px; font-family: inherit;
+  border-radius: 7px; padding: 6px 9px; font-size: 13px; font-family: inherit;
+  /* Se rétrécit plutôt que de rejeter le bouton de fermeture à la ligne. */
+  min-width: 0; flex: 0 1 240px; max-width: 240px;
 }
 .sel-select option { color: var(--card-text); }
 
@@ -1399,6 +1403,37 @@ body.mode-selection .card { padding-top: 42px; }
 .deck-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .deck-main b { font-size: 13.5px; color: var(--card-text); }
 .deck-sub { font-size: 11.5px; color: var(--card-sub); }
+
+/* Les zones d'une ligne : cocher en AJOUTE une, elle n'en remplace pas.
+   Assez visibles pour qu'on comprenne sans lire, assez discrètes pour ne
+   pas voler la vedette au nom de l'indicateur. */
+.deck-zones { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 5px 0 2px; }
+.deck-zones-label { font-size: 11px; color: var(--card-sub); margin-right: 2px; }
+.deck-zone {
+  font-size: 11px; line-height: 1; padding: 4px 8px; cursor: pointer;
+  border: 1px solid var(--card-border); border-radius: 999px;
+  background: transparent; color: var(--card-sub);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.deck-zone:hover { border-color: var(--accent, #0B7355); color: var(--fg, inherit); }
+.deck-zone.on {
+  background: rgba(16,185,129,.16); border-color: rgba(16,185,129,.45);
+  color: #0B7355; font-weight: 600;
+}
+
+/* L'aide : repliée par défaut, ouverte d'un clic, jamais dans le passage. */
+.deck-aide { margin: 10px 0 2px; font-size: 12.5px; }
+.deck-aide > summary {
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center;
+  gap: 6px; padding: 5px 10px; border-radius: 999px;
+  border: 1px solid var(--card-border); color: var(--card-sub);
+}
+.deck-aide > summary::-webkit-details-marker { display: none; }
+.deck-aide > summary:hover { color: var(--fg, inherit); }
+.deck-aide[open] > summary { margin-bottom: 8px; }
+.deck-aide ol { margin: 0; padding-left: 20px; }
+.deck-zone-actions { display: flex; gap: 8px; margin: 8px 0 10px; flex-wrap: wrap; }
+.deck-aide li { margin: 4px 0; line-height: 1.45; }
 .deck-comment {
   border: 1px solid rgba(28,43,54,.15); border-radius: 6px; padding: 5px 8px;
   font-size: 12.5px; font-family: inherit; width: 100%; margin-top: 2px;
@@ -1420,18 +1455,4 @@ body.mode-selection .card { padding-top: 42px; }
 }
 
 /* Guidage du relevé des empreintes, dans la fenêtre de génération */
-.deck-guide {
-  border: 1px dashed var(--border);
-  border-radius: 9px;
-  padding: 13px 16px;
-  margin: 14px 0 4px;
-  background: rgba(255,255,255,.03);
-  transition: border-color .15s, background .15s;
-}
-.deck-guide.survol { border-color: var(--gold); background: var(--gold-dim); }
-.deck-guide-titre { font-weight: 600; color: var(--text-1); margin-bottom: 8px; font-size: 13.5px; }
-.deck-guide ol { margin: 0; padding-left: 20px; color: var(--text-2); font-size: 13px; line-height: 1.65; }
-.deck-guide li + li { margin-top: 4px; }
-.deck-guide b { color: var(--text-1); }
-.deck-guide-note { margin: 9px 0 0; font-size: 12.5px; color: var(--text-2); }
-.deck-guide.termine { display: none; }
+/* (le panneau de relevé a été retiré : les empreintes sont livrées avec le code) */

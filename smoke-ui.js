@@ -17,7 +17,10 @@ const fs = require("node:fs");
 const FICHES = [
   { id: "kpi_volumetrie_hebdomadaire", manual: true, title: "Volumétrie Logistiport", freq: "Hebdomadaire",
     ritual: "COPIL", type: "Contractuel", process: "Distribution", _mtime: 100, _by: "clement",
-    logistiport: "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1" },
+    logistiport: "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1",
+    /* Une seconde zone : c'est elle qui permet de vérifier qu'un même KPI
+       peut figurer deux fois dans un support, une fois par zone. */
+    armement: "https://app.powerbi.com/groups/me/reports/r1/p1?pbi_source=shareVisual&visual=v1&bookmarkGuid=zone-arm" },
   { id: "kpi_taux_service_hebdomadaire", manual: true, title: "Taux de service réception", freq: "Hebdomadaire",
     ritual: "COPIL", type: "Contractuel", process: "Réception", _mtime: 100, _by: "clement",
     logistiport: "https://app.powerbi.com/groups/me/reports/r1/p2?pbi_source=shareVisual&visual=v2" },
@@ -123,13 +126,70 @@ const serveur = http.createServer((req, res) => {
     if (lignes !== 2) throw new Error("lignes : " + lignes);
   });
 
+  await etape("les zones d'un KPI sont proposées à même la ligne", async () => {
+    // Seule la première fiche porte deux zones : elle seule doit en offrir.
+    const pastilles = await page.locator("#deckList .deck-zone").allTextContents();
+    if (pastilles.length !== 2) throw new Error("pastilles : " + JSON.stringify(pastilles));
+  });
+
+  await etape("cocher une zone AJOUTE une diapositive", async () => {
+    const avant = await page.locator("#deckList .deck-row").count();
+    await page.locator("#deckList .deck-zone").nth(1).click();
+    await page.waitForTimeout(300);
+    const apres = await page.locator("#deckList .deck-row").count();
+    if (apres !== avant + 1) throw new Error(avant + " → " + apres);
+  });
+
+  await etape("les deux lignes du KPI portent chacune le lien de SA zone", async () => {
+    const liens = await page.evaluate(() =>
+      diaposCourantes().diapos.filter(d => d.kpiId === "kpi_volumetrie_hebdomadaire")
+        .map(d => d.site + " → " + d.lien));
+    if (liens.length !== 2) throw new Error("lignes : " + JSON.stringify(liens));
+    if (liens[0] === liens[1]) throw new Error("les deux zones pointent au même endroit");
+  });
+
+  await etape("« une par KPI » revient en arrière", async () => {
+    await page.evaluate(() => uneSeuleZone());
+    await page.waitForTimeout(300);
+    const lignes = await page.locator("#deckList .deck-row").count();
+    if (lignes !== 2) throw new Error("lignes : " + lignes);
+  });
+
+  await etape("le guide de génération s'ouvre et se referme", async () => {
+    /* Le guide vit sur la page principale, à côté de « Générer le
+       PowerPoint » : il faut donc refermer la fenêtre pour l'atteindre. */
+    await page.click("#closeDeckBtn2");
+    await page.waitForTimeout(300);
+    await page.click("#deckHelpBtn");
+    await page.waitForSelector("#deckHelpModal:not(.hidden)", { timeout: 3000 });
+    const etapes = await page.locator("#deckHelpTrack .tuto-slide").count();
+    if (etapes !== 4) throw new Error("étapes : " + etapes);
+    const titre = await page.locator("#deckHelpTrack .tuto-slide h3").first().textContent();
+    if (!/Choisir les indicateurs/.test(titre || "")) throw new Error("1re étape : " + titre);
+    await page.click("#closeDeckHelpBtn");
+    await page.waitForTimeout(400);
+    if (!(await page.locator("#deckHelpModal.hidden").count())) throw new Error("le guide ne se ferme pas");
+    await page.click("#deckBtn");
+    await page.waitForSelector("#deckModal:not(.hidden)", { timeout: 3000 });
+    await page.waitForTimeout(400);
+  });
+
+  await etape("la fenêtre ne déballe plus les explications sur les empreintes", async () => {
+    const bilan = await page.locator("#deckWarning").textContent();
+    if ((bilan || "").length > 200) throw new Error("bilan de " + bilan.length + " caractères");
+    if (await page.locator("#deckGuide").count()) throw new Error("le pavé de relevé est encore là");
+    for (const id of ["#deckPreparerBtn", "#deckEmpreintesBtn"]) {
+      if (await page.locator(id).count()) throw new Error("bouton de relevé encore présent : " + id);
+    }
+  });
+
   await etape("sans empreinte, chaque ligne réclame un relevé", async () => {
     // Le lien peut être parfait : sans la mémoire du complément, PowerPoint
     // afficherait « l'objet visuel n'existe plus ». La liste doit le dire.
     const lignes = await page.locator(".deck-shot").allTextContents();
-    if (!lignes.every(t => /à relever/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
+    if (!lignes.every(t => /indisponible/.test(t))) throw new Error("lignes : " + JSON.stringify(lignes));
     const bilan = await page.locator("#deckWarning").textContent();
-    if (!/sans empreinte/.test(bilan || "")) throw new Error("bilan : " + bilan);
+    if (!/sans visuel disponible/.test(bilan || "")) throw new Error("bilan : " + bilan);
   });
 
   await etape("relever un PowerPoint fait à la main débloque les visuels", async () => {

@@ -196,6 +196,7 @@
       <button type="button" class="sel-btn sel-btn-danger" id="presetDeleteBtn" title="Supprimer la sélection choisie">🗑</button>
       <span class="sel-spacer"></span>
       <button type="button" class="sel-btn sel-btn-main" id="deckBtn" disabled>📊 Générer le PowerPoint</button>
+      <button type="button" class="sel-btn" id="deckHelpBtn" title="Guide pas à pas : de la sélection au fichier téléchargé">❓ Guide</button>
       <button type="button" class="sel-btn" id="selectionExitBtn" title="Quitter le mode sélection">✕</button>
     </div>
 
@@ -327,6 +328,90 @@
       <div class="tuto-nav">
         <button id="tutoPrev" class="btn-secondary tuto-btn">← Précédent</button>
         <button id="tutoNext" class="btn-primary tuto-btn">Suivant →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODALE GUIDE : générer le PowerPoint -->
+<div id="deckHelpModal" class="modal-overlay hidden">
+  <div class="tuto-card">
+    <button id="closeDeckHelpBtn" class="modal-close tuto-close">✕</button>
+
+    <div class="pbi-help-head">
+      <h3>📊 Générer le PowerPoint</h3>
+      <p>Quatre étapes, de la sélection des indicateurs au fichier téléchargé.</p>
+    </div>
+
+    <div class="tuto-viewport">
+      <div class="tuto-track" id="deckHelpTrack">
+
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-edit">
+              <div class="a-card-demo"><div class="a-card-top"><span class="a-card-title"></span><span class="a-pencil">☑</span></div>
+                <div class="a-card-tags"><span></span><span></span></div></div>
+              <div class="a-cursor a-cursor-pencil"></div>
+            </div>
+          </div>
+          <h3>1. Choisir les indicateurs</h3>
+          <p><b>Sélection &amp; PowerPoint</b> dans le menu fait apparaître une case sur chaque carte.
+             Cochez ce que vous voulez présenter. L'<b>ordre des clics</b> devient l'ordre des diapositives.</p>
+        </section>
+
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-tabs">
+              <div class="a-tabs">
+                <span class="a-tab a-tab-m">Logistiport</span>
+                <span class="a-tab a-tab-h">Global</span>
+                <span class="a-tab a-tab-q">MG</span>
+              </div>
+              <div class="a-links"><span class="a-link"></span><span class="a-link"></span></div>
+              <div class="a-cursor a-cursor-tab"></div>
+            </div>
+          </div>
+          <h3>2. Choisir les zones</h3>
+          <p>Sous chaque indicateur, ses zones. <b>Cliquer en AJOUTE une diapositive</b> — le même KPI
+             peut ainsi figurer sur Logistiport <i>et</i> sur Global. Recliquer la retire.
+             <b>🗺 Toutes les zones</b> le fait d'un coup.</p>
+        </section>
+
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-form">
+              <div class="a-field a-field-1"><span class="a-label"></span><span class="a-input a-typing"></span></div>
+              <div class="a-field a-field-2"><span class="a-label"></span><span class="a-input"></span></div>
+              <div class="a-field a-field-3"><span class="a-label"></span><span class="a-input"></span></div>
+            </div>
+          </div>
+          <h3>3. Ordonner et commenter</h3>
+          <p>▲▼ déplace une diapositive — les zones d'un même KPI restent groupées.
+             Le champ <b>Commentaires</b> s'imprime sous le graphique, et chaque zone a le sien.</p>
+        </section>
+
+        <section class="tuto-slide">
+          <div class="tuto-anim">
+            <div class="anim-save">
+              <div class="a-save-btn"><span class="a-save-text">📊 Générer</span><span class="a-save-check">✓</span></div>
+              <div class="a-cursor a-cursor-save"></div>
+              <div class="a-cards"><span class="a-mini-card"></span><span class="a-mini-card"></span><span class="a-mini-card"></span></div>
+            </div>
+          </div>
+          <h3>4. Générer</h3>
+          <p>Un titre, un sous-titre, une période — puis <b>Générer et télécharger</b>.
+             Le fichier s'ouvre dans PowerPoint : chaque graphique y est <b>connecté</b> à Power BI
+             et se met à jour tout seul chez qui a les droits.</p>
+        </section>
+
+      </div>
+    </div>
+
+    <div class="tuto-footer">
+      <div class="tuto-dots" id="deckHelpDots"></div>
+      <div class="tuto-nav">
+        <button id="deckHelpPrev" class="btn-secondary tuto-btn">← Précédent</button>
+        <button id="deckHelpNext" class="btn-primary tuto-btn">Suivant →</button>
       </div>
     </div>
   </div>
@@ -473,11 +558,9 @@
       <button id="closeDeckBtn" class="modal-close">✕</button>
     </div>
     <p class="modal-sub">
-      Une diapositive de couverture, puis une diapositive par KPI, à la charte IDEA.
-      Le complément Power BI y affiche le <b>visuel connecté</b> : le support se met à jour
-      tout seul chez chaque lecteur qui a les droits.
-      Pour qu'un visuel s'affiche, l'annuaire a besoin de son <b>empreinte</b> — ce que le
-      complément mémorise lors d'une insertion. Un relevé par KPI, une seule fois.
+      Une diapositive de couverture, puis une diapositive par KPI — et par <b>zone</b>,
+      si vous en cochez plusieurs. Le complément Power BI y affiche le <b>visuel connecté</b> :
+      le support se met à jour tout seul chez chaque lecteur qui a les droits.
     </p>
 
     <div class="form-grid">
@@ -495,45 +578,20 @@
       </div>
     </div>
 
-    <div id="deckGuide" class="deck-guide">
-      <div class="deck-guide-titre">Relever les empreintes manquantes — une seule fois par KPI</div>
-      <ol>
-        <li><b>📋 Préparer le relevé</b> télécharge un PowerPoint : une diapositive par KPI,
-            avec son lien écrit en clair.</li>
-        <li>Dans PowerPoint, pour chaque diapositive : sélectionnez le lien affiché,
-            <i>Insertion › Compléments › Power BI</i>, collez-le, vérifiez que le graphique
-            apparaît. Enregistrez.</li>
-        <li>Revenez ici et <b>déposez ce fichier</b> sur cette fenêtre — ou
-            <b>🔎 Relever les empreintes</b>.</li>
-      </ol>
-      <p class="deck-guide-note" id="deckGuideCompte" style="display:none"></p>
-      <p class="deck-guide-note">💡 <b>Inutile de tout relever.</b> L'annuaire apprend une
-        différence sur deux relevés qui ne varient que par UNE chose, puis la rejoue partout.
-        Faites donc, en ne changeant qu'un seul élément à la fois par rapport à un même
-        <b>relevé de référence</b> :</p>
-      <ul class="deck-guide-note">
-        <li>la référence : un intitulé, une zone, une temporalité ;</li>
-        <li>+ 1 relevé par <b>autre temporalité</b> (même intitulé, même zone) ;</li>
-        <li>+ 1 relevé par <b>autre zone</b> (même intitulé, même temporalité) ;</li>
-        <li>+ 1 relevé par <b>autre intitulé</b> (même zone, même temporalité).</li>
-      </ul>
-      <p class="deck-guide-note">Tout le reste s'en déduit. Une leçon ne vaut cependant que
-        sur <b>sa page de rapport</b> : si vos KPI en couvrent plusieurs, refaites ce bloc sur
-        chacune. Après chaque relevé, <b>📋 Préparer le relevé</b> ne réclame plus que ce qui
-        manque encore : ce compte est la vérité.</p>
-      <p class="deck-guide-note">⚠ Collez toujours le lien affiché sur la diapositive.
-        Repartager le visuel depuis Power BI crée un nouveau signet, et l'empreinte
-        obtenue ne correspondrait à aucun KPI.</p>
+    <div class="modal-links-title">Diapositives</div>
+
+    <div class="deck-zone-actions">
+      <button type="button" class="btn-tool" onclick="toutesLesZones()"
+              title="Une diapositive par zone renseignée, pour chaque KPI sélectionné">🗺 Toutes les zones</button>
+      <button type="button" class="btn-tool" onclick="uneSeuleZone()"
+              title="Revenir à une seule diapositive par KPI">↺ Une par KPI</button>
     </div>
 
-    <div class="modal-links-title">Diapositives</div>
     <p class="sync-warning" id="deckWarning" style="display:none"></p>
     <div id="deckList" class="deck-list"></div>
 
     <div class="modal-actions">
       <button id="deckGenerateBtn" class="btn-primary">📊 Générer et télécharger</button>
-      <button id="deckPreparerBtn" class="btn-secondary" title="Télécharge un PowerPoint avec une diapositive par KPI encore sans empreinte, son lien affiché en clair.">📋 Préparer le relevé</button>
-      <button id="deckEmpreintesBtn" class="btn-secondary" title="Relever, dans un PowerPoint où les visuels ont été insérés à la main, ce que le complément Power BI avait mémorisé. Accepte aussi un relevé .json.">🔎 Relever les empreintes</button>
       <button id="closeDeckBtn2" class="btn-secondary" onclick="fermerDeckModal()">Fermer</button>
     </div>
     <input type="file" id="deckEmpreintesInput" accept=".pptx,.json" style="display:none">
