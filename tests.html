@@ -7475,6 +7475,38 @@ test("dérivation : une transformation creuse est reconnue comme telle", async (
   assert.equal(A.run("Derivation.estVide")({ conteneurs: {}, retires: [], substitutions: [{ de: "x", a: "y" }] }), false);
 });
 
+/* Le support doit EMPORTER les empreintes déduites.
+   La fenêtre annonçait « ✨ déduit », mais la fabrique ne recevait que les
+   empreintes relevées : chaque ligne déduite sortait muette, et affichait
+   « L'objet visuel ajouté ici n'existe plus ». */
+
+test("génération : une ligne déduite emporte bien son état dans le support", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  const bilan = await A.run("engendrerEmpreintes")();
+  if (!bilan.engendrees) return;   // sans axe utilisable, rien à vérifier
+
+  const utilisables = A.run("empreintesUtilisables()");
+  assert.ok(utilisables.length > A.run("empreintes.length"),
+    "les déduites s'ajoutent aux relevées");
+  const resolu = A.run(`Empreintes.resoudre(empreintesUtilisables(), ${JSON.stringify(R2)})`);
+  assert.ok(resolu && resolu.proprietes && resolu.proprietes.bookmark,
+    "la fabrique trouve un état pour la ligne déduite");
+});
+
+test("génération : une empreinte relevée prime sur la déduite dans le support", async () => {
+  preparerAxes();
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R2, "ARM"));
+  await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R3, "QUOTI"));
+  await A.run("engendrerEmpreintes")();
+  const liste = A.run("empreintesUtilisables()");
+  const premier = liste.findIndex(e => e.id === A.run(`Empreintes.cleVisuel(${JSON.stringify(R2)})`));
+  assert.ok(premier < A.run("empreintes.length"),
+    "la relevée est trouvée avant toute déduite");
+});
+
 test("dérivation : rien n'est déduit tant qu'aucun axe n'est connu", async () => {
   preparerAxes();
   await A.run("releverEmpreintesDepuis")(await pptxAvecEtat(R1, "LOG"));

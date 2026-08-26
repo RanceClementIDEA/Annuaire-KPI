@@ -4222,6 +4222,21 @@ async function engendrerEmpreintes() {
  * manuelle par page suffit à couvrir tous ses KPI.
  * @returns {{proprietes:Object, empreinte:Object, emprunt:boolean}|null}
  */
+/**
+ * Toutes les empreintes qu'un support peut employer : celles relevées à la
+ * main, puis celles recomposées.
+ *
+ * La fabrique retient la PREMIÈRE qui corresponde : les relevées passent
+ * donc devant, et une déduite ne prend la place d'aucune.
+ *
+ * Sans cette liste, `genererDeck` ne transmettait que les relevées et
+ * chaque ligne déduite sortait muette — « L'objet visuel ajouté ici
+ * n'existe plus » — alors que la fenêtre l'annonçait « ✨ déduit ».
+ */
+function empreintesUtilisables() {
+  return empreintes.concat(Object.keys(empreintesDerivees).map(c => empreintesDerivees[c]));
+}
+
 function empreintePour(lien) {
   const exacte = Empreintes.resoudre(empreintes, lien);
   if (exacte) return exacte;
@@ -4841,6 +4856,10 @@ async function genererDeck() {
   const { diapos } = Selection.resoudrePreset(preset, [...data, ...personalEntries], activeSites());
   if (!diapos.length) { showToast("Sélection vide : rien à produire", 2800); return null; }
 
+  /* Recomposer maintenant : les empreintes déduites ne vivent que le temps
+     de la session, et le support doit les emporter. */
+  await engendrerEmpreintes();
+
   let modele;
   try {
     modele = await chargerModeleDeck();
@@ -4879,9 +4898,9 @@ async function genererDeck() {
       // Le complément Power BI affiche le visuel connecté : aucune image à fournir.
       vivant: !!d.lien
     })),
-    /* La mémoire relevée sur une insertion manuelle. Sans elle, le
-       complément affiche « l'objet visuel n'existe plus ». */
-    empreintes
+    /* La mémoire relevée sur une insertion manuelle, ET celles qu'on en a
+       recomposées. Sans les secondes, tout ce qui se déduit sortait muet. */
+    empreintes: empreintesUtilisables()
   };
 
   let octets;
