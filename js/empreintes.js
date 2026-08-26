@@ -110,6 +110,29 @@
   }
 
   /**
+   * Pourquoi un complément n'a rien donné — pour le dire, plutôt que de
+   * laisser une insertion disparaître sans un mot.
+   *
+   * @returns {string} "" si l'empreinte est bonne, sinon un motif :
+   *   "lien"      le complément ne désigne pas un visuel
+   *   "fabrique"  diapositive fabriquée, pas d'insertion manuelle
+   *   "autrepage" l'insertion a renvoyé une AUTRE page que celle du lien —
+   *               en pratique, le signet du lien n'existe plus dans Power
+   *               BI et le complément est retombé sur la page d'accueil
+   *   "vide"      aucune propriété exploitable
+   */
+  function raisonRefus(proprietes) {
+    const props = proprietes && typeof proprietes === "object" ? proprietes : {};
+    const id = cleVisuel(dechapper(props.reportUrl || ""));
+    if (!id) return "lien";
+    if (!props.artifactName) return "fabrique";
+    const pageLien = pageDeCle(id).split("/")[1] || "";
+    const pageMemorisee = dechapper(props.pageName || "").replace(/^"|"$/g, "");
+    if (pageLien && pageMemorisee && pageLien !== pageMemorisee) return "autrepage";
+    return Object.keys(normaliserEmpreinte({ id, proprietes: props }).proprietes).length ? "" : "vide";
+  }
+
+  /**
    * Empreinte tirée d'un jeu de propriétés relevé sur un complément.
    * @returns {Object|null} null si rien d'exploitable n'a été trouvé
    */
@@ -323,7 +346,7 @@
 
   const API = {
     CHAMPS, CHAMPS_DE_SESSION, CHAMPS_ETAT,
-    cleVisuel, clePage, pageDeCle, signetDe, signetDeCle, normaliserEmpreinte, creerEmpreinte, proprietesPour,
+    cleVisuel, clePage, pageDeCle, signetDe, signetDeCle, normaliserEmpreinte, creerEmpreinte, raisonRefus, proprietesPour,
     trouver, trouverParPage, resoudre, empreinteDepassee, fusionnerEmpreintes, poids,
     empreinteComplete, dechapper
   };
