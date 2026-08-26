@@ -119,6 +119,50 @@ const serveur = http.createServer((req, res) => {
     if (!/2 KPI/.test(t)) throw new Error("compteur après rechargement : " + t);
   });
 
+  await etape("choisir un rituel dans la liste coche ses KPI", async () => {
+    await page.click("#selectClearBtn");
+    await page.waitForTimeout(300);
+    if (await page.locator(".card input[type=checkbox]:checked").count() !== 0) {
+      throw new Error("la sélection devait être vide");
+    }
+    await page.selectOption("#presetSelect", "preset_copil_hebdomadaire");
+    await page.waitForTimeout(500);
+    const t = await page.textContent("#selectionCount");
+    if (!/2 KPI/.test(t)) throw new Error("compteur : " + t);
+  });
+
+  await etape("revenir à « aucune » les décoche, sans passer par Vider", async () => {
+    await page.selectOption("#presetSelect", "");
+    await page.waitForTimeout(500);
+    const t = await page.textContent("#selectionCount");
+    if (!/Aucun/.test(t)) throw new Error("compteur : " + t);
+    const coches = await page.locator(".card input[type=checkbox]:checked").count();
+    if (coches !== 0) throw new Error(coches + " case(s) encore cochée(s)");
+  });
+
+  await etape("un KPI coché à la main survit au retrait du rituel", async () => {
+    await page.evaluate(() => basculerSelection("kpi_anticipation_mensuelle"));
+    await page.waitForTimeout(300);
+    await page.selectOption("#presetSelect", "preset_copil_hebdomadaire");
+    await page.waitForTimeout(500);
+    if (!/3 KPI/.test(await page.textContent("#selectionCount"))) {
+      throw new Error("compteur : " + await page.textContent("#selectionCount"));
+    }
+    await page.selectOption("#presetSelect", "");
+    await page.waitForTimeout(500);
+    const t = await page.textContent("#selectionCount");
+    if (!/1 KPI/.test(t)) throw new Error("le KPI manuel devait rester — " + t);
+  });
+
+  await etape("recharger le rituel pour la suite des contrôles", async () => {
+    await page.selectOption("#presetSelect", "preset_copil_hebdomadaire");
+    await page.waitForTimeout(500);
+    await page.evaluate(() => basculerSelection("kpi_anticipation_mensuelle"));
+    await page.waitForTimeout(300);
+    const t = await page.textContent("#selectionCount");
+    if (!/2 KPI/.test(t)) throw new Error("compteur : " + t);
+  });
+
   await etape("la fenêtre de génération liste les diapositives dans l'ordre", async () => {
     await page.click("#deckBtn");
     await page.waitForSelector("#deckModal:not(.hidden)", { timeout: 3000 });

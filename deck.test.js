@@ -932,6 +932,103 @@ test("relevé : une insertion valable n'a aucun motif de refus", () => {
   assert.equal(A.run("Empreintes.raisonRefus")(props), "");
 });
 
+/* ─── Mettre une sélection, la retirer ─────────────────────
+   Choisir un rituel dans la liste coche ses KPI ; revenir à « aucune » les
+   décoche. Il fallait auparavant vider la sélection à la main entre deux
+   rituels, et rien ne le disait. */
+
+test("sélection : choisir un rituel coche ses KPI", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  A.run("viderSelection()");
+  assert.equal(A.run("selectionIds.length"), 0);
+
+  A.run(`chargerSelection("preset_copil")`);
+  assert.deepEqual(A.run("selectionIds"), ["kpi_volumetrie_hebdomadaire"]);
+});
+
+test("sélection : revenir à « aucune » décoche ce qu'elle avait apporté", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  A.run("viderSelection()");
+  A.run(`chargerSelection("preset_copil")`);
+  assert.equal(A.run("selectionIds.length"), 1);
+
+  const retires = A.run("retirerSelectionPreset()");
+  assert.equal(retires, 1);
+  assert.equal(A.run("selectionIds.length"), 0, "plus besoin de vider");
+  assert.equal(A.run("presetCourant"), "");
+});
+
+test("sélection : ce qui a été coché à la main SURVIT au retrait", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  A.run("viderSelection()");
+
+  // Un KPI coché à la main, PUIS le rituel par-dessus.
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run(`chargerSelection("preset_copil")`);
+  assert.equal(A.run("selectionIds.length"), 2);
+
+  A.run("retirerSelectionPreset()");
+  assert.deepEqual(A.run("selectionIds"), ["kpi_taux_service_hebdomadaire"],
+    "seul l'apport du rituel s'en va");
+});
+
+test("sélection : passer d'un rituel à l'autre n'empile pas les deux", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("Rituel A")`);
+  A.run("viderSelection()");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run(`enregistrerSelection("Rituel B")`);
+  A.run("viderSelection()");
+
+  A.run(`chargerSelection("preset_rituel_a")`);
+  A.run(`chargerSelection("preset_rituel_b")`);
+  assert.deepEqual(A.run("selectionIds"), ["kpi_taux_service_hebdomadaire"],
+    "le premier rituel est repris avant que le second s'applique");
+});
+
+test("sélection : un KPI déjà coché n'est pas ajouté deux fois", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  // il est encore coché : recharger ne doit pas le dupliquer
+  A.run(`chargerSelection("preset_copil")`);
+  assert.deepEqual(A.run("selectionIds"), ["kpi_volumetrie_hebdomadaire"]);
+  // et comme il était déjà là, le retrait ne le décoche pas
+  A.run("retirerSelectionPreset()");
+  assert.deepEqual(A.run("selectionIds"), ["kpi_volumetrie_hebdomadaire"],
+    "il n'était pas l'apport du rituel");
+});
+
+test("sélection : décocher à la main puis retirer le rituel ne casse rien", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.basculerSelection("kpi_taux_service_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  A.run("viderSelection()");
+  A.run(`chargerSelection("preset_copil")`);
+  assert.equal(A.run("selectionIds.length"), 2);
+
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");   // décoché à la main
+  assert.equal(A.run("retirerSelectionPreset()"), 1);
+  assert.equal(A.run("selectionIds.length"), 0);
+});
+
+test("sélection : vider remet aussi la liste déroulante à zéro", () => {
+  preparerDeck();
+  A.basculerSelection("kpi_volumetrie_hebdomadaire");
+  A.run(`enregistrerSelection("COPIL")`);
+  A.run("viderSelection()");
+  assert.equal(A.el("presetSelect").value, "", "la liste doit refléter ce qu'on voit");
+  assert.equal(A.run("presetCourant"), "");
+});
+
 /* ─── Le même KPI sur plusieurs zones ──────────────────────
    Un COPIL compare souvent le même indicateur d'un site à l'autre.
    Une ligne de support est donc identifiée par le KPI ET SA ZONE :

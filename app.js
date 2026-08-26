@@ -4504,8 +4504,14 @@ function basculerModeSelection(actif) {
 function basculerSelection(id) {
   if (!id) return selectionIds.slice();
   const i = selectionIds.indexOf(id);
-  if (i >= 0) selectionIds.splice(i, 1);
-  else selectionIds.push(id);
+  if (i >= 0) {
+    selectionIds.splice(i, 1);
+    /* Décoché à la main : il ne fait plus partie de l'apport de la sélection
+       enregistrée, sans quoi on tenterait de le reprendre deux fois. */
+    idsDuPreset = idsDuPreset.filter(x => x !== id);
+  } else {
+    selectionIds.push(id);
+  }
   majBarreSelection();
   filterData();
   return selectionIds.slice();
@@ -4527,6 +4533,10 @@ function cocherResultatsFiltres() {
 function viderSelection() {
   selectionIds = [];
   presetCourant = "";
+  idsDuPreset = [];          // plus rien à reprendre
+  zonesParKpi = {};          // ni zones à retenir
+  const sel = document.getElementById("presetSelect");
+  if (sel) sel.value = "";   // la liste doit refléter ce qu'on voit
   majBarreSelection();
   filterData();
   return 0;
@@ -4685,6 +4695,32 @@ function enregistrerSelection(nom) {
   return preset;
 }
 
+/* Ce que la sélection enregistrée a APPORTÉ à la liste cochée.
+   On le retient pour pouvoir le reprendre : choisir une sélection coche ses
+   KPI, en choisir une autre — ou revenir à « aucune » — les décoche. Il n'y
+   a plus à vider la sélection à la main entre deux rituels. */
+let idsDuPreset = [];
+
+/**
+ * Retire de la sélection ce que la sélection enregistrée avait apporté.
+ * Ce qui a été coché à la main reste coché : on ne défait que son propre
+ * apport.
+ * @returns {number} combien de KPI ont été décochés
+ */
+function retirerSelectionPreset(silencieux) {
+  if (!idsDuPreset.length) { presetCourant = ""; return 0; }
+  const aRetirer = new Set(idsDuPreset);
+  const avant = selectionIds.length;
+  selectionIds = selectionIds.filter(id => !aRetirer.has(id));
+  const retires = avant - selectionIds.length;
+  idsDuPreset = [];
+  presetCourant = "";
+  majBarreSelection();
+  filterData();
+  if (retires && !silencieux) showToast("↩ " + retires + " KPI décoché(s)", 2400);
+  return retires;
+}
+
 function chargerSelection(id) {
   const preset = presets.find(p => p.id === id);
   if (!preset) { showToast("Sélection introuvable", 2600); return null; }
@@ -4692,7 +4728,20 @@ function chargerSelection(id) {
   const vivants = preset.items.filter(it => connus.has(it.kpiId));
   const perdus = preset.items.length - vivants.length;
 
-  selectionIds = vivants.map(it => it.kpiId);
+  /* D'abord défaire l'apport de la sélection précédente : passer d'un rituel
+     à l'autre ne doit pas empiler les deux. */
+  retirerSelectionPreset(true);
+
+  /* On AJOUTE, sans effacer ce qui était coché à la main — et sans doublon,
+     l'ordre des clics faisant l'ordre des diapositives. */
+  const dejaLa = new Set(selectionIds);
+  const ajoutes = [];
+  vivants.forEach(it => {
+    if (dejaLa.has(it.kpiId)) return;
+    selectionIds.push(it.kpiId);
+    ajoutes.push(it.kpiId);
+  });
+  idsDuPreset = ajoutes;
   presetCourant = preset.id;
   if (!selectionMode) basculerModeSelection(true);
   majBarreSelection();
@@ -5259,7 +5308,9 @@ document.getElementById("presetSaveBtn")?.addEventListener("click", () => {
   if (nom !== null) enregistrerSelection(nom);
 });
 document.getElementById("presetSelect")?.addEventListener("change", function () {
+  // Revenir à « aucune » décoche ce que la sélection avait apporté.
   if (this.value) chargerSelection(this.value);
+  else retirerSelectionPreset();
 });
 document.getElementById("presetDeleteBtn")?.addEventListener("click", () => {
   const sel = document.getElementById("presetSelect");
@@ -5304,7 +5355,7 @@ document.getElementById("deckHelpBtn")?.addEventListener("click", () => deckHelp
 /* La version du code, affichée sous le nom d'utilisateur. Elle suit celle du
    cache : c'est ce qui distingue « l'annuaire a un défaut » de « ce poste
    n'a pas encore la correction ». La question a coûté un aller-retour. */
-const VERSION_ANNUAIRE = "v21";
+const VERSION_ANNUAIRE = "v22";
 
 function afficherVersionAnnuaire() {
   const el = document.getElementById("appVersion");
