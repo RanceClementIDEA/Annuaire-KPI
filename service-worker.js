@@ -1,4 +1,4 @@
-const CACHE_NAME = "kpi-idea-cache-v14";
+const CACHE_NAME = "kpi-idea-cache-v16";
 const ASSETS = [
   "./",
   "./index.html",

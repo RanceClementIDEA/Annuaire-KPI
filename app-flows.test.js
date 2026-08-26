@@ -107,6 +107,75 @@ test("envoi : les fiches locales arrivent bien dans le cloud", async () => {
   assert.equal(doc.kpiManual[0].logistiport, "u1");
 });
 
+/* Le danger d'un annuaire partagé : le document est remplacé EN ENTIER à
+   chaque envoi. Relire juste avant d'écrire ne suffit pas — entre la lecture
+   et l'écriture, un collègue peut avoir écrit, et son travail disparaît.
+   Éprouvé à huit postes écrivant à la même milliseconde : deux fiches
+   perdues pour de bon. D'où la transaction. */
+
+test("envoi : l'écriture passe par une transaction quand le cloud sait en faire", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  const avant = A.rejeuxCloud();
+  await A.run("pushToCloud(false)");
+  assert.equal(A.rejeuxCloud(), avant, "sans collision, rien n'est rejoué");
+  assert.equal(A.cloudPrincipal().kpiManual.length, 1);
+});
+
+test("envoi : un collègue qui s'intercale entre la lecture et l'écriture n'est pas écrasé", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  await A.run("pushToCloud(false)");
+  await attendre();
+
+  // Quelqu'un d'autre publie SA fiche juste avant que notre envoi n'écrive.
+  A.collisionUneFois({
+    kpiManual: [fiche("A", "Mensuelle"), fiche("Collegue", "Mensuelle")],
+    kpiDeleted: [], kpiSites: [], kpiPurged: [], kpiActivity: [], kpiPresets: [],
+    personalByUser: {}, personalTrashByUser: {}, favoritesByUser: {}, favoritesMeta: {},
+    updatedAt: Date.now() + 1000
+  });
+  A.run(`manualEntries.push(${JSON.stringify(fiche("Moi", "Mensuelle"))}); rebuildData(false);`);
+  await A.run("pushToCloud(false)");
+  await attendre();
+
+  const titres = A.cloudPrincipal().kpiManual.map(k => k.title).sort();
+  assert.ok(A.rejeuxCloud() > 0, "la transaction doit avoir été rejouée");
+  assert.deepEqual(titres, ["A", "Collegue", "Moi"],
+    "les deux travaux coexistent : " + titres.join(", "));
+});
+
+test("envoi : sans transaction disponible, l'envoi passe quand même", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  // Un cloud d'ancienne génération : pas de runTransaction.
+  A.run("delete fbDb.runTransaction;");
+  await A.run("pushToCloud(false)");
+  assert.equal(A.cloudPrincipal().kpiManual.length, 1,
+    "le chemin de repli reste opérationnel");
+});
+
+test("envoi : les empreintes aussi passent par une transaction", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "A", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 10, _by: "moi" }];`);
+  await A.run("pousserEmpreintes()");
+  await attendre();
+
+  /* Un collègue publie SON empreinte juste entre notre relecture et notre
+     écriture. Le document des empreintes est remplacé en entier comme
+     l'autre : sans transaction, la sienne disparaîtrait. */
+  A.collisionUneFois({ kpiEmpreintes: [{ id: "r/p/v/s2", libelle: "B", signet: "s2",
+    proprietes: { bookmark: "&quot;autre&quot;" }, _mtime: 20, _by: "collegue" }],
+    updatedAt: Date.now() + 1000 }, "__empreintes");
+  A.run(`empreintes = empreintes.concat([{ id: "r/p/v/s3", libelle: "C", signet: "s3",
+    proprietes: { bookmark: "&quot;mien&quot;" }, _mtime: 30, _by: "moi" }]);`);
+  await A.run("pousserEmpreintes()");
+  await attendre();
+
+  const doc = A.cloud("kpi_sync/" + A.run("getSyncConfig().code") + "__empreintes");
+  const ids = (doc.kpiEmpreintes || []).map(e => e.id).sort();
+  assert.ok(ids.includes("r/p/v/s2"), "celle du collègue survit : " + ids.join(", "));
+  assert.ok(ids.includes("r/p/v/s3"), "la nôtre aussi : " + ids.join(", "));
+});
+
 test("envoi : un message confirme l'opération manuelle", async () => {
   await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
   await A.run("pushToCloud(true)");

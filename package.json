@@ -20,7 +20,8 @@
     "verifier:deck": "node outils/verifier-deck.js",
     "build:essai": "node outils/construire-annuaire-test.js",
     "smoke:essai": "node smoke-essai.js",
-    "relever": "node outils/relever-empreintes.js"
+    "relever": "node outils/relever-empreintes.js",
+    "smoke:concurrence": "node smoke-concurrence.js"
   },
   "license": "UNLICENSED"
 }

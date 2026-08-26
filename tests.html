@@ -505,6 +505,9 @@ function __module(nom){
           globalThis.__ecoutes = [];        // abonnements temps réel actifs
           globalThis.__erreurCloud = null;  // panne à simuler
           globalThis.__ecritures = 0;
+          globalThis.__versions = {};       // pour les transactions
+          globalThis.__rejeux = 0;          // transactions rejouées
+          globalThis.__collisionUneFois = null;  // simule un collègue qui s'intercale
           firebase = {
             apps: [],
             initializeApp(cfg) { firebase.apps = [{ cfg }]; return firebase.apps[0]; },
@@ -519,9 +522,11 @@ function __module(nom){
                         const d = globalThis.__cloud[cle];
                         return { exists: d !== undefined, data: () => d };
                       },
+                      _cle: cle,
                       async set(payload) {
                         if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
                         globalThis.__cloud[cle] = JSON.parse(JSON.stringify(payload));
+                        globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
                         // La mesure d'horloge écrit dans un document annexe : on ne la compte pas
                         if (cle.indexOf("__clock") < 0) globalThis.__ecritures++;
                         globalThis.__ecoutes
@@ -537,7 +542,39 @@ function __module(nom){
                       }
                     };
                   }
-                })
+                }),
+                /* Une transaction : relire, laisser le bloc travailler, puis
+                   n'écrire que si le document n'a pas bougé entre-temps.
+                   Sinon on rejoue — c'est exactement ce que fait Firestore,
+                   et c'est ce qui empêche un envoi d'en écraser un autre. */
+                async runTransaction(bloc) {
+                  for (let essai = 0; essai < 8; essai++) {
+                    let cle = null, luA = 0, ecriture = null;
+                    const t = {
+                      async get(ref) {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        cle = ref._cle;
+                        luA = globalThis.__versions[cle] || 0;
+                        const d = globalThis.__cloud[cle];
+                        return { exists: d !== undefined, data: () => d };
+                      },
+                      set(ref, payload) { ecriture = { ref, payload }; }
+                    };
+                    await bloc(t);
+                    if (!ecriture) return;
+                    /* Un collègue qui écrit juste entre la lecture et
+                       l'écriture : le cas qu'on ne peut pas provoquer autrement. */
+                    if (globalThis.__collisionUneFois) {
+                      const f = globalThis.__collisionUneFois;
+                      globalThis.__collisionUneFois = null;
+                      f();
+                    }
+                    if ((globalThis.__versions[cle] || 0) !== luA) { globalThis.__rejeux++; continue; }
+                    await ecriture.ref.set(ecriture.payload);
+                    return;
+                  }
+                  throw new Error("transaction abandonnée");
+                }
               };
             }, { FieldValue: { serverTimestamp: () => ({ toMillis: () => Date.now() }) } })
           };
@@ -549,6 +586,17 @@ function __module(nom){
       cloud: (cle) => run(`globalThis.__cloud[${JSON.stringify(cle)}] || null`),
       cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
       ecrituresCloud: () => run("globalThis.__ecritures"),
+      rejeuxCloud: () => run("globalThis.__rejeux"),
+      /* Fait écrire « quelqu'un d'autre » entre la lecture et l'écriture de
+         la prochaine transaction. */
+      collisionUneFois(payload, suffixe) {
+        run(`globalThis.__collisionUneFois = function () {
+          const cle = "kpi_sync/" + (getSyncConfig() || {}).code + ${JSON.stringify(suffixe || "")};
+          globalThis.__cloud[cle] = ${JSON.stringify(payload)};
+          globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
+        };`);
+        return this;
+      },
       ecoutesActives: () => run("globalThis.__ecoutes.length"),
       /* Les documents écoutés, pour distinguer l'annuaire lui-même du
          document séparé des empreintes. */
@@ -3980,6 +4028,75 @@ test("envoi : les fiches locales arrivent bien dans le cloud", async () => {
   const doc = A.cloudPrincipal();
   assert.equal(doc.kpiManual.length, 1);
   assert.equal(doc.kpiManual[0].logistiport, "u1");
+});
+
+/* Le danger d'un annuaire partagé : le document est remplacé EN ENTIER à
+   chaque envoi. Relire juste avant d'écrire ne suffit pas — entre la lecture
+   et l'écriture, un collègue peut avoir écrit, et son travail disparaît.
+   Éprouvé à huit postes écrivant à la même milliseconde : deux fiches
+   perdues pour de bon. D'où la transaction. */
+
+test("envoi : l'écriture passe par une transaction quand le cloud sait en faire", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  const avant = A.rejeuxCloud();
+  await A.run("pushToCloud(false)");
+  assert.equal(A.rejeuxCloud(), avant, "sans collision, rien n'est rejoué");
+  assert.equal(A.cloudPrincipal().kpiManual.length, 1);
+});
+
+test("envoi : un collègue qui s'intercale entre la lecture et l'écriture n'est pas écrasé", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  await A.run("pushToCloud(false)");
+  await attendre();
+
+  // Quelqu'un d'autre publie SA fiche juste avant que notre envoi n'écrive.
+  A.collisionUneFois({
+    kpiManual: [fiche("A", "Mensuelle"), fiche("Collegue", "Mensuelle")],
+    kpiDeleted: [], kpiSites: [], kpiPurged: [], kpiActivity: [], kpiPresets: [],
+    personalByUser: {}, personalTrashByUser: {}, favoritesByUser: {}, favoritesMeta: {},
+    updatedAt: Date.now() + 1000
+  });
+  A.run(`manualEntries.push(${JSON.stringify(fiche("Moi", "Mensuelle"))}); rebuildData(false);`);
+  await A.run("pushToCloud(false)");
+  await attendre();
+
+  const titres = A.cloudPrincipal().kpiManual.map(k => k.title).sort();
+  assert.ok(A.rejeuxCloud() > 0, "la transaction doit avoir été rejouée");
+  assert.deepEqual(titres, ["A", "Collegue", "Moi"],
+    "les deux travaux coexistent : " + titres.join(", "));
+});
+
+test("envoi : sans transaction disponible, l'envoi passe quand même", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  // Un cloud d'ancienne génération : pas de runTransaction.
+  A.run("delete fbDb.runTransaction;");
+  await A.run("pushToCloud(false)");
+  assert.equal(A.cloudPrincipal().kpiManual.length, 1,
+    "le chemin de repli reste opérationnel");
+});
+
+test("envoi : les empreintes aussi passent par une transaction", async () => {
+  await appareilConnecte({ manualEntries: [fiche("A", "Mensuelle")] });
+  A.run(`empreintes = [{ id: "r/p/v/s1", libelle: "A", signet: "s1",
+    proprietes: { bookmark: "&quot;etat&quot;" }, _mtime: 10, _by: "moi" }];`);
+  await A.run("pousserEmpreintes()");
+  await attendre();
+
+  /* Un collègue publie SON empreinte juste entre notre relecture et notre
+     écriture. Le document des empreintes est remplacé en entier comme
+     l'autre : sans transaction, la sienne disparaîtrait. */
+  A.collisionUneFois({ kpiEmpreintes: [{ id: "r/p/v/s2", libelle: "B", signet: "s2",
+    proprietes: { bookmark: "&quot;autre&quot;" }, _mtime: 20, _by: "collegue" }],
+    updatedAt: Date.now() + 1000 }, "__empreintes");
+  A.run(`empreintes = empreintes.concat([{ id: "r/p/v/s3", libelle: "C", signet: "s3",
+    proprietes: { bookmark: "&quot;mien&quot;" }, _mtime: 30, _by: "moi" }]);`);
+  await A.run("pousserEmpreintes()");
+  await attendre();
+
+  const doc = A.cloud("kpi_sync/" + A.run("getSyncConfig().code") + "__empreintes");
+  const ids = (doc.kpiEmpreintes || []).map(e => e.id).sort();
+  assert.ok(ids.includes("r/p/v/s2"), "celle du collègue survit : " + ids.join(", "));
+  assert.ok(ids.includes("r/p/v/s3"), "la nôtre aussi : " + ids.join(", "));
 });
 
 test("envoi : un message confirme l'opération manuelle", async () => {

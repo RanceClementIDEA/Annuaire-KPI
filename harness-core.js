@@ -230,6 +230,9 @@
           globalThis.__ecoutes = [];        // abonnements temps réel actifs
           globalThis.__erreurCloud = null;  // panne à simuler
           globalThis.__ecritures = 0;
+          globalThis.__versions = {};       // pour les transactions
+          globalThis.__rejeux = 0;          // transactions rejouées
+          globalThis.__collisionUneFois = null;  // simule un collègue qui s'intercale
           firebase = {
             apps: [],
             initializeApp(cfg) { firebase.apps = [{ cfg }]; return firebase.apps[0]; },
@@ -244,9 +247,11 @@
                         const d = globalThis.__cloud[cle];
                         return { exists: d !== undefined, data: () => d };
                       },
+                      _cle: cle,
                       async set(payload) {
                         if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
                         globalThis.__cloud[cle] = JSON.parse(JSON.stringify(payload));
+                        globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
                         // La mesure d'horloge écrit dans un document annexe : on ne la compte pas
                         if (cle.indexOf("__clock") < 0) globalThis.__ecritures++;
                         globalThis.__ecoutes
@@ -262,7 +267,39 @@
                       }
                     };
                   }
-                })
+                }),
+                /* Une transaction : relire, laisser le bloc travailler, puis
+                   n'écrire que si le document n'a pas bougé entre-temps.
+                   Sinon on rejoue — c'est exactement ce que fait Firestore,
+                   et c'est ce qui empêche un envoi d'en écraser un autre. */
+                async runTransaction(bloc) {
+                  for (let essai = 0; essai < 8; essai++) {
+                    let cle = null, luA = 0, ecriture = null;
+                    const t = {
+                      async get(ref) {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        cle = ref._cle;
+                        luA = globalThis.__versions[cle] || 0;
+                        const d = globalThis.__cloud[cle];
+                        return { exists: d !== undefined, data: () => d };
+                      },
+                      set(ref, payload) { ecriture = { ref, payload }; }
+                    };
+                    await bloc(t);
+                    if (!ecriture) return;
+                    /* Un collègue qui écrit juste entre la lecture et
+                       l'écriture : le cas qu'on ne peut pas provoquer autrement. */
+                    if (globalThis.__collisionUneFois) {
+                      const f = globalThis.__collisionUneFois;
+                      globalThis.__collisionUneFois = null;
+                      f();
+                    }
+                    if ((globalThis.__versions[cle] || 0) !== luA) { globalThis.__rejeux++; continue; }
+                    await ecriture.ref.set(ecriture.payload);
+                    return;
+                  }
+                  throw new Error("transaction abandonnée");
+                }
               };
             }, { FieldValue: { serverTimestamp: () => ({ toMillis: () => Date.now() }) } })
           };
@@ -274,6 +311,17 @@
       cloud: (cle) => run(`globalThis.__cloud[${JSON.stringify(cle)}] || null`),
       cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
       ecrituresCloud: () => run("globalThis.__ecritures"),
+      rejeuxCloud: () => run("globalThis.__rejeux"),
+      /* Fait écrire « quelqu'un d'autre » entre la lecture et l'écriture de
+         la prochaine transaction. */
+      collisionUneFois(payload, suffixe) {
+        run(`globalThis.__collisionUneFois = function () {
+          const cle = "kpi_sync/" + (getSyncConfig() || {}).code + ${JSON.stringify(suffixe || "")};
+          globalThis.__cloud[cle] = ${JSON.stringify(payload)};
+          globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
+        };`);
+        return this;
+      },
       ecoutesActives: () => run("globalThis.__ecoutes.length"),
       /* Les documents écoutés, pour distinguer l'annuaire lui-même du
          document séparé des empreintes. */

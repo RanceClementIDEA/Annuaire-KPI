@@ -2384,16 +2384,28 @@ function empreintesDocRef(code) {
 async function pousserEmpreintes() {
   const cfg = getSyncConfig();
   if (!cfg || !fbDb || !currentUser || !navigator.onLine) return false;
-  try {
-    const snap = await empreintesDocRef(cfg.code).get();
-    if (snap.exists) {
-      const distant = snap.data();
-      if (distant && Array.isArray(distant.kpiEmpreintes)) {
-        empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
-        ecrireDonnees(LS_EMPREINTES, empreintes);
-      }
+  /* Même précaution que pour l'annuaire : entre la relecture et l'écriture,
+     un autre poste peut avoir publié ses empreintes, et les siennes
+     seraient perdues. La transaction referme cette fenêtre. */
+  const fusionner = distant => {
+    if (distant && Array.isArray(distant.kpiEmpreintes)) {
+      empreintes = Empreintes.fusionnerEmpreintes(empreintes, distant.kpiEmpreintes);
+      ecrireDonnees(LS_EMPREINTES, empreintes);
     }
-    await empreintesDocRef(cfg.code).set({ kpiEmpreintes: empreintes, updatedAt: now() });
+  };
+  try {
+    const ref = empreintesDocRef(cfg.code);
+    if (typeof fbDb.runTransaction === "function") {
+      await fbDb.runTransaction(async t => {
+        const snap = await t.get(ref);
+        if (snap.exists) fusionner(snap.data());
+        t.set(ref, { kpiEmpreintes: empreintes, updatedAt: now() });
+      });
+    } else {
+      const snap = await ref.get();
+      if (snap.exists) fusionner(snap.data());
+      await ref.set({ kpiEmpreintes: empreintes, updatedAt: now() });
+    }
     return true;
   } catch (err) {
     // L'annuaire doit rester utilisable même si ce document-là échoue.
@@ -2529,14 +2541,14 @@ async function pushToCloud(manual, forcer) {
   if (!currentUser) { pendingPush = false; return; }
   setSyncStatusUI("syncing");
   try {
-    // ── RELIRE AVANT D'ÉCRIRE ──
-    // L'envoi remplace le document partagé en entier. Si cet appareil avait
-    // manqué une modification (onglet en arrière-plan, verrou de synchro,
-    // travail hors-ligne), son envoi effaçait le travail des autres. On
-    // refusionne donc systématiquement l'état distant juste avant d'écrire.
-    const avant = forcer ? null : await syncDocRef(cfg.code).get();
-    if (avant && avant.exists) {
-      const distant = avant.data();
+    /* ── RELIRE, FUSIONNER, ÉCRIRE — SANS QUE PERSONNE NE S'INTERCALE ──
+       L'envoi remplace le document partagé en entier. Relire juste avant
+       d'écrire ne suffit pas : entre la lecture et l'écriture, un collègue
+       peut avoir écrit, et son envoi est alors écrasé. Éprouvé à huit
+       postes écrivant à la même milliseconde — deux fiches perdues pour de
+       bon. La transaction referme cette fenêtre : Firestore rejoue le bloc
+       si le document a bougé entre-temps. */
+    const relireEtFusionner = distant => {
       const dejaVu = distant && (distant.updatedAt === lastSyncPushAt || distant.updatedAt === lastAppliedSyncAt);
       if (distant && distant.updatedAt && !dejaVu) {
         applyingRemoteSync = true;
@@ -2548,11 +2560,26 @@ async function pushToCloud(manual, forcer) {
         lastAppliedSyncAt = distant.updatedAt;
         rebuildData(false);
       }
-    }
+    };
 
-    const payload = buildSyncPayload();
-    lastSyncPushAt = payload.updatedAt;
-    await syncDocRef(cfg.code).set(payload);
+    const ref = syncDocRef(cfg.code);
+    if (!forcer && typeof fbDb.runTransaction === "function") {
+      await fbDb.runTransaction(async t => {
+        const avant = await t.get(ref);
+        if (avant && avant.exists) relireEtFusionner(avant.data());
+        const payload = buildSyncPayload();
+        lastSyncPushAt = payload.updatedAt;
+        t.set(ref, payload);
+      });
+    } else {
+      /* Sans transaction — vieux SDK, ou envoi forcé qui doit passer coûte
+         que coûte — on garde le relire-avant-d'écrire d'origine. */
+      const avant = forcer ? null : await ref.get();
+      if (avant && avant.exists) relireEtFusionner(avant.data());
+      const payload = buildSyncPayload();
+      lastSyncPushAt = payload.updatedAt;
+      await ref.set(payload);
+    }
     pendingPush = false;
     setSyncStatusUI("connected");
     if (manual) showToast("Synchronisé ☁️ — données envoyées", 2500);
