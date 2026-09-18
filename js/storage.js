@@ -33,7 +33,8 @@
     SYNC_FAV:    "kpiSyncFavorites",
     FAV_META:    "kpiFavMeta",
     LOCAL_AT:    "kpiLocalUpdatedAt",
-    CLOCK_OFF:   "kpiClockOffset"
+    CLOCK_OFF:   "kpiClockOffset",
+    COMPTE_MEMO: "kpiCompteMemo"   // « Mémoriser cet appareil » (voir app.js, comptes)
   });
 
   /** Dernier avertissement de quota, pour ne pas spammer l'utilisateur. */
