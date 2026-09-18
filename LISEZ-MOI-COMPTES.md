@@ -85,7 +85,10 @@ activez le premier interrupteur → *Enregistrer*.
    **admin** → *Mettre à jour*.
 6. Revenez à l'annuaire → **J'ai été validé — ouvrir l'annuaire**.
 
-Le bouton **👥 Comptes et accès** apparaît alors dans le menu de gauche.
+Le bouton **👥 Comptes et accès** apparaît alors dans le menu de gauche, avec
+**⚙️ Synchronisation** et **🕘 Historique** : ces trois outils ne sont visibles
+que par les administrateurs. Les membres, eux, voient **👤 Mon compte**, où ils
+gèrent leur nom, leur mot de passe et leur espace personnel.
 
 C'est la seule fois où l'on écrit dans la console : ensuite, tout se fait
 depuis le panneau.
@@ -145,12 +148,15 @@ Les données ne risquent rien, seul l'accès change.
   **Authentication → Utilisateurs** → supprimer le compte.
 - **Changer le nom de quelqu'un :** dans le panneau, le champ « Nom dans
   l'annuaire » se saisit librement ; les noms déjà connus sont proposés.
-- **Changer son propre nom :** Synchronisation → *Mon compte* → 🪪 Renommer.
+- **Changer son propre nom :** 👤 Mon compte → 🪪 Renommer.
   Favoris, espace personnel et corbeille suivent le nouveau nom ; l'historique
   garde le nom d'origine, c'est un journal.
 - **Mot de passe oublié :** lien sur l'écran de connexion (l'e-mail peut
   arriver dans les courriers indésirables).
-- **Changer son mot de passe :** Synchronisation → *Mon compte*.
+- **Changer son mot de passe :** 👤 Mon compte.
+- **Réservé aux administrateurs :** synchronisation, historique, gestion des
+  accès — donc aussi l'import/export Excel et les sauvegardes, qui vivent dans
+  la fenêtre Synchronisation.
 - **Page de tests :** connectez-vous d'abord à l'annuaire avec votre compte
   administrateur, sinon les contrôles sur la vraie base sont ignorés.
 - **Copie d'essai** (`annuaire-test.html`) : même connexion que l'annuaire,

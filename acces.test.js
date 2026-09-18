@@ -758,6 +758,74 @@ test("l'administrateur supprime une fiche : les données du nom restent dans l'a
   assert.ok(A.cloud("kpi_sync/" + CODE).favoritesByUser.Marie, "l'annuaire n'a pas bougé");
 });
 
+/* ═══ Outils réservés aux administrateurs ═══ */
+
+test("synchronisation, historique et accès sont réservés aux administrateurs", async () => {
+  // Un membre : il ne voit ni la synchro, ni l'historique, ni les accès
+  await appareilComptes();
+  A.compteExistant("benjamin.martin@groupe-idea.com", "unbonmotdepasse", { role: "membre", nom: "benjamin" });
+  A.sessionOuverte("benjamin.martin@groupe-idea.com");
+  await A.run("demarrerSession()");
+  await attendre(60);
+  assert.strictEqual(A.run("peutAdministrer()"), false);
+  ["syncSettingsBtn", "historyBtn", "accesBtn"].forEach(id =>
+    assert.strictEqual(A.el(id).style.display, "none", id + " doit être masqué"));
+  assert.strictEqual(A.el("monCompteBtn").style.display, "", "« Mon compte » reste accessible");
+
+  // Et même en forçant l'ouverture, les fenêtres restent fermées
+  assert.strictEqual(A.run("ouvrirSyncModal()"), false);
+  assert.ok(A.el("syncModal").classList.contains("hidden"));
+  assert.strictEqual(A.run("openHistoryModal()"), false);
+  assert.ok(A.el("historyModal").classList.contains("hidden"));
+  assert.strictEqual(await A.run("ouvrirAcces()"), false);
+  assert.match(A.dernierMessage(), /administrateurs/);
+
+  // Un administrateur : tout est là
+  await adminConnecte();
+  assert.strictEqual(A.run("peutAdministrer()"), true);
+  ["syncSettingsBtn", "historyBtn", "accesBtn", "monCompteBtn"].forEach(id =>
+    assert.strictEqual(A.el(id).style.display, "", id + " doit être visible"));
+  assert.strictEqual(A.run("ouvrirSyncModal()"), true);
+  assert.ok(!A.el("syncModal").classList.contains("hidden"));
+  assert.strictEqual(A.run("openHistoryModal()"), true);
+  assert.ok(!A.el("historyModal").classList.contains("hidden"));
+});
+
+test("un membre garde la main sur son compte : nom, mot de passe et espace personnel", async () => {
+  await appareilComptes();
+  A.compteExistant("benjamin.martin@groupe-idea.com", "unbonmotdepasse", { role: "membre", nom: "benjamin" });
+  A.sessionOuverte("benjamin.martin@groupe-idea.com");
+  await A.run("demarrerSession()");
+  await attendre(60);
+
+  assert.strictEqual(A.run("ouvrirMonCompte()"), true);
+  assert.ok(!A.el("compteModal").classList.contains("hidden"));
+  assert.match(A.texte("compteInfo"), /Membre/);
+  assert.strictEqual(A.el("personalSyncToggle").checked, true, "l'interrupteur reflète l'état réel");
+
+  A.saisir("compteNouveauMdp", "unnouveaumotdepasse");
+  assert.strictEqual(await A.run("changerMotDePasse()"), true);
+  A.saisir("compteNouveauNom", "Benjamin");
+  assert.strictEqual(await A.run("changerNomAnnuaire()"), true);
+  await attendre(60);
+  assert.strictEqual(A.run("currentUser"), "Benjamin");
+
+  A.run("fermerMonCompte()");
+  assert.ok(A.el("compteModal").classList.contains("hidden"));
+});
+
+test("sans module de comptes, aucun outil n'est masqué", async () => {
+  await attendre(20);
+  A.reset({ autoriserSync: true });
+  A.firebaseSimule();                       // pas de comptes : fonctionnement d'origine
+  assert.strictEqual(A.run("modeComptes()"), false);
+  assert.strictEqual(A.run("peutAdministrer()"), true);
+  assert.strictEqual(A.run("ouvrirSyncModal()"), true);
+  assert.strictEqual(A.run("openHistoryModal()"), true);
+  A.run("syncModal.classList.add('hidden'); closeHistoryModal();");
+  assert.strictEqual(A.run("ouvrirMonCompte()"), false, "il n'y a pas de compte à afficher");
+});
+
 /* Dernier test : l'annuaire retrouve l'état d'origine du banc (sans module
    de comptes), pour ne pas influencer les groupes qui suivent dans tests.html. */
 test("nettoyage : retour au fonctionnement sans comptes", () => {

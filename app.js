@@ -703,15 +703,43 @@ function surveillerSession() {
 }
 
 /** Affichages liés au compte : bouton des accès, bloc « Mon compte ». */
+/* Synchronisation, historique et gestion des accès sont des outils
+   d'administration. Sans module de comptes (banc de test, page ouverte depuis
+   un fichier), rien n'est masqué : le fonctionnement d'origine est conservé. */
+function peutAdministrer() {
+  return !modeComptes() || !!(compte && compte.role === "admin");
+}
+
+/** Fenêtre « Mon compte » : ouverte à toute personne validée. */
+function ouvrirMonCompte() {
+  if (!modeComptes() || !compte || !compte.role) return false;
+  majCompteUI();
+  const bascule = document.getElementById("personalSyncToggle");
+  if (bascule) bascule.checked = isPersonalSyncOn();
+  const modal = document.getElementById("compteModal");
+  if (modal) modal.classList.remove("hidden");
+  return true;
+}
+
+function fermerMonCompte() {
+  const modal = document.getElementById("compteModal");
+  if (modal) modal.classList.add("hidden");
+}
+
 function majCompteUI() {
-  const admin = !!(compte && compte.role === "admin");
-  const btn = document.getElementById("accesBtn");
-  if (btn) btn.style.display = admin ? "" : "none";
-  const bloc = document.getElementById("compteBloc");
-  if (bloc) bloc.style.display = (compte && compte.role) ? "" : "none";
+  const admin = peutAdministrer();
+  const connecte = !!(compte && compte.role);
+  const afficher = (id, montrer) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = montrer ? "" : "none";
+  };
+  afficher("accesBtn", modeComptes() && !!(compte && compte.role === "admin"));
+  afficher("syncSettingsBtn", admin);
+  afficher("historyBtn", admin);
+  afficher("monCompteBtn", modeComptes() && connecte);
   const info = document.getElementById("compteInfo");
   if (info) {
-    info.textContent = (compte && compte.role)
+    info.textContent = connecte
       ? compte.mail + " · " + Acces.libelleRole(compte.role) + " · nom dans l'annuaire : « " + compte.nom + " »"
       : "";
   }
@@ -972,6 +1000,8 @@ document.getElementById("porteDemandeBtn")?.addEventListener("click", envoyerDem
 document.getElementById("porteQuitterBtn")?.addEventListener("click", fermerSessionCompte);
 document.getElementById("porteQuitterBtn2")?.addEventListener("click", fermerSessionCompte);
 document.getElementById("porteQuitterBtn3")?.addEventListener("click", fermerSessionCompte);
+document.getElementById("monCompteBtn")?.addEventListener("click", ouvrirMonCompte);
+document.getElementById("closeCompteModalBtn")?.addEventListener("click", fermerMonCompte);
 document.getElementById("accesBtn")?.addEventListener("click", ouvrirAcces);
 document.getElementById("closeAccesModalBtn")?.addEventListener("click", fermerAcces);
 document.getElementById("changerMdpBtn")?.addEventListener("click", changerMotDePasse);
@@ -1967,9 +1997,11 @@ function refreshHistoryUserFilter() {
 }
 
 function openHistoryModal() {
+  if (!peutAdministrer()) { showToast("🔒 Réservé aux administrateurs", 3000); return false; }
   refreshHistoryUserFilter();
   renderHistoryList();
   document.getElementById("historyModal").classList.remove("hidden");
+  return true;
 }
 function closeHistoryModal() { document.getElementById("historyModal").classList.add("hidden"); }
 
@@ -4026,10 +4058,13 @@ document.getElementById("advancedSyncToggle")?.addEventListener("click", functio
   this.textContent = shown ? "⚙️ Paramètres avancés (changer de projet)" : "▲ Masquer les paramètres avancés";
 });
 
-syncSettingsBtn?.addEventListener("click", () => {
+function ouvrirSyncModal() {
+  if (!peutAdministrer()) { showToast("🔒 Réservé aux administrateurs", 3000); return false; }
   initSyncModal();
   syncModal.classList.remove("hidden");
-});
+  return true;
+}
+syncSettingsBtn?.addEventListener("click", ouvrirSyncModal);
 closeSyncModalBtn?.addEventListener("click", () => syncModal.classList.add("hidden"));
 syncModal?.addEventListener("click", e => { if (e.target === syncModal) syncModal.classList.add("hidden"); });
 
