@@ -3,7 +3,7 @@
 ============================================ */
 // Version de l'application. À comparer entre appareils via le diagnostic :
 // si deux appareils affichent des versions différentes, l'un a un cache périmé.
-const APP_VERSION = "2026.07.31";
+const APP_VERSION = "2026.09.17";
 let data = [];          // Liste affichée = fiches partagées visibles (manualEntries)
 let excelData = [];     // Vestige (toujours vide) : l'Excel n'est plus une source de données
 let manualEntries = []; // KPIs créés directement dans l'application (partagés)
@@ -335,6 +335,7 @@ function login(user) {
 }
 
 loginBtn.addEventListener("click", () => {
+  if (modeComptes()) return;   // en mode comptes, le nom vient du compte rattaché
   const user = usernameInput.value.trim();
   if (!user) { usernameInput.focus(); return; }
   login(user);
@@ -383,9 +384,502 @@ function deconnecter() {
   appShell.style.display = "none";
   loginScreen.style.display = "flex";
   usernameInput.value = "";
+  // Mode comptes : la session Firebase se ferme aussi, et l'écran de connexion revient
+  if (modeComptes() && authCompte) fermerSessionCompte();
 }
 
 logoutBtn.addEventListener("click", deconnecter);
+
+/* ============================================
+   COMPTES ET ACCÈS
+   Chaque personne se connecte avec SON compte (adresse pro + mot de
+   passe). Un administrateur valide le compte et le rattache au NOM que
+   la personne utilisait déjà : favoris, espace personnel et historique
+   sont rangés sous ce nom, ils reviennent donc tels quels. Le document
+   partagé ne change pas : rien à migrer.
+   Sans module de connexion chargé (banc de test, page ouverte depuis un
+   fichier), l'annuaire garde son fonctionnement historique.
+   La logique pure vit dans js/acces.js.
+============================================ */
+let compte = null;              // { uid, mail, role, nom } une fois l'accès ouvert
+let authCompte = null;          // instance firebase.auth()
+let accesListe = null;          // fiches lues par l'administrateur
+let accesErreur = "";
+let modeCreation = false;       // l'écran d'entrée propose la création de compte
+let sessionSurveillee = false;
+let deconnexionVolontaire = false;
+
+/** La connexion par compte est-elle active sur cette page ? */
+function modeComptes() {
+  return typeof firebase !== "undefined" && !!firebase &&
+         typeof firebase.auth === "function" && !isFileProtocol();
+}
+
+/** Prépare Firebase et le service de comptes (une seule fois). */
+function initAuthCompte() {
+  if (authCompte) return authCompte;
+  ensureBuiltinConfig();
+  const cfg = getSyncConfig();
+  const config = (cfg && cfg.config && cfg.config.projectId) ? cfg.config : BUILTIN_FIREBASE_CONFIG;
+  if (!fbApp) {
+    fbApp = firebase.apps && firebase.apps.length ? firebase.apps[0] : firebase.initializeApp(config);
+    fbDb  = firebase.firestore();
+  }
+  authCompte = firebase.auth();
+  return authCompte;
+}
+
+function refFiche(uid) {
+  return fbDb.collection(Acces.COLLECTION).doc(uid);
+}
+
+async function lireFiche(uid) {
+  const snap = await refFiche(uid).get();
+  return snap.exists ? Acces.normaliserFiche(uid, snap.data()) : null;
+}
+
+/** Valeur d'un champ de la page, espaces retirés. */
+function champ(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value == null ? "" : el.value).trim() : "";
+}
+
+/* L'écran d'entrée, en mode comptes. Un seul bloc visible à la fois :
+     "chargement"  la session revient (rechargement de page)
+     "connexion"   se connecter, ou créer son compte
+     "attente"     compte créé, un administrateur doit le valider
+     "demande"     compte sans demande (créé dans la console, ou dépôt échoué)
+     "erreur"      fiche illisible (réseau, règles) */
+function afficherPorte(etat, message, fiche) {
+  appShell.style.display = "none";
+  loginScreen.style.display = "flex";
+  const blocs = { connexionNom: false, porteChargement: etat === "chargement",
+                  porteConnexion: etat === "connexion" || etat === "erreur",
+                  porteAttente: etat === "attente", porteDemande: etat === "demande" };
+  Object.keys(blocs).forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = blocs[id] ? "" : "none";
+  });
+  if (etat === "connexion") basculerCreation(modeCreation);
+  // L'ancien nom de cet appareil aide l'administrateur à rattacher le compte
+  const ancien = localStorage.getItem("kpiUser") || "";
+  const nomDemande = document.getElementById("demandeNom");
+  if (etat === "demande" && nomDemande && !nomDemande.value) nomDemande.value = ancien;
+  const texte = document.getElementById("porteAttenteTexte");
+  if (etat === "attente" && texte) {
+    const quand = fiche && fiche.demande ? new Date(fiche.demande) : null;
+    texte.textContent = "Votre demande" +
+      (fiche && fiche.nom ? " au nom de « " + fiche.nom + " »" : "") +
+      (quand && !isNaN(quand) ? " du " + quand.toLocaleDateString("fr-FR") : "") +
+      " attend la validation d'un administrateur. Prévenez-le, puis actualisez.";
+  }
+  messagePorte(message || "", etat === "erreur" ? "erreur" : "");
+  return etat;
+}
+
+function messagePorte(texte, ton) {
+  const el = document.getElementById("porteMessage");
+  if (!el) return;
+  el.textContent = texte || "";
+  el.className = "porte-message" + (ton ? " " + ton : "");
+}
+
+/** Bascule l'écran d'entrée entre « se connecter » et « créer mon compte ». */
+function basculerCreation(creer) {
+  modeCreation = !!creer;
+  const bloc = document.getElementById("blocNomCompte");
+  if (bloc) bloc.style.display = modeCreation ? "" : "none";
+  const nom = document.getElementById("compteNom");
+  if (modeCreation && nom && !nom.value) nom.value = localStorage.getItem("kpiUser") || "";
+  const txt = document.getElementById("compteConnexionTxt");
+  if (txt) txt.textContent = modeCreation ? "Créer mon compte" : "Se connecter";
+  const lien = document.getElementById("compteBasculeBtn");
+  if (lien) lien.textContent = modeCreation ? "J'ai déjà un compte — me connecter"
+                                            : "Première connexion ? Créer mon compte";
+  const mdp = document.getElementById("compteMdp");
+  if (mdp) mdp.setAttribute("autocomplete", modeCreation ? "new-password" : "current-password");
+  return modeCreation;
+}
+
+function viderMotDePasse() {
+  const el = document.getElementById("compteMdp");
+  if (el) el.value = "";
+}
+
+/** Attend que Firebase ait relu la session gardée par le navigateur. */
+function sessionInitiale() {
+  return new Promise(resolve => {
+    let fini = false, stop = null;
+    stop = authCompte.onAuthStateChanged(u => {
+      if (fini) return;
+      fini = true;
+      if (typeof stop === "function") stop();
+      else setTimeout(() => { if (typeof stop === "function") stop(); }, 0);
+      resolve(u || null);
+    });
+  });
+}
+
+/** Ouverture de la page en mode comptes. */
+async function demarrerSession() {
+  initAuthCompte();
+  afficherPorte("chargement");
+  let u = null;
+  try { u = await sessionInitiale(); } catch { u = null; }
+  const etat = await ouvrirPourCompte(u);
+  surveillerSession();
+  return etat;
+}
+
+/** Décide, pour une personne connectée, de ce qui s'ouvre. */
+async function ouvrirPourCompte(u) {
+  if (!u) { compte = null; majCompteUI(); return afficherPorte("connexion"); }
+  let fiche = null;
+  try { fiche = await lireFiche(u.uid); }
+  catch (e) { return afficherPorte("erreur", Acces.messageErreur(e && e.code)); }
+  const etat = Acces.etatAcces(fiche);
+  if (etat !== "ouvert") {
+    compte = { uid: u.uid, mail: u.email || "", role: "", nom: fiche ? fiche.nom : "" };
+    majCompteUI();
+    return afficherPorte(etat, "", fiche);
+  }
+  compte = { uid: u.uid, mail: u.email || fiche.mail, role: fiche.role, nom: fiche.nom };
+  messagePorte("");
+  login(fiche.nom);            // le nom rattaché : les données de la personne reviennent
+  majCompteUI();
+  return "ouvert";
+}
+
+/** Bouton principal de l'écran d'entrée. */
+function validerPorte() {
+  return modeCreation ? creationCompte() : connexionCompte();
+}
+
+async function connexionCompte() {
+  const mail = champ("compteMail");
+  const mdp = (document.getElementById("compteMdp") || {}).value || "";
+  if (!mail || !mdp) { messagePorte("Saisissez votre adresse et votre mot de passe.", "erreur"); return false; }
+  initAuthCompte();
+  let u;
+  try { u = (await authCompte.signInWithEmailAndPassword(mail, mdp)).user; }
+  catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
+  viderMotDePasse();
+  return (await ouvrirPourCompte(u)) === "ouvert";
+}
+
+async function creationCompte() {
+  const nom = Acces.nettoyerNom(champ("compteNom"));
+  const mail = champ("compteMail");
+  const mdp = (document.getElementById("compteMdp") || {}).value || "";
+  const probleme = Acces.verifierDemande({ nom, mail, motDePasse: mdp });
+  if (probleme) { messagePorte(probleme, "erreur"); return false; }
+  initAuthCompte();
+  let u;
+  try { u = (await authCompte.createUserWithEmailAndPassword(mail, mdp)).user; }
+  catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
+  viderMotDePasse();
+  try { await deposerDemande(u, nom); }
+  catch (e) {
+    compte = { uid: u.uid, mail: u.email || mail, role: "", nom: "" };
+    const n = document.getElementById("demandeNom");
+    if (n) n.value = nom;
+    afficherPorte("demande", "Votre compte est créé, mais la demande n'a pas pu être enregistrée : " +
+      Acces.messageErreur(e && e.code));
+    return false;
+  }
+  basculerCreation(false);
+  await ouvrirPourCompte(u);
+  return true;
+}
+
+/** Dépose SA demande : une fiche sans rôle, que seul un administrateur complète. */
+async function deposerDemande(u, nom) {
+  const fiche = {
+    role: "",
+    nom: Acces.nettoyerNom(nom),
+    mail: String(u.email || "").slice(0, 120),
+    demande: new Date().toISOString()
+  };
+  await refFiche(u.uid).set(fiche);
+  return fiche;
+}
+
+/** Écran « demande » : envoyer (ou renvoyer) sa demande. */
+async function envoyerDemande() {
+  const u = authCompte && authCompte.currentUser;
+  if (!u) { afficherPorte("connexion"); return false; }
+  const nom = Acces.nettoyerNom(champ("demandeNom"));
+  if (nom.length < 2) { messagePorte("Indiquez votre nom tel que vous le saisissiez jusqu'ici.", "erreur"); return false; }
+  try { await deposerDemande(u, nom); }
+  catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
+  return (await ouvrirPourCompte(u)) === "attente";
+}
+
+/** Écran d'attente : « j'ai été validé ». */
+async function actualiserAcces() {
+  const u = authCompte && authCompte.currentUser;
+  const etat = await ouvrirPourCompte(u || null);
+  if (etat === "attente") messagePorte("Pas encore validé. Réessayez dans un instant.");
+  return etat;
+}
+
+async function motDePasseOublie() {
+  const mail = champ("compteMail");
+  if (!mail) { messagePorte("Saisissez d'abord votre adresse.", "erreur"); return false; }
+  initAuthCompte();
+  try {
+    await authCompte.sendPasswordResetEmail(mail);
+    messagePorte("Si un compte existe pour cette adresse, un e-mail de réinitialisation vient de partir " +
+                 "(pensez à regarder les courriers indésirables).", "ok");
+    return true;
+  } catch (e) {
+    messagePorte(Acces.messageErreur(e && e.code), "erreur");
+    return false;
+  }
+}
+
+/** Fermeture de session du compte (appelée par deconnecter). */
+async function fermerSessionCompte() {
+  compte = null;
+  accesListe = null;
+  majCompteUI();
+  if (!authCompte) return false;
+  deconnexionVolontaire = true;
+  try { await authCompte.signOut(); } catch { /* déjà fermée */ }
+  deconnexionVolontaire = false;
+  afficherPorte("connexion");
+  return true;
+}
+
+/* Session perdue alors que l'annuaire est ouvert (mot de passe changé
+   ailleurs, compte désactivé) : on referme proprement plutôt que de
+   laisser la synchro échouer en boucle. */
+function surveillerSession() {
+  if (sessionSurveillee || !authCompte) return false;
+  sessionSurveillee = true;
+  authCompte.onAuthStateChanged(u => {
+    if (!u && compte && compte.role && !deconnexionVolontaire) {
+      showToast("🔒 Votre session a pris fin — reconnectez-vous", 5000);
+      deconnecter();
+    }
+  });
+  return true;
+}
+
+/** Affichages liés au compte : bouton des accès, bloc « Mon compte ». */
+function majCompteUI() {
+  const admin = !!(compte && compte.role === "admin");
+  const btn = document.getElementById("accesBtn");
+  if (btn) btn.style.display = admin ? "" : "none";
+  const bloc = document.getElementById("compteBloc");
+  if (bloc) bloc.style.display = (compte && compte.role) ? "" : "none";
+  const info = document.getElementById("compteInfo");
+  if (info) {
+    info.textContent = (compte && compte.role)
+      ? compte.mail + " · " + Acces.libelleRole(compte.role) + " · nom dans l'annuaire : « " + compte.nom + " »"
+      : "";
+  }
+  return admin;
+}
+
+async function changerMotDePasse() {
+  const u = authCompte && authCompte.currentUser;
+  const el = document.getElementById("compteNouveauMdp");
+  const nouveau = el ? String(el.value || "") : "";
+  if (!u) return false;
+  if (nouveau.length < Acces.LONGUEUR_MDP) {
+    showToast("Le mot de passe doit faire au moins " + Acces.LONGUEUR_MDP + " caractères.", 3500);
+    return false;
+  }
+  try {
+    await u.updatePassword(nouveau);
+    if (el) el.value = "";
+    showToast("🔑 Mot de passe modifié", 3000);
+    return true;
+  } catch (e) {
+    showToast("❌ " + Acces.messageErreur(e && e.code), 5000);
+    return false;
+  }
+}
+
+/* ── Panneau de l'administrateur ─────────────────────────────── */
+
+/** Ce que l'annuaire sait de chaque nom, pour le rattachement. */
+function etatPourRattachement() {
+  return {
+    favoritesByUser: Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {},
+    favoritesMeta: Store.readJSON(Store.KEYS.FAV_META, {}) || {},
+    personalByUser: lireMapPerso(LS_PERSO_MAP),
+    personalTrashByUser: lireMapPerso(LS_PERSO_TRASH),
+    activityLog,
+    manualEntries,
+    utilisateurCourant: currentUser,
+    favorisCourants: favorites
+  };
+}
+
+async function ouvrirAcces() {
+  if (!compte || compte.role !== "admin") return false;
+  const modal = document.getElementById("accesModal");
+  if (modal) modal.classList.remove("hidden");
+  accesListe = null;
+  accesErreur = "";
+  renderAcces();
+  try {
+    const snap = await fbDb.collection(Acces.COLLECTION).get();
+    const liste = [];
+    snap.forEach(d => liste.push(Acces.normaliserFiche(d.id, d.data())));
+    accesListe = liste;
+  } catch (e) {
+    accesListe = [];
+    accesErreur = Acces.messageErreur(e && e.code);
+  }
+  renderAcces();
+  return true;
+}
+
+function fermerAcces() {
+  const modal = document.getElementById("accesModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+/* Une fiche créée à la main dans la console peut ne pas porter d'adresse :
+   pour la sienne, l'administrateur connaît celle de sa session. */
+function adresseFiche(f) {
+  return (f && f.mail) || (f && compte && compte.uid === f.uid ? compte.mail : "");
+}
+
+function nbAdmins() {
+  return (accesListe || []).filter(f => f.role === "admin").length;
+}
+
+function renderAcces() {
+  const boite = document.getElementById("accesListe");
+  const boiteNoms = document.getElementById("accesNoms");
+  if (!boite || !boiteNoms) return 0;
+  const existants = Acces.nomsExistants(etatPourRattachement());
+  const nomsConnus = existants.map(x => x.nom);
+
+  if (accesErreur) {
+    boite.innerHTML = `<p class="acces-erreur">La liste des comptes n'a pas pu être lue : ${esc(accesErreur)}</p>`;
+  } else if (!accesListe) {
+    boite.innerHTML = `<p class="modal-hint">Lecture des comptes…</p>`;
+  } else if (!accesListe.length) {
+    boite.innerHTML = `<p class="modal-hint">Aucun compte pour l'instant.</p>`;
+  } else {
+    const tri = accesListe.slice().sort((a, b) =>
+      ((a.role ? 1 : 0) - (b.role ? 1 : 0)) || a.nom.localeCompare(b.nom, "fr"));
+    boite.innerHTML = tri.map(f => {
+      const propose = f.role ? f.nom : (Acces.proposerNom(f.nom, existants, f.mail) || f.nom);
+      const choix = nomsConnus.slice();
+      if (propose && !choix.includes(propose)) choix.unshift(propose);
+      const optionsNom = choix.map(n =>
+        `<option value="${esc(n)}"${n === propose ? " selected" : ""}>${esc(n)}${nomsConnus.includes(n) ? "" : " (nouveau nom)"}</option>`
+      ).join("");
+      const optionsRole = [["", "En attente — aucun droit"], ["membre", "Membre"], ["admin", "Administrateur"]]
+        .map(([v, l]) => `<option value="${v}"${f.role === v ? " selected" : ""}>${l}</option>`).join("");
+      const moi = compte && compte.uid === f.uid;
+      const quand = f.demande ? new Date(f.demande) : null;
+      return `<div class="acces-ligne${f.role ? "" : " attente"}">
+        <div class="acces-qui">
+          <b>${esc(adresseFiche(f) || "(adresse inconnue)")}</b>${moi ? ' <span class="acces-moi">vous</span>' : ""}
+          <span>${f.role ? esc(Acces.libelleRole(f.role)) : "Demande"}${quand && !isNaN(quand) ? " du " + esc(quand.toLocaleDateString("fr-FR")) : ""}
+            · nom demandé : « ${esc(f.nom || "—")} »</span>
+        </div>
+        <label class="acces-champ">Nom dans l'annuaire
+          <select id="accesNom_${esc(f.uid)}" class="modal-input">${optionsNom}</select></label>
+        <label class="acces-champ">Rôle
+          <select id="accesRole_${esc(f.uid)}" class="modal-input">${optionsRole}</select></label>
+        <div class="acces-actions">
+          <button class="btn-primary" onclick="enregistrerAcces(${jsAttr(f.uid)})">Enregistrer</button>
+          <button class="btn-danger" onclick="retirerAcces(${jsAttr(f.uid)})"${moi ? " disabled" : ""}>Retirer</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  const rattaches = new Map();
+  (accesListe || []).forEach(f => {
+    if (!f.role || !f.nom) return;
+    if (!rattaches.has(f.nom)) rattaches.set(f.nom, []);
+    rattaches.get(f.nom).push(adresseFiche(f) || "(adresse inconnue)");
+  });
+  boiteNoms.innerHTML = existants.length ? existants.map(x => {
+    const mails = rattaches.get(x.nom) || [];
+    const quand = x.derniere ? new Date(x.derniere) : null;
+    return `<div class="acces-nom${mails.length ? " fait" : ""}">
+      <b>${esc(x.nom)}</b>
+      <span>${x.favoris} favori${x.favoris > 1 ? "s" : ""} · ${x.fiches} fiche${x.fiches > 1 ? "s" : ""} perso${x.actions ? " · " + x.actions + " action" + (x.actions > 1 ? "s" : "") : ""}${quand && !isNaN(quand) ? " · vu le " + esc(quand.toLocaleDateString("fr-FR")) : ""}</span>
+      <em>${mails.length ? "rattaché à " + mails.map(esc).join(", ") : "à rattacher"}</em>
+    </div>`;
+  }).join("") : `<p class="modal-hint">Aucun nom trouvé sur cet appareil. Synchronisez d'abord l'annuaire.</p>`;
+  return existants.length;
+}
+
+async function enregistrerAcces(uid) {
+  if (!compte || compte.role !== "admin") return false;
+  const f = (accesListe || []).find(x => x.uid === uid);
+  if (!f) return false;
+  const choixRole = champ("accesRole_" + uid);
+  const role = Acces.estRole(choixRole) ? choixRole : "";
+  const nom = Acces.nettoyerNom((document.getElementById("accesNom_" + uid) || {}).value);
+  if (role && !nom) { showToast("Choisissez le nom de cette personne dans l'annuaire.", 3500); return false; }
+  if (f.role === "admin" && role !== "admin" && nbAdmins() <= 1) {
+    showToast("Il faut garder au moins un administrateur.", 3500);
+    return false;
+  }
+  const doublon = role && (accesListe || []).find(x => x.uid !== uid && x.role && x.nom === nom);
+  if (doublon && !confirm(`« ${nom} » est déjà rattaché à ${doublon.mail}.\n\n` +
+      "Deux comptes sur le même nom partagent les mêmes favoris et le même espace personnel. Continuer ?")) {
+    return false;
+  }
+  try { await refFiche(uid).update({ role, nom }); }
+  catch (e) { showToast("❌ " + Acces.messageErreur(e && e.code), 5000); return false; }
+  f.role = role;
+  f.nom = nom;
+  if (compte.uid === uid) {
+    compte.role = role;
+    compte.nom = nom;
+    majCompteUI();
+  }
+  showToast(role ? `✅ ${f.mail} : ${Acces.libelleRole(role)}, rattaché à « ${nom} »`
+                 : `⏸ ${f.mail} : remis en attente`, 4000);
+  renderAcces();
+  return true;
+}
+
+async function retirerAcces(uid) {
+  if (!compte || compte.role !== "admin") return false;
+  const f = (accesListe || []).find(x => x.uid === uid);
+  if (!f) return false;
+  if (compte.uid === uid) { showToast("Vous ne pouvez pas retirer votre propre accès.", 3500); return false; }
+  if (f.role === "admin" && nbAdmins() <= 1) { showToast("Il faut garder au moins un administrateur.", 3500); return false; }
+  if (!confirm(`Retirer l'accès de ${f.mail} ?\n\n` +
+      `Ses favoris et son espace personnel restent dans l'annuaire sous « ${f.nom} ». ` +
+      "Son compte, lui, se supprime dans la console Firebase.")) {
+    return false;
+  }
+  try { await refFiche(uid).delete(); }
+  catch (e) { showToast("❌ " + Acces.messageErreur(e && e.code), 5000); return false; }
+  accesListe = accesListe.filter(x => x.uid !== uid);
+  showToast(`Accès retiré : ${f.mail}`, 3000);
+  renderAcces();
+  return true;
+}
+
+/* Boutons de l'écran d'entrée et du panneau. Dans le banc de test, les
+   éléments sont simulés : ces liaisons y sont sans effet. */
+document.getElementById("compteConnexionBtn")?.addEventListener("click", validerPorte);
+document.getElementById("compteMdp")?.addEventListener("keydown", e => { if (e.key === "Enter") validerPorte(); });
+document.getElementById("compteBasculeBtn")?.addEventListener("click", () => { messagePorte(""); basculerCreation(!modeCreation); });
+document.getElementById("compteOublieBtn")?.addEventListener("click", motDePasseOublie);
+document.getElementById("porteActualiserBtn")?.addEventListener("click", actualiserAcces);
+document.getElementById("porteDemandeBtn")?.addEventListener("click", envoyerDemande);
+document.getElementById("porteQuitterBtn")?.addEventListener("click", fermerSessionCompte);
+document.getElementById("porteQuitterBtn2")?.addEventListener("click", fermerSessionCompte);
+document.getElementById("accesBtn")?.addEventListener("click", ouvrirAcces);
+document.getElementById("closeAccesModalBtn")?.addEventListener("click", fermerAcces);
+document.getElementById("changerMdpBtn")?.addEventListener("click", changerMotDePasse);
 
 /* ============================================
    VUES (all / fav)
@@ -3202,6 +3696,12 @@ function connectSync(manual) {
       setSyncStatusUI("error", "Librairie Firebase non chargée (vérifiez votre connexion).");
       return;
     }
+    // Mode comptes : la base n'ouvre qu'aux comptes validés par un administrateur
+    if (modeComptes() && !(compte && compte.role)) {
+      setSyncStatusUI("error", "connectez-vous avec votre compte pour synchroniser");
+      if (manual) showToast("🔒 Connectez-vous avec votre compte pour synchroniser", 3500);
+      return;
+    }
     if (fbDb && fbUnsub && connectedSyncCode === cfg.code) {
       setSyncStatusUI("connected");
       if (manual) showToast("Déjà connecté ☁️", 2200);
@@ -5355,7 +5855,7 @@ document.getElementById("deckHelpBtn")?.addEventListener("click", () => deckHelp
 /* La version du code, affichée sous le nom d'utilisateur. Elle suit celle du
    cache : c'est ce qui distingue « l'annuaire a un défaut » de « ce poste
    n'a pas encore la correction ». La question a coûté un aller-retour. */
-const VERSION_ANNUAIRE = "v22";
+const VERSION_ANNUAIRE = "v23";
 
 function afficherVersionAnnuaire() {
   const el = document.getElementById("appVersion");
@@ -5390,7 +5890,13 @@ if ("serviceWorker" in navigator) {
    Placé tout à la fin, après tous les boutons : une erreur ici
    (réseau, sync mal configurée…) ne peut plus jamais bloquer l'UI.
 ============================================ */
-if (currentUser) {
+if (modeComptes()) {
+  // Le nom mémorisé ne suffit plus : c'est le compte qui ouvre l'annuaire
+  demarrerSession().catch(err => {
+    console.error("Erreur à l'ouverture de session :", err);
+    afficherPorte("erreur", "Impossible de joindre le service de comptes. Rechargez la page.");
+  });
+} else if (currentUser) {
   try {
     login(currentUser);
   } catch (err) {

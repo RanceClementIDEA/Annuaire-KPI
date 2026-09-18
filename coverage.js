@@ -7,6 +7,8 @@ const source = fs.readFileSync("app.js", "utf8");
 const noms = [...new Set([...source.matchAll(/^function\s+([A-Za-z_$][\w$]*)/gm)].map(m => m[1]))];
 
 const A = loadApp();
+// Les tests des règles lisent firestore.rules : fourni ici, comme dans tests.html
+globalThis.__reglesFirestore = fs.readFileSync("firestore.rules", "utf8");
 
 /* Enveloppe chaque fonction pour enregistrer les appels */
 A.run("globalThis.__appelees = new Set();");
@@ -21,7 +23,7 @@ noms.forEach(n => {
 });
 
 /* Rejoue les tests des fichiers qui utilisent le harnais */
-const fichiers = ["app.test.js", "app-ui.test.js", "app-flows.test.js"];
+const fichiers = ["app.test.js", "app-ui.test.js", "app-flows.test.js", "acces.test.js"];
 const assert = require("node:assert");
 
 (async function () {
@@ -31,6 +33,7 @@ const assert = require("node:assert");
       .replace(/^const \{ test \} = require\("node:test"\);\s*$/m, "")
       .replace(/^const assert = require\("node:assert"\);\s*$/m, "")
       .replace(/^const \{ loadApp \} = require\("\.\/app-harness\.js"\);\s*$/m, "")
+      .replace(/^const Acces = require\("\.\/js\/acces\.js"\);\s*$/m, "const Acces = globalThis.Acces;")
       .replace(/^const A = loadApp\(\);.*$/m, "");
     const collectes = [];
     const test = (nom, fn) => collectes.push({ nom, fn });

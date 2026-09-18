@@ -33,7 +33,8 @@
       </div>
       <p class="login-tagline">Plateforme de pilotage KPI</p>
     </div>
-    <div class="login-form">
+    <!-- Connexion historique par nom : utilisée seulement sans module de comptes -->
+    <div class="login-form" id="connexionNom">
       <label for="usernameInput">Identifiant</label>
       <input type="text" id="usernameInput" placeholder="Nom ou adresse email" autocomplete="username">
       <button id="loginBtn">
@@ -41,6 +42,51 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
       </button>
     </div>
+
+    <!-- Connexion par compte : chacun son adresse et son mot de passe -->
+    <p class="porte-chargement" id="porteChargement" style="display:none">Connexion en cours…</p>
+
+    <div class="login-form" id="porteConnexion" style="display:none">
+      <label for="compteMail">Adresse professionnelle</label>
+      <input type="email" id="compteMail" placeholder="prenom.nom@groupe-idea.com" autocomplete="username">
+      <label for="compteMdp">Mot de passe</label>
+      <input type="password" id="compteMdp" placeholder="8 caractères minimum" autocomplete="current-password">
+      <div id="blocNomCompte" class="porte-bloc" style="display:none">
+        <label for="compteNom">Votre nom dans l'annuaire</label>
+        <input type="text" id="compteNom" placeholder="Le nom que vous tapiez pour vous connecter" autocomplete="off">
+        <p class="porte-aide">Reprenez exactement le nom que vous utilisiez jusqu'ici : vos favoris et votre espace personnel sont rangés dessous.</p>
+      </div>
+      <button id="compteConnexionBtn" type="button">
+        <span id="compteConnexionTxt">Se connecter</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <div class="porte-liens">
+        <button type="button" class="porte-lien" id="compteBasculeBtn">Première connexion ? Créer mon compte</button>
+        <button type="button" class="porte-lien" id="compteOublieBtn">Mot de passe oublié</button>
+      </div>
+    </div>
+
+    <div class="login-form" id="porteAttente" style="display:none">
+      <p class="porte-titre">Demande envoyée</p>
+      <p class="porte-texte" id="porteAttenteTexte">Votre demande attend la validation d'un administrateur.</p>
+      <button type="button" id="porteActualiserBtn">J'ai été validé — ouvrir l'annuaire</button>
+      <div class="porte-liens">
+        <button type="button" class="porte-lien" id="porteQuitterBtn">Se déconnecter</button>
+      </div>
+    </div>
+
+    <div class="login-form" id="porteDemande" style="display:none">
+      <p class="porte-titre">Demander l'accès</p>
+      <p class="porte-texte">Votre compte existe. Indiquez le nom que vous utilisiez dans l'annuaire, puis envoyez la demande à l'administrateur.</p>
+      <label for="demandeNom">Votre nom dans l'annuaire</label>
+      <input type="text" id="demandeNom" placeholder="Le nom que vous tapiez pour vous connecter" autocomplete="off">
+      <button type="button" id="porteDemandeBtn">Envoyer ma demande</button>
+      <div class="porte-liens">
+        <button type="button" class="porte-lien" id="porteQuitterBtn2">Se déconnecter</button>
+      </div>
+    </div>
+
+    <p class="porte-message" id="porteMessage" role="status" aria-live="polite"></p>
   </div>
   <div class="login-bg-shapes">
     <div class="shape s1"></div>
@@ -146,6 +192,10 @@
       <button class="btn-refresh" id="syncSettingsBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Synchronisation
+      </button>
+      <button class="btn-refresh" id="accesBtn" style="display:none">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Comptes et accès
       </button>
       <button class="btn-refresh" id="historyBtn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -614,6 +664,15 @@
     </p>
     <p id="syncStatus" class="sync-status">⚪ Synchronisation non configurée</p>
 
+    <div id="compteBloc" style="display:none">
+      <div class="modal-links-title">Mon compte</div>
+      <p class="modal-hint" id="compteInfo"></p>
+      <div class="compte-mdp">
+        <input type="password" id="compteNouveauMdp" class="modal-input" placeholder="Nouveau mot de passe (8 caractères minimum)" autocomplete="new-password">
+        <button id="changerMdpBtn" class="btn-secondary">🔑 Changer</button>
+      </div>
+    </div>
+
     <div id="fileProtocolWarning" class="sync-warning" style="display:none">
       ⚠️ <b>Vous avez ouvert l'application par double-clic sur le fichier (<code>file://</code>).</b>
       Dans ce mode, la synchronisation cloud est <b>impossible</b> : Firebase refuse les connexions
@@ -720,6 +779,28 @@
   </div>
 </div>
 
+<!-- MODALE COMPTES ET ACCÈS (administrateurs) -->
+<div id="accesModal" class="modal-overlay hidden">
+  <div class="modal-card modal-acces">
+    <div class="modal-header">
+      <h3>👥 Comptes et accès</h3>
+      <button id="closeAccesModalBtn" class="modal-close">✕</button>
+    </div>
+    <p class="modal-sub">
+      Validez chaque demande et rattachez le compte au nom que la personne utilisait déjà :
+      elle retrouve ses favoris, son espace personnel et son historique.
+    </p>
+    <div class="modal-links-title">Comptes</div>
+    <div id="accesListe" class="acces-liste"></div>
+    <div class="modal-links-title">Noms déjà présents dans l'annuaire</div>
+    <p class="modal-hint">
+      Toutes les personnes qui se sont connectées avant les comptes, avec ce qui leur appartient.
+      Aucun de ces noms n'est supprimé : rattachez-les au fur et à mesure.
+    </p>
+    <div id="accesNoms" class="acces-noms"></div>
+  </div>
+</div>
+
 <!-- MODALE GÉRER LES SITES -->
 <div id="sitesModal" class="modal-overlay hidden">
   <div class="modal-card">
@@ -813,6 +894,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="js/storage.js"></script>
 <script src="js/merge.js"></script>
@@ -823,6 +905,7 @@
 <script src="js/pptx.js"></script>
 <script src="js/inspecter-deck.js"></script>
 <script src="js/selection.js"></script>
+<script src="js/acces.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

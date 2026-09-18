@@ -267,6 +267,14 @@
             firestore: Object.assign(function () {
               return {
                 collection: (col) => ({
+                  /* Lecture d'une collection entière (fiches d'accès). */
+                  async get() {
+                    if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                    const docs = Object.keys(globalThis.__cloud)
+                      .filter(k => k.indexOf(col + "/") === 0)
+                      .map(k => ({ id: k.slice(col.length + 1), data: () => globalThis.__cloud[k] }));
+                    return { docs, size: docs.length, empty: !docs.length, forEach: f => docs.forEach(f) };
+                  },
                   doc: (id) => {
                     const cle = col + "/" + id;
                     return {
@@ -276,6 +284,21 @@
                         return { exists: d !== undefined, data: () => d };
                       },
                       _cle: cle,
+                      /* Comme Firestore : une mise à jour exige un document existant. */
+                      async update(partiel) {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        if (globalThis.__cloud[cle] === undefined) {
+                          throw Object.assign(new Error("not-found"), { code: "not-found" });
+                        }
+                        globalThis.__cloud[cle] = Object.assign({}, globalThis.__cloud[cle],
+                          JSON.parse(JSON.stringify(partiel)));
+                        globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
+                      },
+                      async delete() {
+                        if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
+                        delete globalThis.__cloud[cle];
+                        globalThis.__versions[cle] = (globalThis.__versions[cle] || 0) + 1;
+                      },
                       async set(payload) {
                         if (globalThis.__erreurCloud) throw globalThis.__erreurCloud;
                         globalThis.__cloud[cle] = JSON.parse(JSON.stringify(payload));
@@ -336,6 +359,88 @@
         `);
         return this;
       },
+      /* --- Comptes simulés (Firebase Authentication) : à appeler APRÈS firebaseSimule().
+             Une fois installés, l'annuaire passe en « mode comptes », exactement comme
+             dans la page réelle où le module de comptes est chargé. --- */
+      comptesSimules() {
+        run(`
+          globalThis.__comptes = {};          // adresse → { uid, mail, mdp }
+          globalThis.__sessionCompte = null;  // personne connectée
+          globalThis.__ecoutesAuth = [];
+          globalThis.__erreurAuth = null;     // panne à simuler (code Firebase)
+          globalThis.__mailsReinit = [];
+          globalThis.__compteurUid = 0;
+          globalThis.__notifierAuth = function () {
+            globalThis.__ecoutesAuth.slice().forEach(function (cb) { cb(globalThis.__sessionCompte); });
+          };
+          globalThis.__utilisateur = function (c) {
+            return { uid: c.uid, email: c.mail,
+              async updatePassword(n) {
+                if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
+                globalThis.__comptes[c.mail].mdp = n;
+              } };
+          };
+          const refus = code => Object.assign(new Error(code), { code });
+          const authSimule = {
+            get currentUser() { return globalThis.__sessionCompte; },
+            onAuthStateChanged(cb) {
+              globalThis.__ecoutesAuth.push(cb);
+              Promise.resolve().then(() => cb(globalThis.__sessionCompte));
+              return function () { globalThis.__ecoutesAuth = globalThis.__ecoutesAuth.filter(x => x !== cb); };
+            },
+            async signInWithEmailAndPassword(mail, mdp) {
+              if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
+              const c = globalThis.__comptes[String(mail).trim().toLowerCase()];
+              if (!c || c.mdp !== mdp) throw refus("auth/invalid-credential");
+              globalThis.__sessionCompte = globalThis.__utilisateur(c);
+              globalThis.__notifierAuth();
+              return { user: globalThis.__sessionCompte };
+            },
+            async createUserWithEmailAndPassword(mail, mdp) {
+              if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
+              const k = String(mail).trim().toLowerCase();
+              if (globalThis.__comptes[k]) throw refus("auth/email-already-in-use");
+              const c = { uid: "uid-" + (++globalThis.__compteurUid), mail: k, mdp };
+              globalThis.__comptes[k] = c;
+              globalThis.__sessionCompte = globalThis.__utilisateur(c);
+              globalThis.__notifierAuth();
+              return { user: globalThis.__sessionCompte };
+            },
+            async sendPasswordResetEmail(mail) {
+              if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
+              globalThis.__mailsReinit.push(mail);
+            },
+            async signOut() { globalThis.__sessionCompte = null; globalThis.__notifierAuth(); }
+          };
+          firebase.auth = function () { return authSimule; };
+          authCompte = null; compte = null; accesListe = null; accesErreur = "";
+          modeCreation = false; sessionSurveillee = false; deconnexionVolontaire = false;
+        `);
+        return this;
+      },
+      /** Un compte déjà créé (dans la console, par exemple), avec sa fiche si fournie. */
+      compteExistant(mail, mdp, fiche) {
+        return run(`(function () {
+          const k = ${JSON.stringify(String(mail).trim().toLowerCase())};
+          const c = { uid: "uid-" + (++globalThis.__compteurUid), mail: k, mdp: ${JSON.stringify(mdp)} };
+          globalThis.__comptes[k] = c;
+          ${fiche ? `globalThis.__cloud["acces/" + c.uid] = ${JSON.stringify(fiche)};` : ""}
+          return c.uid;
+        })()`);
+      },
+      /** Une session déjà ouverte dans ce navigateur (rechargement de page). */
+      sessionOuverte(mail) {
+        run(`globalThis.__sessionCompte = globalThis.__utilisateur(globalThis.__comptes[${JSON.stringify(String(mail).trim().toLowerCase())}]);`);
+        return this;
+      },
+      /** Session perdue sans l'avoir demandé (mot de passe changé ailleurs…). */
+      sessionPerdue() { run("globalThis.__sessionCompte = null; globalThis.__notifierAuth();"); return this; },
+      panneAuth(code) { run(`globalThis.__erreurAuth = ${code ? `Object.assign(new Error(${JSON.stringify(code)}), { code: ${JSON.stringify(code)} })` : "null"}`); return this; },
+      mailsReinitialisation: () => run("globalThis.__mailsReinit.slice()"),
+      comptesCrees: () => run("Object.keys(globalThis.__comptes)"),
+      fiche: (uid) => run(`globalThis.__cloud[${JSON.stringify("acces/" + uid)}] || null`),
+      ecrireCloud(cle, valeur) { run(`globalThis.__cloud[${JSON.stringify(cle)}] = ${JSON.stringify(valeur)};`); return this; },
+
       cloud: (cle) => run(`globalThis.__cloud[${JSON.stringify(cle)}] || null`),
       cloudPrincipal() { const c = run("globalThis.__cloud"); const k = Object.keys(c).find(x => !x.includes("__clock")); return k ? c[k] : null; },
       ecrituresCloud: () => run("globalThis.__ecritures"),

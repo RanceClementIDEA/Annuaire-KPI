@@ -291,7 +291,7 @@ function __module(nom){
 
 const FICHIERS = ["js/storage.js", "js/merge.js", "js/carousel.js",
                   "js/zip.js", "js/empreintes.js", "js/derivation.js", "js/pptx.js", "js/inspecter-deck.js",
-                  "js/selection.js", "app.js"];
+                  "js/selection.js", "js/acces.js", "app.js"];
 const journalFichiers = [];
 
 async function loadApp(surProgression){
@@ -318,6 +318,13 @@ async function loadApp(surProgression){
       journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:"HTTP " + rm.status });
     }
   } catch(e){ journalFichiers.push({ f:"modele-deck.pptx", ok:false, info:e.message }); }
+  // Règles Firestore livrées : les tests vérifient qu'elles suivent le code.
+  try {
+    const rr = await fetch("firestore.rules?anticache=" + Date.now());
+    window.__reglesFirestore = rr.ok ? await rr.text() : "";
+    journalFichiers.push({ f:"firestore.rules", ok:rr.ok,
+                           info: rr.ok ? (window.__reglesFirestore.length/1024).toFixed(1) + " Ko" : "HTTP " + rr.status });
+  } catch(e){ window.__reglesFirestore = ""; journalFichiers.push({ f:"firestore.rules", ok:false, info:e.message }); }
 
   if (surProgression) surProgression(1, "initialisation du bac à sable");
   window.__sources = sources;      // permet de créer d'autres appareils simulés
@@ -689,8 +696,26 @@ function chargerScript(src){
 async function chargerFirebase(){
   if (window.firebase && window.firebase.firestore) return;
   await chargerScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js");
+  await chargerScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js");
   await chargerScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js");
 }
+
+/* Mode comptes : la base n'ouvre qu'aux comptes validés par un administrateur.
+   Cette page reprend la session ouverte dans l'annuaire (même adresse, même
+   projet) : se connecter d'abord dans l'annuaire, puis lancer le diagnostic.
+   Sans module de comptes (vérificateurs hors navigateur), rien ne change. */
+async function compteDeLaPage(){
+  if (!(window.firebase && typeof firebase.auth === "function")) return { mode:false, user:null };
+  const auth = firebase.auth();
+  const user = await new Promise(ok => {
+    let fini = false, stop = null;
+    const finir = u => { if (fini) return; fini = true; if (typeof stop === "function") stop(); ok(u || null); };
+    stop = auth.onAuthStateChanged(u => finir(u));
+    setTimeout(() => finir(auth.currentUser), 8000);
+  });
+  return { mode:true, user };
+}
+const CONSIGNE_COMPTE = "Ouvrez l'annuaire, connectez-vous avec votre compte administrateur, puis relancez ce diagnostic.";
 
 /* Un contrôle renvoie { etat:"ok"|"warn"|"ko", detail:"…" } */
 function ajouterControle(groupe, nom, res){
@@ -992,11 +1017,17 @@ async function analyseReelle(avecEcriture){
   ouvrirGroupeR("Cloud partagé");
   etape(.45, "connexion au cloud"); await respirer();
 
-  let docCloud = null, erreurCloud = null;
+  let docCloud = null, erreurCloud = null, session = { mode:false, user:null };
   try {
     await chargerFirebase();
     ajouterControle("Cloud partagé", "Librairie Firebase disponible", { etat:"ok", detail:"chargée depuis gstatic.com" });
     if (!firebase.apps.length) firebase.initializeApp(cfg.config);
+    session = await compteDeLaPage();
+    if (session.mode) {
+      ajouterControle("Cloud partagé", "Session de compte",
+        session.user ? { etat:"ok", detail:"connecté en tant que <b>" + echapper(session.user.email || session.user.uid) + "</b>" }
+                     : { etat:"warn", detail:"Aucun compte connecté sur ce navigateur. " + CONSIGNE_COMPTE });
+    }
     const db = firebase.firestore();
     const snap = await db.collection("kpi_sync").doc(cfg.code).get();   // LECTURE SEULE
     docCloud = snap.exists ? snap.data() : null;
@@ -1007,7 +1038,11 @@ async function analyseReelle(avecEcriture){
     const permis = String(e && (e.code || e.message)).indexOf("permission") >= 0;
     ajouterControle("Cloud partagé", "Accès au cloud",
       { etat:"ko", detail: permis
-        ? "<b>Refusé par les règles Firestore.</b> Elles ont peut-être expiré (mode test) — republiez-les."
+        ? (session.mode
+            ? (session.user
+                ? "<b>Refusé par les règles Firestore.</b> Ce compte n'a pas (encore) de rôle : validez-le dans « Comptes et accès »."
+                : "<b>Refusé : aucun compte connecté.</b> " + CONSIGNE_COMPTE)
+            : "<b>Refusé par les règles Firestore.</b> Elles ont peut-être expiré (mode test) — republiez-les.")
         : "Échec : " + echapper(String(e && e.message || e)) });
   }
 
@@ -1241,9 +1276,35 @@ async function analyseReelle(avecEcriture){
             "peut modifier l'annuaire. Restreindre les règles à la collection <code>kpi_sync</code> " +
             "limiterait la portée d'une erreur." });
 
-    ajouterControle("Sécurité", "Identification des utilisateurs (déclarative)",
-      { etat:"ok", detail:"L'identifiant saisi à la connexion n'est pas vérifié. " +
-        "Le journal d'activité indique qui a agi de bonne foi, mais ne constitue pas une preuve." });
+    if (session.mode) {
+      ajouterControle("Sécurité", "Identification des utilisateurs",
+        { etat:"ok", detail:"par compte (adresse professionnelle + mot de passe), validé et rattaché à un nom par un administrateur" });
+
+      /* Une seconde instance Firebase, sans aucune session : elle voit la base
+         comme un visiteur. Si elle lit l'annuaire, les règles ne sont pas en place. */
+      let visiteurRefuse = null, detailVisiteur = "";
+      try {
+        const NOM_SONDE = "sonde-visiteur";
+        const appSonde = (firebase.apps || []).find(a => a && a.name === NOM_SONDE) ||
+                         firebase.initializeApp(cfg.config, NOM_SONDE);
+        await appSonde.firestore().collection("kpi_sync").doc(cfg.code).get();
+        visiteurRefuse = false;
+      } catch (e) {
+        visiteurRefuse = String(e && (e.code || e.message)).indexOf("permission") >= 0 ? true : null;
+        if (visiteurRefuse === null) detailVisiteur = echapper(String(e && e.message || e));
+      }
+      ajouterControle("Sécurité", "Visiteur sans compte refusé",
+        visiteurRefuse === true
+          ? { etat:"ok", detail:"sans compte validé, la base refuse la lecture de l'annuaire" }
+          : visiteurRefuse === false
+            ? { etat:"ko", detail:"<b>La base est encore ouverte</b> : un visiteur sans compte lit l'annuaire. " +
+                "Publiez les règles du fichier <code>firestore.rules</code> dans la console Firebase." }
+            : { etat:"warn", detail:"contrôle impossible : " + detailVisiteur });
+    } else {
+      ajouterControle("Sécurité", "Identification des utilisateurs (déclarative)",
+        { etat:"ok", detail:"L'identifiant saisi à la connexion n'est pas vérifié. " +
+          "Le journal d'activité indique qui a agi de bonne foi, mais ne constitue pas une preuve." });
+    }
   }
 
   /* ─── 5. Écriture (optionnelle) ─── */
@@ -1343,6 +1404,11 @@ async function scenariosSynchro(){
     db = firebase.firestore();
   } catch(e){
     ajouterControle(groupe, "Connexion à Firebase", { etat:"ko", detail: echapper(String(e.message || e)) });
+    return;
+  }
+  const sessionScenarios = await compteDeLaPage();
+  if (sessionScenarios.mode && !sessionScenarios.user) {
+    ajouterControle(groupe, "Connexion requise", { etat:"warn", detail: CONSIGNE_COMPTE });
     return;
   }
 
@@ -1827,6 +1893,11 @@ async function simulationMasse(){
     db = firebase.firestore();
   } catch(e){
     ajouterControle(groupe, "Connexion à Firebase", { etat:"ko", detail: echapper(String(e.message || e)) });
+    return;
+  }
+  const sessionMasse = await compteDeLaPage();
+  if (sessionMasse.mode && !sessionMasse.user) {
+    ajouterControle(groupe, "Connexion requise", { etat:"warn", detail: CONSIGNE_COMPTE });
     return;
   }
   const refMasse = () => db.collection("kpi_sync").doc(codeMasse);

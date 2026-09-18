@@ -1,4 +1,4 @@
-const CACHE_NAME = "kpi-idea-cache-v22";
+const CACHE_NAME = "kpi-idea-cache-v23";
 
 /* Les pièces de l'application, mises en cache à l'installation pour qu'elle
    démarre hors ligne. C'est aussi la SEULE liste que le cache d'exécution
@@ -18,6 +18,7 @@ const ASSETS = [
   "./js/pptx.js",
   "./js/inspecter-deck.js",
   "./js/selection.js",
+  "./js/acces.js",
   "./modele-deck.pptx",
   "./empreintes-livrees.json",
   "./logo-idea.png",

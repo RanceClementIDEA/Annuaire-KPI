@@ -1456,3 +1456,65 @@ body.mode-selection .card { padding-top: 42px; }
 
 /* Guidage du relevé des empreintes, dans la fenêtre de génération */
 /* (le panneau de relevé a été retiré : les empreintes sont livrées avec le code) */
+
+/* ============================================
+   COMPTES ET ACCÈS
+============================================ */
+.porte-bloc { display: flex; flex-direction: column; gap: 10px; }
+.porte-aide { font-size: 12px; color: var(--text-3); line-height: 1.45; margin-top: -2px; }
+.porte-titre { font-family: 'DM Sans', 'Inter', sans-serif; font-size: 17px; font-weight: 700; color: var(--text-1); }
+.porte-texte { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+.porte-chargement { text-align: center; color: var(--text-2); font-size: 13px; padding: 18px 0; }
+.porte-liens { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.login-form .porte-lien {
+  margin-top: 0; padding: 4px 0;
+  background: none; color: var(--text-2);
+  font-weight: 500; font-size: 12.5px;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.login-form .porte-lien:hover { color: var(--accent); opacity: 1; transform: none; }
+.porte-message { min-height: 18px; margin-top: 12px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); }
+.porte-message.erreur { color: #FCA5A5; }
+.porte-message.ok { color: #6EE7B7; }
+.login-form button:disabled { opacity: .5; cursor: wait; transform: none; }
+
+.compte-mdp { display: flex; gap: 8px; align-items: stretch; }
+.compte-mdp .modal-input { flex: 1 1 auto; }
+.compte-mdp .btn-secondary { flex: 0 0 auto; }
+
+.modal-card.modal-acces { max-width: 640px; }
+.acces-liste, .acces-noms { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+.acces-ligne {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px;
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px;
+}
+.acces-ligne.attente { border-color: rgba(255,176,32,.45); }
+.acces-qui { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.acces-qui b { color: var(--text-1); font-size: 13px; overflow-wrap: anywhere; }
+.acces-qui span { color: var(--text-3); font-size: 11.5px; }
+.acces-moi {
+  display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 100px;
+  background: var(--accent-dim); color: var(--accent); font-size: 10.5px; font-weight: 600;
+}
+.acces-champ { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-2); }
+.acces-champ select { padding: 8px 10px; }
+.acces-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
+.acces-actions button { flex: 0 0 auto; padding: 8px 14px; }
+.acces-actions button:disabled { opacity: .4; cursor: not-allowed; }
+.acces-erreur { color: #FCA5A5; font-size: 12.5px; }
+.acces-nom {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline;
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--gold); border-radius: 8px; padding: 9px 12px;
+}
+.acces-nom.fait { border-left-color: var(--green); }
+.acces-nom b { color: var(--text-1); font-size: 13px; overflow-wrap: anywhere; }
+.acces-nom span { grid-column: 1; color: var(--text-3); font-size: 11.5px; }
+.acces-nom em { grid-column: 2; grid-row: 1 / span 2; font-style: normal; font-size: 11.5px; color: var(--gold); text-align: right; }
+.acces-nom.fait em { color: var(--green); }
+@media (max-width: 560px) {
+  .acces-ligne { grid-template-columns: 1fr; }
+  .acces-nom { grid-template-columns: 1fr; }
+  .acces-nom em { grid-column: 1; grid-row: auto; text-align: left; }
+}
