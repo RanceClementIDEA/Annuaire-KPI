@@ -826,6 +826,69 @@ test("sans module de comptes, aucun outil n'est masqué", async () => {
   assert.strictEqual(A.run("ouvrirMonCompte()"), false, "il n'y a pas de compte à afficher");
 });
 
+
+/* ═══ Structure de la page ═══ */
+
+/* Une fenêtre à qui il manque (ou à qui il reste) une balise de fermeture se
+   referme trop tôt : tout ce qui suit sort du cadre, sans qu'aucun test de
+   comportement ne s'en aperçoive. C'est arrivé en déplaçant « Mon compte ». */
+test("chaque fenêtre de la page contient bien tout son contenu", () => {
+  const page = (typeof window !== "undefined" && typeof window.__pageIndex === "string")
+    ? window.__pageIndex
+    : require("node:fs").readFileSync(require("node:path").join(__dirname, "index.html"), "utf8");
+  assert.ok(page.length > 1000, "index.html introuvable ou vide");
+
+  /* On délimite la CARTE de chaque fenêtre (le cadre blanc), pas seulement la
+     fenêtre : une balise de fermeture en trop referme la carte plus tôt, et
+     tout ce qui suit s'affiche hors du cadre — c'est exactement le défaut qui
+     a cassé la fenêtre de synchronisation. */
+  const carte = (id) => {
+    const fenetre = page.indexOf('<div id="' + id + '"');
+    assert.ok(fenetre > 0, "fenêtre introuvable : " + id);
+    const ouverture = page.indexOf("<div", page.indexOf(">", fenetre) + 1);
+    assert.ok(ouverture > fenetre, id + " : carte introuvable");
+    assert.match(page.slice(ouverture, page.indexOf(">", ouverture)), /card/,
+      id + " : le premier élément de la fenêtre devrait être sa carte");
+    let profondeur = 0;
+    const balises = /<div\b|<\/div>/g;
+    balises.lastIndex = ouverture;
+    for (let m = balises.exec(page); m; m = balises.exec(page)) {
+      profondeur += m[0] === "</div>" ? -1 : 1;
+      if (profondeur === 0) return page.slice(ouverture, balises.lastIndex);
+    }
+    assert.fail(id + " : la carte n'est jamais refermée");
+  };
+
+  const attendus = {
+    loginScreen: ["connexionNom", "porteChargement", "porteConnexion", "compteMail", "compteMdp",
+                  "compteMemoDevice", "compteNom", "porteAttente", "porteDemande", "porteBloque",
+                  "demandeNom", "porteMessage"],
+    syncModal:   ["syncStatus", "syncDiag", "testCloudBtn", "syncConfigInput", "syncCodeInput",
+                  "connectSyncBtn", "snapshotList", "forceMasterBtn", "exportBackupBtn",
+                  "resetSyncBtn", "exportExcelBtn"],
+    compteModal: ["compteInfo", "personalSyncToggle", "compteNouveauNom", "changerNomBtn",
+                  "compteNouveauMdp", "changerMdpBtn", "closeCompteModalBtn"],
+    accesModal:  ["accesListe", "accesNoms", "accesNomsConnus", "closeAccesModalBtn"],
+    historyModal:["historyActionFilter", "historyUserFilter", "historyList", "exportHistoryBtn"]
+  };
+  Object.keys(attendus).forEach(fenetre => {
+    const bloc = carte(fenetre);
+    attendus[fenetre].forEach(id =>
+      assert.ok(bloc.indexOf('id="' + id + '"') >= 0,
+        "« " + id + " » s'affiche hors du cadre de " + fenetre + " : balises déséquilibrées"));
+    assert.strictEqual((bloc.match(/<div\b/g) || []).length, (bloc.match(/<\/div>/g) || []).length,
+      fenetre + " : balises déséquilibrées");
+  });
+
+  // Chaque élément manipulé par le code existe, une seule fois
+  const tous = [].concat.apply([], Object.keys(attendus).map(k => attendus[k]))
+    .concat(["monCompteBtn", "accesBtn", "syncSettingsBtn", "historyBtn"]);
+  tous.forEach(id => {
+    const n = (page.match(new RegExp('id="' + id + '"', "g")) || []).length;
+    assert.strictEqual(n, 1, "élément « " + id + " » présent " + n + " fois au lieu d'une");
+  });
+});
+
 /* Dernier test : l'annuaire retrouve l'état d'origine du banc (sans module
    de comptes), pour ne pas influencer les groupes qui suivent dans tests.html. */
 test("nettoyage : retour au fonctionnement sans comptes", () => {

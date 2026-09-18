@@ -325,6 +325,13 @@ async function loadApp(surProgression){
     journalFichiers.push({ f:"firestore.rules", ok:rr.ok,
                            info: rr.ok ? (window.__reglesFirestore.length/1024).toFixed(1) + " Ko" : "HTTP " + rr.status });
   } catch(e){ window.__reglesFirestore = ""; journalFichiers.push({ f:"firestore.rules", ok:false, info:e.message }); }
+  // La page elle-même : un test vérifie que chaque fenêtre referme ses balises.
+  try {
+    const ri = await fetch("index.html?anticache=" + Date.now());
+    window.__pageIndex = ri.ok ? await ri.text() : "";
+    journalFichiers.push({ f:"index.html", ok:ri.ok,
+                           info: ri.ok ? (window.__pageIndex.length/1024).toFixed(1) + " Ko" : "HTTP " + ri.status });
+  } catch(e){ window.__pageIndex = ""; journalFichiers.push({ f:"index.html", ok:false, info:e.message }); }
 
   if (surProgression) surProgression(1, "initialisation du bac à sable");
   window.__sources = sources;      // permet de créer d'autres appareils simulés

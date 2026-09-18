@@ -15,6 +15,7 @@ export default [
         Store: "readonly", createCarousel: "readonly",
         // Fabrique de PowerPoint (js/zip.js, js/pptx.js, js/selection.js)
         ZipMini: "readonly", PptxDeck: "readonly", Selection: "readonly", Empreintes: "readonly", Derivation: "readonly",
+        Acces: "readonly",
         InspecteurDeck: "readonly",
         TextEncoder: "readonly", TextDecoder: "readonly",
         DecompressionStream: "readonly", CompressionStream: "readonly",

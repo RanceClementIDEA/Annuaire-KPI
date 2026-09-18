@@ -914,6 +914,15 @@ function renderAcces() {
     }).join("");
   }
 
+  renderAccesNoms(existants, nomsConnus);
+  return existants.length;
+}
+
+/* Les noms déjà présents dans l'annuaire, avec ce qui leur appartient et le
+   compte auquel ils sont rattachés. Séparé de renderAcces pour rester lisible. */
+function renderAccesNoms(existants, nomsConnus) {
+  const boiteNoms = document.getElementById("accesNoms");
+  if (!boiteNoms) return 0;
   const suggestions = document.getElementById("accesNomsConnus");
   if (suggestions) suggestions.innerHTML = nomsConnus.map(n => `<option value="${esc(n)}"></option>`).join("");
 
