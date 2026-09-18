@@ -39,11 +39,15 @@ service cloud.firestore {
     function estAdmin()  { return aUnRole(['admin']); }
     function estMembre() { return aUnRole(['admin', 'membre']); }
 
-    // Domaines autorisés à DÉPOSER une demande.
-    // Même liste que DOMAINES dans js/acces.js : modifier les deux.
+    /* Domaines autorisés à DÉPOSER une demande. Ici : TOUTES les adresses.
+       Un compte créé n'a aucun droit tant qu'un administrateur ne l'a pas
+       validé — c'est cette validation qui protège l'annuaire.
+       Pour ne rouvrir qu'à l'entreprise, remplacer par :
+         return request.auth.token.get('email', '').lower()
+                  .matches('^[^@]+@(groupe-idea[.]com)$');
+       et remettre le domaine dans DOMAINES (js/acces.js). */
     function domaineMaison() {
-      return request.auth.token.get('email', '').lower()
-               .matches('^[^@]+@(groupe-idea[.]com)$');
+      return true;
     }
 
     // Les documents de l'annuaire : le principal, ses empreintes, l'horloge,
@@ -78,12 +82,21 @@ service cloud.firestore {
                     && request.resource.data.demande is string
                     && request.resource.data.demande.size() <= 40;
 
-      // Valider, changer le rôle, rattacher un nom : administrateur seulement
-      allow update: if estAdmin()
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'nom'])
-                    && request.resource.data.role in ['', 'admin', 'membre']
-                    && request.resource.data.nom is string
-                    && request.resource.data.nom.size() <= 80;
+      // Valider, changer le rôle, rattacher un nom : administrateur seulement.
+      // Chacun peut aussi changer SON nom dans l'annuaire — et rien d'autre :
+      // le rôle, lui, reste hors de portée.
+      allow update: if request.resource.data.nom is string
+                    && request.resource.data.nom.size() >= 1
+                    && request.resource.data.nom.size() <= 80
+                    && (
+                         (estAdmin()
+                          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'nom'])
+                          && request.resource.data.role in ['', 'admin', 'membre', 'bloque'])
+                         ||
+                         (connecte()
+                          && request.auth.uid == uid
+                          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nom']))
+                       );
 
       allow delete: if estAdmin();
     }

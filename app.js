@@ -455,12 +455,17 @@ function afficherPorte(etat, message, fiche) {
   loginScreen.style.display = "flex";
   const blocs = { connexionNom: false, porteChargement: etat === "chargement",
                   porteConnexion: etat === "connexion" || etat === "erreur",
-                  porteAttente: etat === "attente", porteDemande: etat === "demande" };
+                  porteAttente: etat === "attente", porteDemande: etat === "demande",
+                  porteBloque: etat === "bloque" };
   Object.keys(blocs).forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = blocs[id] ? "" : "none";
   });
-  if (etat === "connexion") basculerCreation(modeCreation);
+  if (etat === "connexion") {
+    basculerCreation(modeCreation);
+    const memo = document.getElementById("compteMemoDevice");
+    if (memo) memo.checked = localStorage.getItem(LS_MEMO_COMPTE) !== "0";
+  }
   // L'ancien nom de cet appareil aide l'administrateur à rattacher le compte
   const ancien = localStorage.getItem("kpiUser") || "";
   const nomDemande = document.getElementById("demandeNom");
@@ -499,6 +504,28 @@ function basculerCreation(creer) {
   const mdp = document.getElementById("compteMdp");
   if (mdp) mdp.setAttribute("autocomplete", modeCreation ? "new-password" : "current-password");
   return modeCreation;
+}
+
+/* Mémorisation de l'appareil : case cochée, la session survit à la fermeture
+   du navigateur (comportement par défaut de Firebase) ; décochée, elle meurt
+   avec l'onglet — ce qu'il faut sur un poste partagé. */
+const LS_MEMO_COMPTE = "kpiCompteMemo";
+
+function memoAppareil() {
+  const el = document.getElementById("compteMemoDevice");
+  if (el && typeof el.checked === "boolean") return !!el.checked;
+  return localStorage.getItem(LS_MEMO_COMPTE) !== "0";
+}
+
+function appliquerMemoAppareil() {
+  const memo = memoAppareil();
+  localStorage.setItem(LS_MEMO_COMPTE, memo ? "1" : "0");
+  const P = (firebase.auth && firebase.auth.Auth && firebase.auth.Auth.Persistence) ||
+            { LOCAL: "local", SESSION: "session" };
+  if (!authCompte || typeof authCompte.setPersistence !== "function") return Promise.resolve(memo);
+  return authCompte.setPersistence(memo ? P.LOCAL : P.SESSION)
+    .then(() => memo)
+    .catch(() => memo);   // navigateur qui refuse : on continue, la connexion prime
 }
 
 function viderMotDePasse() {
@@ -560,6 +587,7 @@ async function connexionCompte() {
   const mdp = (document.getElementById("compteMdp") || {}).value || "";
   if (!mail || !mdp) { messagePorte("Saisissez votre adresse et votre mot de passe.", "erreur"); return false; }
   initAuthCompte();
+  await appliquerMemoAppareil();
   let u;
   try { u = (await authCompte.signInWithEmailAndPassword(mail, mdp)).user; }
   catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
@@ -574,6 +602,7 @@ async function creationCompte() {
   const probleme = Acces.verifierDemande({ nom, mail, motDePasse: mdp });
   if (probleme) { messagePorte(probleme, "erreur"); return false; }
   initAuthCompte();
+  await appliquerMemoAppareil();
   let u;
   try { u = (await authCompte.createUserWithEmailAndPassword(mail, mdp)).user; }
   catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
@@ -610,6 +639,13 @@ async function envoyerDemande() {
   if (!u) { afficherPorte("connexion"); return false; }
   const nom = Acces.nettoyerNom(champ("demandeNom"));
   if (nom.length < 2) { messagePorte("Indiquez votre nom tel que vous le saisissiez jusqu'ici.", "erreur"); return false; }
+  /* Une fiche existe déjà (demande en attente, ou accès retiré par un
+     administrateur) : on ne la réécrit pas — les règles le refuseraient, et
+     surtout un accès retiré doit le rester. On se contente de rafraîchir. */
+  try {
+    const dejaLa = await lireFiche(u.uid);
+    if (dejaLa) { await ouvrirPourCompte(u); return false; }
+  } catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
   try { await deposerDemande(u, nom); }
   catch (e) { messagePorte(Acces.messageErreur(e && e.code), "erreur"); return false; }
   return (await ouvrirPourCompte(u)) === "attente";
@@ -679,6 +715,8 @@ function majCompteUI() {
       ? compte.mail + " · " + Acces.libelleRole(compte.role) + " · nom dans l'annuaire : « " + compte.nom + " »"
       : "";
   }
+  const champNom = document.getElementById("compteNouveauNom");
+  if (champNom && compte && compte.nom && !champNom.value) champNom.setAttribute("placeholder", compte.nom);
   return admin;
 }
 
@@ -700,6 +738,59 @@ async function changerMotDePasse() {
     showToast("❌ " + Acces.messageErreur(e && e.code), 5000);
     return false;
   }
+}
+
+/**
+ * Change le nom sous lequel cette personne apparaît dans l'annuaire, et
+ * DÉPLACE ce qui lui appartient : favoris, espace personnel, corbeille.
+ * L'historique, lui, garde le nom d'origine : c'est un journal.
+ */
+async function changerNomAnnuaire() {
+  if (!compte || !compte.role) return false;
+  const nouveau = Acces.nettoyerNom(champ("compteNouveauNom"));
+  const ancien = compte.nom;
+  const probleme = Acces.verifierNom(nouveau, ancien, accesListe, compte.uid);
+  if (probleme) { showToast("⚠️ " + probleme, 4000); return false; }
+
+  // Un nom déjà présent dans l'annuaire appartient à quelqu'un : on prévient.
+  const existant = Acces.nomsExistants(etatPourRattachement()).find(x => x.nom === nouveau);
+  if (existant && (existant.favoris || existant.fiches) &&
+      !confirm(`« ${nouveau} » existe déjà dans l'annuaire (${existant.favoris} favori(s), ` +
+               `${existant.fiches} fiche(s) personnelle(s)).\n\n` +
+               "En prenant ce nom, vous reprenez aussi ces données. Continuer ?")) {
+    return false;
+  }
+
+  try { await refFiche(compte.uid).update({ nom: nouveau }); }
+  catch (e) { showToast("❌ " + Acces.messageErreur(e && e.code), 5000); return false; }
+
+  const cartes = Acces.deplacerNom({
+    favoritesByUser: Store.readJSON(Store.KEYS.SYNC_FAV, {}) || {},
+    favoritesMeta: Store.readJSON(Store.KEYS.FAV_META, {}) || {},
+    personalByUser: lireMapPerso(LS_PERSO_MAP),
+    personalTrashByUser: lireMapPerso(LS_PERSO_TRASH)
+  }, ancien, nouveau, now());
+  Store.writeJSON(Store.KEYS.SYNC_FAV, cartes.favoritesByUser);
+  Store.writeJSON(Store.KEYS.FAV_META, cartes.favoritesMeta);
+  Store.writeJSON(LS_PERSO_MAP, cartes.personalByUser);
+  Store.writeJSON(LS_PERSO_TRASH, cartes.personalTrashByUser);
+  // Les listes propres à l'appareil suivent le nom
+  Store.writeJSON("kpiFav_" + nouveau, cartes.favoritesByUser[nouveau] || []);
+  Store.writeJSON("kpiPersonal_" + nouveau, cartes.personalByUser[nouveau] || []);
+  Store.writeJSON("kpiPersonalTrash_" + nouveau, cartes.personalTrashByUser[nouveau] || []);
+  localStorage.removeItem("kpiFav_" + ancien);
+  localStorage.removeItem("kpiPersonal_" + ancien);
+  localStorage.removeItem("kpiPersonalTrash_" + ancien);
+  touchMeta("favAt");
+
+  compte.nom = nouveau;
+  const champNom = document.getElementById("compteNouveauNom");
+  if (champNom) champNom.value = "";
+  login(nouveau);                 // recharge tout sous le nouveau nom
+  majCompteUI();
+  await pushToCloud(false);       // publie le déplacement pour les autres appareils
+  showToast(`✅ Vous apparaissez désormais sous « ${nouveau} »`, 4500);
+  return true;
 }
 
 /* ── Panneau de l'administrateur ─────────────────────────────── */
@@ -771,12 +862,8 @@ function renderAcces() {
       ((a.role ? 1 : 0) - (b.role ? 1 : 0)) || a.nom.localeCompare(b.nom, "fr"));
     boite.innerHTML = tri.map(f => {
       const propose = f.role ? f.nom : (Acces.proposerNom(f.nom, existants, f.mail) || f.nom);
-      const choix = nomsConnus.slice();
-      if (propose && !choix.includes(propose)) choix.unshift(propose);
-      const optionsNom = choix.map(n =>
-        `<option value="${esc(n)}"${n === propose ? " selected" : ""}>${esc(n)}${nomsConnus.includes(n) ? "" : " (nouveau nom)"}</option>`
-      ).join("");
-      const optionsRole = [["", "En attente — aucun droit"], ["membre", "Membre"], ["admin", "Administrateur"]]
+      const optionsRole = [["", "En attente — aucun droit"], ["membre", "Membre"],
+                           ["admin", "Administrateur"], [Acces.ROLE_BLOQUE, "Accès retiré"]]
         .map(([v, l]) => `<option value="${v}"${f.role === v ? " selected" : ""}>${l}</option>`).join("");
       const moi = compte && compte.uid === f.uid;
       const quand = f.demande ? new Date(f.demande) : null;
@@ -787,16 +874,20 @@ function renderAcces() {
             · nom demandé : « ${esc(f.nom || "—")} »</span>
         </div>
         <label class="acces-champ">Nom dans l'annuaire
-          <select id="accesNom_${esc(f.uid)}" class="modal-input">${optionsNom}</select></label>
+          <input id="accesNom_${esc(f.uid)}" class="modal-input" list="accesNomsConnus"
+                 value="${esc(propose)}" placeholder="nom existant, ou nouveau"></label>
         <label class="acces-champ">Rôle
           <select id="accesRole_${esc(f.uid)}" class="modal-input">${optionsRole}</select></label>
         <div class="acces-actions">
           <button class="btn-primary" onclick="enregistrerAcces(${jsAttr(f.uid)})">Enregistrer</button>
-          <button class="btn-danger" onclick="retirerAcces(${jsAttr(f.uid)})"${moi ? " disabled" : ""}>Retirer</button>
+          <button class="btn-danger" onclick="retirerAcces(${jsAttr(f.uid)})"${moi ? " disabled" : ""}>Supprimer</button>
         </div>
       </div>`;
     }).join("");
   }
+
+  const suggestions = document.getElementById("accesNomsConnus");
+  if (suggestions) suggestions.innerHTML = nomsConnus.map(n => `<option value="${esc(n)}"></option>`).join("");
 
   const rattaches = new Map();
   (accesListe || []).forEach(f => {
@@ -821,14 +912,14 @@ async function enregistrerAcces(uid) {
   const f = (accesListe || []).find(x => x.uid === uid);
   if (!f) return false;
   const choixRole = champ("accesRole_" + uid);
-  const role = Acces.estRole(choixRole) ? choixRole : "";
+  const role = (Acces.estRole(choixRole) || Acces.estBloque(choixRole)) ? choixRole : "";
   const nom = Acces.nettoyerNom((document.getElementById("accesNom_" + uid) || {}).value);
-  if (role && !nom) { showToast("Choisissez le nom de cette personne dans l'annuaire.", 3500); return false; }
+  if (Acces.estRole(role) && !nom) { showToast("Choisissez le nom de cette personne dans l'annuaire.", 3500); return false; }
   if (f.role === "admin" && role !== "admin" && nbAdmins() <= 1) {
     showToast("Il faut garder au moins un administrateur.", 3500);
     return false;
   }
-  const doublon = role && (accesListe || []).find(x => x.uid !== uid && x.role && x.nom === nom);
+  const doublon = Acces.estRole(role) && (accesListe || []).find(x => x.uid !== uid && Acces.estRole(x.role) && x.nom === nom);
   if (doublon && !confirm(`« ${nom} » est déjà rattaché à ${doublon.mail}.\n\n` +
       "Deux comptes sur le même nom partagent les mêmes favoris et le même espace personnel. Continuer ?")) {
     return false;
@@ -842,8 +933,9 @@ async function enregistrerAcces(uid) {
     compte.nom = nom;
     majCompteUI();
   }
-  showToast(role ? `✅ ${f.mail} : ${Acces.libelleRole(role)}, rattaché à « ${nom} »`
-                 : `⏸ ${f.mail} : remis en attente`, 4000);
+  showToast(Acces.estRole(role) ? `✅ ${adresseFiche(f)} : ${Acces.libelleRole(role)}, rattaché à « ${nom} »`
+            : Acces.estBloque(role) ? `⛔ ${adresseFiche(f)} : accès retiré`
+            : `⏸ ${adresseFiche(f)} : remis en attente`, 4000);
   renderAcces();
   return true;
 }
@@ -854,9 +946,11 @@ async function retirerAcces(uid) {
   if (!f) return false;
   if (compte.uid === uid) { showToast("Vous ne pouvez pas retirer votre propre accès.", 3500); return false; }
   if (f.role === "admin" && nbAdmins() <= 1) { showToast("Il faut garder au moins un administrateur.", 3500); return false; }
-  if (!confirm(`Retirer l'accès de ${f.mail} ?\n\n` +
-      `Ses favoris et son espace personnel restent dans l'annuaire sous « ${f.nom} ». ` +
-      "Son compte, lui, se supprime dans la console Firebase.")) {
+  if (!confirm(`Supprimer la fiche d'accès de ${adresseFiche(f)} ?\n\n` +
+      `• Ses favoris et son espace personnel RESTENT dans l'annuaire sous « ${f.nom} ».\n` +
+      "• Cette personne pourra redéposer une demande : pour l'en empêcher, choisissez plutôt " +
+      "le rôle « Accès retiré ».\n" +
+      "• Pour supprimer définitivement son compte : console Firebase → Authentication → Utilisateurs.")) {
     return false;
   }
   try { await refFiche(uid).delete(); }
@@ -877,9 +971,11 @@ document.getElementById("porteActualiserBtn")?.addEventListener("click", actuali
 document.getElementById("porteDemandeBtn")?.addEventListener("click", envoyerDemande);
 document.getElementById("porteQuitterBtn")?.addEventListener("click", fermerSessionCompte);
 document.getElementById("porteQuitterBtn2")?.addEventListener("click", fermerSessionCompte);
+document.getElementById("porteQuitterBtn3")?.addEventListener("click", fermerSessionCompte);
 document.getElementById("accesBtn")?.addEventListener("click", ouvrirAcces);
 document.getElementById("closeAccesModalBtn")?.addEventListener("click", fermerAcces);
 document.getElementById("changerMdpBtn")?.addEventListener("click", changerMotDePasse);
+document.getElementById("changerNomBtn")?.addEventListener("click", changerNomAnnuaire);
 
 /* ============================================
    VUES (all / fav)

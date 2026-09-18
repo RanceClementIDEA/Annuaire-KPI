@@ -3,8 +3,7 @@
 Jusqu'ici, ouvrir l'annuaire demandait seulement de taper un nom : n'importe
 qui connaissant l'adresse du site voyait, et modifiait, les KPI d'IDEA.
 
-Désormais, chacun se connecte avec **son adresse professionnelle et son mot de
-passe**, et vous validez chaque personne. Rien d'autre ne change : même
+Désormais, chacun se connecte avec **son adresse e-mail et son mot de passe**, et vous validez chaque personne. Rien d'autre ne change : même
 annuaire, même document partagé, mêmes favoris.
 
 ---
@@ -20,6 +19,9 @@ n'est déplacée : le document partagé reste le même.
 
 Le panneau « Comptes et accès » affiche tous les noms présents dans l'annuaire,
 avec leurs favoris et leurs fiches, et indique ceux qui restent à rattacher.
+
+Un nom se change ensuite à tout moment, et ce qui lui appartient suit
+(voir « Au quotidien »).
 
 ⚠️ Le nom compte les majuscules : « Marie » et « marie » sont deux personnes
 différentes pour l'annuaire. Le panneau propose automatiquement le nom existant
@@ -72,7 +74,11 @@ activez le premier interrupteur → *Enregistrer*.
 
 1. Dans l'annuaire, cliquez sur **Première connexion ? Créer mon compte**.
 2. Nom dans l'annuaire : **exactement** celui que vous utilisiez.
-3. Adresse professionnelle et mot de passe (8 caractères minimum) → *Créer*.
+3. Votre adresse (professionnelle ou non, toutes sont acceptées) et un mot de
+   passe de 8 caractères minimum → *Créer*.
+   La case **Mémoriser cet appareil** décide de la durée de la session :
+   cochée, vous restez connecté après fermeture du navigateur ; décochée, la
+   session se ferme avec l'onglet — à préférer sur un poste partagé.
 4. L'écran d'attente s'affiche : normal, personne ne peut encore valider.
 5. Console Firebase → **Firestore Database** → collection **acces** → ouvrez le
    document qui porte votre identifiant → remplacez le champ `role` (vide) par
@@ -114,14 +120,11 @@ Une fois faite, seules les personnes validées y accèdent.
 Console Firebase → **Firestore Database** → **Règles** → remplacez tout par le
 contenu du fichier **`firestore.rules`** → *Publier*.
 
-Avant de publier, vérifiez la ligne des domaines dans le fichier :
-
-```
-.matches('^[^@]+@(groupe-idea[.]com)$')
-```
-
-Elle doit contenir le domaine de vos adresses professionnelles. Si vous le
-changez, changez aussi la liste `DOMAINES` au début de `js/acces.js`.
+Aucune restriction d'adresse n'est imposée : n'importe qui peut créer un
+compte, mais un compte ne donne **aucun droit** tant que vous ne l'avez pas
+validé. Pour ne rouvrir la création qu'aux adresses de l'entreprise plus tard,
+`firestore.rules` indique les lignes à changer (fonction `domaineMaison`), et
+la liste `DOMAINES` au début de `js/acces.js`.
 
 **Contrôle :** ajoutez un KPI sur un appareil, vérifiez qu'il arrive sur un
 autre. Puis ouvrez `tests.html` → **🔎 Données réelles** : le contrôle
@@ -134,9 +137,17 @@ Les données ne risquent rien, seul l'accès change.
 
 ## Au quotidien
 
-- **Un collègue part :** 👥 Comptes et accès → *Retirer*. Ses favoris restent
-  dans l'annuaire, son compte se supprime dans la console Firebase
-  (Authentication → Utilisateurs).
+- **Un collègue part :** 👥 Comptes et accès → rôle **Accès retiré** →
+  *Enregistrer*. Il ne peut plus entrer, ni redéposer de demande, et ses
+  favoris restent dans l'annuaire.
+- **Effacer complètement quelqu'un :** bouton *Supprimer* (la fiche part, mais
+  la personne pourra redemander l'accès), puis console Firebase →
+  **Authentication → Utilisateurs** → supprimer le compte.
+- **Changer le nom de quelqu'un :** dans le panneau, le champ « Nom dans
+  l'annuaire » se saisit librement ; les noms déjà connus sont proposés.
+- **Changer son propre nom :** Synchronisation → *Mon compte* → 🪪 Renommer.
+  Favoris, espace personnel et corbeille suivent le nouveau nom ; l'historique
+  garde le nom d'origine, c'est un journal.
 - **Mot de passe oublié :** lien sur l'écran de connexion (l'e-mail peut
   arriver dans les courriers indésirables).
 - **Changer son mot de passe :** Synchronisation → *Mon compte*.

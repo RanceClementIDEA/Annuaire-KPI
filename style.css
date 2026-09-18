@@ -1518,3 +1518,10 @@ body.mode-selection .card { padding-top: 42px; }
   .acces-nom { grid-template-columns: 1fr; }
   .acces-nom em { grid-column: 1; grid-row: auto; text-align: left; }
 }
+
+.porte-memo {
+  display: flex; align-items: flex-start; gap: 9px;
+  font-size: 12.5px; color: var(--text-2); cursor: pointer; margin-top: 2px;
+}
+.porte-memo input { width: auto; margin-top: 3px; accent-color: var(--accent); }
+.porte-memo small { display: block; color: var(--text-3); font-size: 11.5px; line-height: 1.4; }

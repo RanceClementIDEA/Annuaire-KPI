@@ -699,9 +699,12 @@ function __module(nom){
               if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
               globalThis.__mailsReinit.push(mail);
             },
+            async setPersistence(p) { globalThis.__persistance = p; },
             async signOut() { globalThis.__sessionCompte = null; globalThis.__notifierAuth(); }
           };
+          globalThis.__persistance = null;
           firebase.auth = function () { return authSimule; };
+          firebase.auth.Auth = { Persistence: { LOCAL: "local", SESSION: "session", NONE: "none" } };
           authCompte = null; compte = null; accesListe = null; accesErreur = "";
           modeCreation = false; sessionSurveillee = false; deconnexionVolontaire = false;
         `);
@@ -726,6 +729,7 @@ function __module(nom){
       sessionPerdue() { run("globalThis.__sessionCompte = null; globalThis.__notifierAuth();"); return this; },
       panneAuth(code) { run(`globalThis.__erreurAuth = ${code ? `Object.assign(new Error(${JSON.stringify(code)}), { code: ${JSON.stringify(code)} })` : "null"}`); return this; },
       mailsReinitialisation: () => run("globalThis.__mailsReinit.slice()"),
+      persistanceChoisie: () => run("globalThis.__persistance"),
       comptesCrees: () => run("Object.keys(globalThis.__comptes)"),
       fiche: (uid) => run(`globalThis.__cloud[${JSON.stringify("acces/" + uid)}] || null`),
       ecrireCloud(cle, valeur) { run(`globalThis.__cloud[${JSON.stringify(cle)}] = ${JSON.stringify(valeur)};`); return this; },
@@ -8696,14 +8700,52 @@ test("l'état d'accès distingue demande, attente et ouverture", () => {
   assert.strictEqual(Acces.etatAcces({ role: "admin", nom: "Clément" }), "ouvert");
 });
 
-test("une création de compte est contrôlée avant tout envoi", () => {
+test("une création de compte est contrôlée avant tout envoi, quelle que soit l'adresse", () => {
   const ok = { nom: "Marie", mail: "marie.durand@groupe-idea.com", motDePasse: "unbonmotdepasse" };
   assert.strictEqual(Acces.verifierDemande(ok), "");
+  assert.strictEqual(Acces.verifierDemande({ ...ok, mail: "marie@gmail.com" }), "",
+    "adresse personnelle acceptée : c'est la validation qui protège");
+  assert.strictEqual(Acces.verifierDemande({ ...ok, mail: "contact@prestataire.fr" }), "");
   assert.match(Acces.verifierDemande({ ...ok, nom: "M" }), /nom/);
   assert.match(Acces.verifierDemande({ ...ok, mail: "pas-une-adresse" }), /invalide/);
-  assert.match(Acces.verifierDemande({ ...ok, mail: "marie@gmail.com" }), /professionnelle/);
   assert.match(Acces.verifierDemande({ ...ok, motDePasse: "court" }), /8 caractères/);
-  assert.strictEqual(Acces.domaineAutorise("Marie.Durand@GROUPE-IDEA.COM"), true);
+  assert.strictEqual(Acces.domaineAutorise("qui-que-ce-soit@example.org"), true);
+});
+
+test("un accès retiré ne rouvre rien et se distingue d'une attente", () => {
+  assert.strictEqual(Acces.etatAcces({ role: Acces.ROLE_BLOQUE, nom: "Marie" }), "bloque");
+  assert.strictEqual(Acces.estBloque(Acces.ROLE_BLOQUE), true);
+  assert.strictEqual(Acces.estRole(Acces.ROLE_BLOQUE), false, "ce n'est pas un rôle qui ouvre");
+  assert.strictEqual(Acces.libelleRole(Acces.ROLE_BLOQUE), "Accès retiré");
+  assert.strictEqual(Acces.normaliserFiche("u", { role: Acces.ROLE_BLOQUE }).role, Acces.ROLE_BLOQUE,
+    "le blocage doit survivre à la relecture de la fiche");
+});
+
+test("un changement de nom est contrôlé avant tout déplacement", () => {
+  const fiches = [{ uid: "u1", role: "membre", nom: "benjamin" }, { uid: "u2", role: "", nom: "Zoé" }];
+  assert.strictEqual(Acces.verifierNom("Marie", "marie", fiches, "u9"), "");
+  assert.match(Acces.verifierNom("M", "Marie", fiches, "u9"), /2 caractères/);
+  assert.match(Acces.verifierNom("Marie", "Marie", fiches, "u9"), /déjà votre nom/);
+  assert.match(Acces.verifierNom("benjamin", "Marie", fiches, "u9"), /déjà rattaché/);
+  assert.strictEqual(Acces.verifierNom("benjamin", "Marie", fiches, "u1"), "", "sauf si c'est le sien");
+  assert.strictEqual(Acces.verifierNom("Zoé", "Marie", fiches, "u9"), "", "une demande sans rôle ne réserve rien");
+});
+
+test("changer de nom emporte favoris et espace personnel, sans rien perdre", () => {
+  const cartes = Acces.deplacerNom({
+    favoritesByUser: { "marie.d": ["a", "b"], Marie: ["b", "c"] },
+    favoritesMeta: { "marie.d": 10, Marie: 20 },
+    personalByUser: { "marie.d": [{ id: "p1" }], Marie: [{ id: "p2" }] },
+    personalTrashByUser: { "marie.d": [{ id: "t1" }] }
+  }, "marie.d", "Marie", 500);
+  assert.deepStrictEqual(cartes.favoritesByUser.Marie.sort(), ["a", "b", "c"], "les deux listes fusionnent");
+  assert.deepStrictEqual(cartes.favoritesByUser["marie.d"], [], "l'ancien nom est vidé, pas supprimé");
+  assert.deepStrictEqual(cartes.personalByUser.Marie.map(x => x.id).sort(), ["p1", "p2"]);
+  assert.deepStrictEqual(cartes.personalTrashByUser.Marie.map(x => x.id), ["t1"]);
+  assert.strictEqual(cartes.favoritesMeta.Marie, 500, "les deux dates sont rafraîchies");
+  assert.strictEqual(cartes.favoritesMeta["marie.d"], 500);
+  const inchange = Acces.deplacerNom({ favoritesByUser: { Marie: ["a"] } }, "Marie", "Marie", 1);
+  assert.deepStrictEqual(inchange.favoritesByUser, { Marie: ["a"] }, "même nom : rien ne bouge");
 });
 
 test("les erreurs Firebase sont traduites, les inconnues restent lisibles", () => {
@@ -8730,12 +8772,15 @@ function reglesLivrees() {
 test("les règles et le module parlent des mêmes rôles et des mêmes domaines", () => {
   const R = reglesLivrees();
   assert.ok(R.length > 200, "firestore.rules introuvable ou vide");
-  const roles = ((R.match(/role in \[([^\]]*)\]/) || [])[1] || "").split(",").map(x => x.trim());
-  assert.ok(roles.includes("''"), "« en attente » (rôle vide) doit rester possible");
-  assert.deepStrictEqual(roles.filter(x => x !== "''").map(x => x.replace(/'/g, "")).sort(),
-    Object.keys(Acces.ROLES).sort());
-  Acces.DOMAINES.forEach(d =>
-    assert.ok(R.includes(d.replace(/\./g, "[.]")), "domaine absent des règles : " + d));
+  const roles = ((R.match(/role in \[([^\]]*)\]/) || [])[1] || "").split(",")
+    .map(x => x.trim().replace(/'/g, ""));
+  assert.deepStrictEqual(roles.sort(), Acces.ROLES_STOCKABLES.slice().sort(),
+    "les valeurs de rôle des règles et du module doivent coïncider");
+  assert.ok(roles.includes(""), "« en attente » (rôle vide) doit rester possible");
+  assert.ok(roles.includes(Acces.ROLE_BLOQUE), "« accès retiré » doit être une valeur possible");
+  // Adresses : aucune restriction de domaine, ni dans le module ni dans les règles
+  assert.deepStrictEqual(Acces.DOMAINES, [], "toutes les adresses sont acceptées");
+  assert.match(R, /function domaineMaison\(\)\s*\{\s*return true;/, "les règles n'imposent aucun domaine");
   assert.ok(R.includes("match /" + Acces.COLLECTION + "/{uid}"));
 });
 
@@ -8838,13 +8883,20 @@ test("créer son compte dépose une demande sans rôle, puis fait patienter", as
   assert.strictEqual(A.ecoutesActives(), 0);
 });
 
-test("une adresse hors domaine est refusée avant de créer quoi que ce soit", async () => {
+test("un compte se crée depuis n'importe quelle adresse, et n'ouvre rien pour autant", async () => {
   await appareilComptes();
   A.run("basculerCreation(true)");
-  A.saisir("compteNom", "Pirate").saisir("compteMail", "pirate@gmail.com").saisir("compteMdp", "unbonmotdepasse");
+  A.saisir("compteNom", "Prestataire").saisir("compteMail", "contact@prestataire.fr").saisir("compteMdp", "unbonmotdepasse");
+  assert.strictEqual(await A.run("creationCompte()"), true);
+  assert.deepStrictEqual(A.comptesCrees(), ["contact@prestataire.fr"]);
+  assert.ok(visible("porteAttente"), "la demande attend quand même une validation");
+  assert.strictEqual(A.run("appShell.style.display"), "none");
+  // Une adresse mal formée, elle, ne part jamais
+  await appareilComptes();
+  A.run("basculerCreation(true)");
+  A.saisir("compteNom", "Zoé").saisir("compteMail", "pas-une-adresse").saisir("compteMdp", "unbonmotdepasse");
   assert.strictEqual(await A.run("creationCompte()"), false);
-  assert.deepStrictEqual(A.comptesCrees(), []);
-  assert.match(A.texte("porteMessage"), /professionnelle/);
+  assert.match(A.texte("porteMessage"), /invalide/);
 });
 
 test("une adresse déjà inscrite oriente vers la connexion", async () => {
@@ -8989,7 +9041,10 @@ test("le panneau liste les demandes et tous les noms existants, avec leurs donn�
     "les demandes en attente passent en premier");
   // Le nom proposé est le nom EXISTANT, malgré la casse différente de la demande
   const uidMarie = uidDe("marie.durand@groupe-idea.com");
-  assert.match(liste, new RegExp(`id="accesNom_${uidMarie}"[^>]*>[\\s\\S]*?<option value="Marie" selected>`));
+  assert.match(liste, new RegExp(`id="accesNom_${uidMarie}"[^>]*value="Marie"`),
+    "le nom existant est proposé, et reste modifiable à la main");
+  assert.match(liste, /list="accesNomsConnus"/);
+  assert.match(A.html("accesNomsConnus"), /<option value="benjamin">/, "les noms connus sont suggérés");
   const noms = A.html("accesNoms");
   assert.match(noms, /<b>Marie<\/b>[\s\S]*?1 favori · 1 fiche perso/);
   assert.match(noms, /<b>benjamin<\/b>/);
@@ -9197,6 +9252,95 @@ for (const mode of ["comptes", "nom"]) {
     assert.deepStrictEqual(c.favoritesByUser["Clément"], ["kpi_autre"], "ceux du collègue aussi");
   });
 }
+
+/* ═══ Mémorisation de l'appareil, changement de nom, accès retiré ═══ */
+
+test("« Mémoriser cet appareil » choisit la durée de la session", async () => {
+  await appareilComptes();
+  A.compteExistant("marie.durand@groupe-idea.com", "unbonmotdepasse", { role: "membre", nom: "Marie" });
+  A.cocher("compteMemoDevice", false);            // poste partagé
+  A.saisir("compteMail", "marie.durand@groupe-idea.com").saisir("compteMdp", "unbonmotdepasse");
+  assert.strictEqual(await A.run("connexionCompte()"), true);
+  assert.strictEqual(A.persistanceChoisie(), "session", "la session meurt avec l'onglet");
+  assert.strictEqual(A.stockage()["kpiCompteMemo"], "0", "le choix est retenu");
+
+  A.run("deconnecter()");
+  await attendre();
+  A.cocher("compteMemoDevice", true);             // son propre appareil
+  A.saisir("compteMail", "marie.durand@groupe-idea.com").saisir("compteMdp", "unbonmotdepasse");
+  assert.strictEqual(await A.run("connexionCompte()"), true);
+  assert.strictEqual(A.persistanceChoisie(), "local", "la session survit à la fermeture du navigateur");
+  assert.strictEqual(A.stockage()["kpiCompteMemo"], "1");
+
+  A.ecrireStockage("kpiCompteMemo", "0");
+  A.run(`afficherPorte("connexion")`);
+  assert.strictEqual(A.el("compteMemoDevice").checked, false, "l'écran réaffiche le dernier choix");
+});
+
+test("chacun peut changer son nom : ses favoris et son espace personnel suivent", async () => {
+  await appareilComptes();
+  const avant = annuaireExistant();               // tout est rangé sous « marie.d »
+  avant.favoritesByUser = { "marie.d": ["kpi_volume_hebdo"], benjamin: [] };
+  avant.favoritesMeta = { "marie.d": 1000, benjamin: 900 };
+  avant.personalByUser = { "marie.d": [PERSO_MARIE] };
+  A.ecrireCloud("kpi_sync/" + CODE, avant);
+  A.compteExistant("marie.durand@groupe-idea.com", "unbonmotdepasse", { role: "membre", nom: "marie.d" });
+  A.sessionOuverte("marie.durand@groupe-idea.com");
+  await A.run("demarrerSession()");
+  await attendre(80);
+  assert.deepStrictEqual(A.get("favorites"), ["kpi_volume_hebdo"]);
+
+  A.saisir("compteNouveauNom", "M");
+  assert.strictEqual(await A.run("changerNomAnnuaire()"), false, "un nom trop court est refusé");
+  A.saisir("compteNouveauNom", "Marie");
+  assert.strictEqual(await A.run("changerNomAnnuaire()"), true);
+  await attendre(80);
+
+  assert.strictEqual(A.run("currentUser"), "Marie");
+  assert.strictEqual(A.fiche(A.run("compte.uid")).nom, "Marie");
+  assert.deepStrictEqual(A.get("favorites"), ["kpi_volume_hebdo"], "les favoris ont suivi");
+  assert.ok((A.get("lireMapPerso(LS_PERSO_MAP)")["Marie"] || []).some(p => p.id === "perso_marie_1"),
+    "l'espace personnel a suivi");
+  const c = A.cloud("kpi_sync/" + CODE);
+  assert.deepStrictEqual(c.favoritesByUser["Marie"], ["kpi_volume_hebdo"], "publié pour les autres appareils");
+  assert.deepStrictEqual(c.favoritesByUser["benjamin"], [], "personne d'autre n'est touché");
+  assert.strictEqual(A.el("compteNouveauNom").value, "");
+});
+
+test("l'administrateur retire un accès : la personne est mise dehors et ne peut plus redemander", async () => {
+  await adminConnecte();
+  const uid = uidDe("marie.durand@groupe-idea.com");
+  A.ecrireCloud("acces/" + uid, { role: "membre", nom: "Marie", mail: "marie.durand@groupe-idea.com" });
+  await A.run("ouvrirAcces()");
+  A.selectionner("accesRole_" + uid, "bloque");
+  assert.strictEqual(await A.run(`enregistrerAcces(${JSON.stringify(uid)})`), true);
+  assert.strictEqual(A.fiche(uid).role, "bloque");
+  assert.match(A.dernierMessage(), /accès retiré/);
+  assert.match(A.html("accesListe"), /Accès retiré/);
+
+  await appareilComptes();                        // Marie, sur son appareil
+  A.run(`globalThis.__comptes["marie.durand@groupe-idea.com"] = { uid: ${JSON.stringify(uid)}, mail: "marie.durand@groupe-idea.com", mdp: "unbonmotdepasse" };`);
+  A.ecrireCloud("acces/" + uid, { role: "bloque", nom: "Marie", mail: "marie.durand@groupe-idea.com" });
+  A.sessionOuverte("marie.durand@groupe-idea.com");
+  assert.strictEqual(await A.run("demarrerSession()"), "bloque");
+  assert.ok(visible("porteBloque"));
+  assert.strictEqual(A.run("appShell.style.display"), "none");
+  assert.strictEqual(A.ecoutesActives(), 0, "aucun accès au cloud");
+  A.saisir("demandeNom", "Marie");
+  await A.run("envoyerDemande()");
+  assert.strictEqual(A.fiche(uid).role, "bloque", "une nouvelle demande ne lève pas le blocage");
+});
+
+test("l'administrateur supprime une fiche : les données du nom restent dans l'annuaire", async () => {
+  await adminConnecte();
+  const uid = uidDe("pirate@groupe-idea.com");
+  await A.run("ouvrirAcces()");
+  A.confirmer(true);
+  assert.strictEqual(await A.run(`retirerAcces(${JSON.stringify(uid)})`), true);
+  assert.strictEqual(A.fiche(uid), null);
+  assert.ok(!A.html("accesListe").includes("pirate@groupe-idea.com"));
+  assert.ok(A.cloud("kpi_sync/" + CODE).favoritesByUser.Marie, "l'annuaire n'a pas bougé");
+});
 
 /* Dernier test : l'annuaire retrouve l'état d'origine du banc (sans module
    de comptes), pour ne pas influencer les groupes qui suivent dans tests.html. */
@@ -9549,7 +9693,8 @@ const CLE = {
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
   PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
-  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes"
+  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes",
+  COMPTE_MEMO:"kpiCompteMemo"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

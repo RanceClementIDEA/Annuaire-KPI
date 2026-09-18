@@ -678,7 +678,8 @@ const CLE = {
   CONFIG:"kpiSyncConfig", OPTOUT:"kpiSyncOptOut", MIGRE:"kpiMigratedV2",
   PERSO:"kpiPersonal_", PERSO_TRASH:"kpiPersonalTrash_", FAVORIS:"kpiFav_",
   PERSO_SYNC:"kpiPersonalSync", PERSO_MAP:"kpiPersonalByUser", PERSO_MAP_TRASH:"kpiPersonalTrashByUser",
-  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes"
+  PRESETS:"kpiPresets", EMPREINTES:"kpiEmpreintes",
+  COMPTE_MEMO:"kpiCompteMemo"
 };
 const lireLocal = (cle, repli) => {
   try { const v = localStorage.getItem(cle); return v === null ? repli : JSON.parse(v); }

@@ -48,7 +48,7 @@
 
     <div class="login-form" id="porteConnexion" style="display:none">
       <label for="compteMail">Adresse professionnelle</label>
-      <input type="email" id="compteMail" placeholder="prenom.nom@groupe-idea.com" autocomplete="username">
+      <input type="email" id="compteMail" placeholder="votre adresse e-mail" autocomplete="username">
       <label for="compteMdp">Mot de passe</label>
       <input type="password" id="compteMdp" placeholder="8 caractères minimum" autocomplete="current-password">
       <div id="blocNomCompte" class="porte-bloc" style="display:none">
@@ -56,6 +56,10 @@
         <input type="text" id="compteNom" placeholder="Le nom que vous tapiez pour vous connecter" autocomplete="off">
         <p class="porte-aide">Reprenez exactement le nom que vous utilisiez jusqu'ici : vos favoris et votre espace personnel sont rangés dessous.</p>
       </div>
+      <label class="porte-memo" for="compteMemoDevice">
+        <input type="checkbox" id="compteMemoDevice" checked>
+        <span>Mémoriser cet appareil <small>Décochez sur un poste partagé : la session se ferme avec le navigateur.</small></span>
+      </label>
       <button id="compteConnexionBtn" type="button">
         <span id="compteConnexionTxt">Se connecter</span>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
@@ -72,6 +76,14 @@
       <button type="button" id="porteActualiserBtn">J'ai été validé — ouvrir l'annuaire</button>
       <div class="porte-liens">
         <button type="button" class="porte-lien" id="porteQuitterBtn">Se déconnecter</button>
+      </div>
+    </div>
+
+    <div class="login-form" id="porteBloque" style="display:none">
+      <p class="porte-titre">Accès retiré</p>
+      <p class="porte-texte">Un administrateur a retiré l'accès de ce compte à l'annuaire. Contactez-le si c'est une erreur.</p>
+      <div class="porte-liens">
+        <button type="button" class="porte-lien" id="porteQuitterBtn3">Se déconnecter</button>
       </div>
     </div>
 
@@ -671,6 +683,14 @@
         <input type="password" id="compteNouveauMdp" class="modal-input" placeholder="Nouveau mot de passe (8 caractères minimum)" autocomplete="new-password">
         <button id="changerMdpBtn" class="btn-secondary">🔑 Changer</button>
       </div>
+      <p class="modal-hint" style="margin-top:10px">
+        Changer votre nom déplace avec lui vos favoris et votre espace personnel.
+        L'historique, lui, garde le nom d'origine.
+      </p>
+      <div class="compte-mdp">
+        <input type="text" id="compteNouveauNom" class="modal-input" placeholder="Nouveau nom dans l'annuaire" autocomplete="off">
+        <button id="changerNomBtn" class="btn-secondary">🪪 Renommer</button>
+      </div>
     </div>
 
     <div id="fileProtocolWarning" class="sync-warning" style="display:none">
@@ -792,6 +812,7 @@
     </p>
     <div class="modal-links-title">Comptes</div>
     <div id="accesListe" class="acces-liste"></div>
+    <datalist id="accesNomsConnus"></datalist>
     <div class="modal-links-title">Noms déjà présents dans l'annuaire</div>
     <p class="modal-hint">
       Toutes les personnes qui se sont connectées avant les comptes, avec ce qui leur appartient.

@@ -410,9 +410,12 @@
               if (globalThis.__erreurAuth) throw globalThis.__erreurAuth;
               globalThis.__mailsReinit.push(mail);
             },
+            async setPersistence(p) { globalThis.__persistance = p; },
             async signOut() { globalThis.__sessionCompte = null; globalThis.__notifierAuth(); }
           };
+          globalThis.__persistance = null;
           firebase.auth = function () { return authSimule; };
+          firebase.auth.Auth = { Persistence: { LOCAL: "local", SESSION: "session", NONE: "none" } };
           authCompte = null; compte = null; accesListe = null; accesErreur = "";
           modeCreation = false; sessionSurveillee = false; deconnexionVolontaire = false;
         `);
@@ -437,6 +440,7 @@
       sessionPerdue() { run("globalThis.__sessionCompte = null; globalThis.__notifierAuth();"); return this; },
       panneAuth(code) { run(`globalThis.__erreurAuth = ${code ? `Object.assign(new Error(${JSON.stringify(code)}), { code: ${JSON.stringify(code)} })` : "null"}`); return this; },
       mailsReinitialisation: () => run("globalThis.__mailsReinit.slice()"),
+      persistanceChoisie: () => run("globalThis.__persistance"),
       comptesCrees: () => run("Object.keys(globalThis.__comptes)"),
       fiche: (uid) => run(`globalThis.__cloud[${JSON.stringify("acces/" + uid)}] || null`),
       ecrireCloud(cle, valeur) { run(`globalThis.__cloud[${JSON.stringify(cle)}] = ${JSON.stringify(valeur)};`); return this; },
